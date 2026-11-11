@@ -1,5 +1,6 @@
-//! Tet to polyhedral conversion: the barycentric dual of a conformal all-tetrahedron mesh,
-//! driven by the model classification (see `DESIGN.md`).
+//! Tet to polyhedral conversion: the barycentric dual of a conformal tetrahedron mesh, driven by
+//! the model classification (see `DESIGN.md`). A mixed mesh (tets plus hexes, wedges, pyramids)
+//! keeps its non-tet cells as polyhedra and cuts each transition triangle into dual sub-faces.
 //!
 //! | Item | What |
 //! |---|---|
@@ -19,6 +20,7 @@ mod dual;
 mod error;
 mod geom;
 mod measure;
+mod mixed;
 mod ops;
 mod options;
 mod polydata;
@@ -31,7 +33,7 @@ pub use agglom::with_unchecked_merges;
 pub use dual::dualize;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use dual::with_ungated_circumcentric;
+pub use dual::{with_gate_off_circumcentric, with_ungated_circumcentric};
 #[doc(hidden)]
 pub use dual::dualize_with_rounds;
 pub use error::PolyError;

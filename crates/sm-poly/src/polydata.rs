@@ -34,6 +34,10 @@ pub(crate) struct PolyData {
     pub regions: Vec<EntityId>,
     /// Points below this number are tet centroids (they lie only on edge faces).
     pub n_tet_pts: u32,
+    /// Point number of every virtual id (`NONE` if unused).
+    pub vnum: Vec<u32>,
+    /// Extra edge classes by point pair (mixed meshes: source edge-table entries).
+    pub extra_edges: Vec<(u32, u32, Classification)>,
 }
 
 impl PolyData {
@@ -172,6 +176,8 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
         c_alive: Vec::new(),
         regions: prep.regions.clone(),
         n_tet_pts,
+        vnum: num.clone(),
+        extra_edges: Vec::new(),
     };
     for (vid, _) in used.iter().enumerate().filter(|(_, u)| **u) {
         d.pts.push(prep.coord(vid as u32));
@@ -357,7 +363,7 @@ fn point_class(p: &Prep<'_>, vid: u32, hub_reg: &[u32]) -> Classification {
             // interior triangle of a region (only used by refined edge faces)
             return Classification::on(p.regions[l as usize]);
         }
-        return Classification::on(src.face_class(fi).entity);
+        return Classification::on(p.fclass(fi).entity);
     }
     let i = i - nf;
     if i < ne {
@@ -531,6 +537,10 @@ pub(crate) fn commit<B: MeshBuild>(d: &PolyData, b: &mut B, want_edges: bool) ->
             && let Some((x, y, c)) = forced
         {
             explicit.insert((x.min(y), x.max(y)), c);
+        }
+        for &(a, b, c) in &d.extra_edges {
+            let (x, y) = (pt_new[a as usize], pt_new[b as usize]);
+            explicit.entry((x.min(y), x.max(y))).or_insert(c);
         }
         for (&(x, y), &c) in &explicit {
             b.set_class(MeshEntityRef::Edge(VertexIx(x), VertexIx(y)), c)?;

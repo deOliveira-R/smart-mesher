@@ -239,15 +239,29 @@ fn complement_rays_have_the_events_of_the_all_surfaces_path() {
 
 #[test]
 fn complement_steps_on_p2_test_a_fraction_of_the_surfaces() {
-    let fix = pin_assembly(3, 1.26, 0.4096, 0.475, 100.0).unwrap();
+    p2_surface_evals(3, 500, 4.0);
+}
+
+/// Full-scale P2 (17 x 17 pins, 10404 surfaces): the ratio is pinned, not only measured.
+#[test]
+#[ignore = "full-scale P2: cargo test --release -p sm-rt --test cellindex -- --ignored"]
+fn complement_steps_on_p2_full_test_a_hundredth_of_the_surfaces() {
+    p2_surface_evals(17, 200, 100.0);
+}
+
+/// Surface evaluations per complement step on `pin_assembly(n)`: index against the oracle.
+/// The index must test at most `1 / ratio` of the surfaces.
+fn p2_surface_evals(n: usize, rays: usize, ratio: f64) {
+    let fix = pin_assembly(n, 1.26, 0.4096, 0.475, 100.0).unwrap();
     let w = csg_world(&fix.model, &fix.complex, &CsgWorldOptions { complement: Some("out".into()), ..CsgWorldOptions::default() }).unwrap();
     let flat = || w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
     let (ix, or) = (flat(), flat().with_index_threshold(usize::MAX));
     let ns = or.surface_kinds().len() as f64;
     let mut r = rng("cellindex-counters");
     let mut per = [(0u64, 0u64); 2];
-    for _ in 0..500 {
-        let o = p3(8.0 * (2.0 * u01(&mut r) - 1.0), 8.0 * (2.0 * u01(&mut r) - 1.0), 40.0 + 20.0 * u01(&mut r));
+    let half = 1.26 * n as f64 / 2.0 + 1.0;
+    for _ in 0..rays {
+        let o = p3(half * (2.0 * u01(&mut r) - 1.0), half * (2.0 * u01(&mut r) - 1.0), 40.0 + 20.0 * u01(&mut r));
         let d = random_dir(&mut r);
         for (i, t) in [&ix, &or].into_iter().enumerate() {
             let mut sc = Scratch::new();
@@ -268,9 +282,58 @@ fn complement_steps_on_p2_test_a_fraction_of_the_surfaces() {
     }
     let (a, b) = (per[0].0 as f64 / per[0].1 as f64, per[1].0 as f64 / per[1].1 as f64);
     eprintln!("surface evals per complement step on P2: index {a:.1}, all-surfaces {b:.1}, n_surfaces {ns}");
-    assert!(per[0].1 > 200 && per[1].1 > 200);
+    assert!(per[0].1 > 100 && per[1].1 > 100);
     assert!(b >= ns, "the oracle tests every surface");
-    assert!(a * 4.0 <= ns, "index {a} vs {ns} surfaces");
+    assert!(a * ratio <= ns, "index {a} vs {ns} surfaces");
+}
+
+/// Tori: the quartic is bracketed by its `t_max`, so the tile walk must not change the roots.
+#[test]
+fn complement_rays_agree_on_a_model_with_tori() {
+    let (mut fx, _) = random_model_balls("cellindex-tori", 4, 0);
+    let mut r = rng("cellindex-tori-frames");
+    for _ in 0..24 {
+        let c = p3(28.0 * u01(&mut r) - 14.0, 28.0 * u01(&mut r) - 14.0, 28.0 * u01(&mut r) - 14.0);
+        let f = random_frame(&mut r, c);
+        let t = fx.torus(f, 2.0 + 2.0 * u01(&mut r), 0.5 + 0.5 * u01(&mut r));
+        fx.cell1("torus", &[hs(t, true)]);
+    }
+    let (ix, or) = pair(&fx);
+    assert!(ix.index_tiles().is_some());
+    assert!(check_rays(&ix, &or, 19.0, 1500, "cellindex-tori-rays") > 4000);
+    let pts = points(&or, 21.0, 2000, 40, "cellindex-tori-pts");
+    check_locates(&ix, &or, &pts);
+}
+
+/// Heavily overlapping boxes cannot blow the tile lists up.
+#[test]
+fn split_has_a_total_size_budget() {
+    let mut fx = Fx::new(20.0);
+    let mut r = rng("cellindex-budget");
+    let n = 600;
+    for _ in 0..n {
+        let c = p3(30.0 * u01(&mut r) - 15.0, 30.0 * u01(&mut r) - 15.0, 30.0 * u01(&mut r) - 15.0);
+        let s = fx.sphere(c, 4.0 + 2.0 * u01(&mut r));
+        fx.cell1("lump", &[hs(s, true)]);
+    }
+    let (ix, or) = pair(&fx);
+    let listed = ix.index_listed_cells().unwrap();
+    eprintln!("budget listed {listed} of {n}");
+    assert!(listed <= 16 * n, "listed {listed} for {n} cells");
+    assert!(ix.index_tiles().unwrap() > 1);
+    // The cut-off tiles are still correct.
+    let pts = points(&or, 21.0, 1500, 0, "cellindex-budget-pts");
+    check_locates(&ix, &or, &pts);
+}
+
+#[test]
+fn memory_bytes_counts_the_index() {
+    let fx = random_model("cellindex-mem", 4, 0);
+    let (ix, or) = pair(&fx);
+    assert!(ix.info().memory_bytes > or.info().memory_bytes);
+    let by_default = fx.build();
+    assert_eq!(by_default.info().memory_bytes, ix.info().memory_bytes);
+    assert_eq!(by_default.with_index_threshold(usize::MAX).info().memory_bytes, or.info().memory_bytes);
 }
 
 #[test]

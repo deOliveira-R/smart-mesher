@@ -6,7 +6,7 @@
 //! | [`MesherConfig`] | the service: scheme registry, interval solver, corner picker, size-field and auto-size hooks, injected by the distribution |
 //! | [`IntentLayer`] | the `intent` layer (depends on `model`) |
 //! | [`RayonExec`] | the driver [`Executor`](sm_scheme_api::Executor) on the rayon pool |
-//! | ops | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size`, `mesh.auto` (intent), `mesh.run` (volumes or faces), `mesh.delete` (meshes) |
+//! | ops | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size`, `mesh.auto` (intent), `mesh.run` (volumes or faces), `mesh.delete` (meshes), `mesh.preserve_volume` (equal-area circle nodes) |
 //! | queries | `mesh.info`, `mesh.plan` (explain what ran or will run, and why), `mesh.auto_strategies` |
 //!
 //! This crate names no scheme crate and no sizing crate: schemes, the solver and the picker all
@@ -27,6 +27,7 @@ mod intent_layer;
 mod intent_ops;
 mod mesh_ops;
 mod plan_query;
+mod volfit;
 
 pub use auto::{
     AutoInput, AutoLists, AutoStrategy, DEFAULT_STRATEGY, DefaultStrategy, HEX_ONLY_STRATEGY,
@@ -37,6 +38,7 @@ pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
+pub use volfit::MeshPreserveVolume;
 pub use info::{MeshInfo, MeshInfoQuery};
 pub use intent_layer::IntentLayer;
 pub use intent_ops::{FirmnessArg, MeshDefaultSize, MeshIntervals, MeshScheme, MeshSize};
@@ -66,6 +68,7 @@ impl Plugin for MeshPlugin {
         registry.register::<MeshRun>()?;
         registry.register::<MeshDelete>()?;
         registry.register::<MeshAuto>()?;
+        registry.register::<MeshPreserveVolume>()?;
         registry.register_query::<MeshInfoQuery>()?;
         registry.register_query::<MeshPlanQuery>()?;
         registry.register_query::<MeshDecomposePlanQuery>()?;

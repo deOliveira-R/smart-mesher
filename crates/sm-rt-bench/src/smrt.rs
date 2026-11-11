@@ -434,17 +434,25 @@ pub fn mesh_adapter(mesh: &sm_mesh_api::reference::ReferenceMesh, mode: FlightMo
         },
         str::to_string,
     );
-    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(name).with_region_map(map).on_twin())
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(name).with_region_map(map).on_tets())
 }
 
 /// Mints a feature curve per pair of model faces. The mesh's faces are the region interfaces (no
 /// model topology exists behind the benchmark's tets), so two interfaces meeting along a mesh edge
 /// are one curve by identity; only the identity of the edge matters to the dual's geometry.
-struct PairEdges;
+/// See above.
+#[doc(hidden)]
+pub struct PairEdges;
 
 impl sm_poly::EdgeResolver for PairEdges {
     fn resolve(&self, a: EntityId, b: EntityId, _ends: [sm_mesh_api::Classification; 2]) -> Option<EntityId> {
-        EntityId::new(EntityKind::TopoEdge, (a.serial() << 20) + b.serial())
+        // 20 bits per serial; a larger serial has no unambiguous pairing, so no identity.
+        const LIM: u64 = 1 << 20;
+        let (x, y) = (a.serial(), b.serial());
+        if x >= LIM || y >= LIM {
+            return None;
+        }
+        EntityId::new(EntityKind::TopoEdge, (x << 20) + y)
     }
 }
 
@@ -468,7 +476,7 @@ pub fn poly_twin(tets: &Tets) -> Result<(sm_mesh_api::reference::ReferenceMesh, 
 /// The dual's or the tracker's error.
 pub fn poly_adapter(tets: &Tets) -> Result<TrackerAdapter> {
     let (mesh, _) = poly_twin(tets)?;
-    mesh_adapter(&mesh, FlightMode::Surface, 8, Some("poly-walk"))
+    Ok(mesh_adapter(&mesh, FlightMode::Surface, 8, Some("poly-walk"))?.with_geometry(crate::adapter::Geometry::Polyhedra))
 }
 
 /// The `jump` row (W4-RT-JUMP-ROW): `MeshTracker` over the tets with a majorant partition and
@@ -489,7 +497,7 @@ pub fn jump_adapter(tets: &Tets, leaf_cells: u32) -> Result<TrackerAdapter> {
     let input = BuildInput::Mesh(MeshInput::new(&mesh, &rule, &bnd, &comp));
     let (t, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(bad)?;
     let map = map_by_entity(t.regions());
-    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_twin().counting_fire_work())
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_tets().counting_fire_work())
 }
 
 /// The reference of the `jump` row: the same tets walked cell by cell (no partition), W-fire work
@@ -528,7 +536,7 @@ pub fn walk_adapter(tets: &Tets) -> Result<TrackerAdapter> {
         }
         map[cell.get()] = i as i32;
     }
-    Ok(a.with_cell_map(map).with_mode("walk"))
+    Ok(a.with_cell_map(map).with_mode("walk").with_geometry(crate::adapter::Geometry::SharedTets))
 }
 
 /// The tets as a reference mesh whose volume classes are the regions.
@@ -602,7 +610,11 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
         }
     }
     if let Some(t) = &data.tets {
-        match (flight_adapter(t, FlightMode::Surface, 8), poly_adapter(t)) {
+        // The reference has its own mode (`poly-ref`): `walk` is the mesh_flight row's, and a second
+        // `walk` row on the same cell would be dropped silently by the verdict. `poly-*` modes are
+        // outside the verdict, so the reference is too.
+        let reference = tet_mesh(t).and_then(|m| mesh_adapter(&m, FlightMode::Surface, 8, Some("poly-ref")));
+        match (reference, poly_adapter(t)) {
             (Ok(w), Ok(p)) => {
                 rows.poly.push(Box::new(w));
                 rows.poly.push(Box::new(p));
@@ -624,6 +636,35 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
     }
     rows.notes = notes;
     rows
+}
+
+/// Largest `|d_a - d_b|` of the W-fire distances of two adapters over the rays neither loses, and
+/// the number of rays compared (used to record how close the jump is to the walk, R1 level). Rays
+/// where either distance is not finite are left out of the maximum and counted in the third value,
+/// so a NaN cannot vanish in the fold.
+///
+/// # Errors
+/// The adapters' errors, or [`BenchError::Check`] when the fire outputs differ in length.
+pub fn max_fire_delta(data: &CaseData, a: &mut dyn Adapter, b: &mut dyn Adapter) -> Result<(f64, usize, usize)> {
+    use crate::adapter::{WorkInput, Workload};
+    let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: 1 };
+    let run = |x: &mut dyn Adapter| -> Result<Vec<(f64, i32)>> {
+        x.prepare(Workload::Fire, &w)?;
+        Ok(x.run(Workload::Fire, &w)?.fires)
+    };
+    let (fa, fb) = (run(a)?, run(b)?);
+    if fa.len() != fb.len() {
+        return Err(BenchError::Check(format!("fire outputs have {} and {} rays", fa.len(), fb.len())));
+    }
+    let both: Vec<(f64, f64)> = fa.iter().zip(&fb).filter(|(x, y)| x.1 != -2 && y.1 != -2).map(|(x, y)| (x.0, y.0)).collect();
+    Ok(fire_delta(&both))
+}
+
+/// `(max |a - b|, pairs compared, pairs skipped)` over pairs of distances; a pair with a
+/// non-finite member is skipped and counted instead of being folded.
+pub fn fire_delta(pairs: &[(f64, f64)]) -> (f64, usize, usize) {
+    let finite: Vec<f64> = pairs.iter().filter(|(a, b)| a.is_finite() && b.is_finite()).map(|(a, b)| (a - b).abs()).collect();
+    (finite.iter().copied().fold(0.0, f64::max), finite.len(), pairs.len() - finite.len())
 }
 
 /// The rows' tracker handle, for tests that need the concrete `Tracker`.

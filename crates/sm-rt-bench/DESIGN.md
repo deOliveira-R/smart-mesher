@@ -116,7 +116,12 @@ and meshes, region name for CSG cells), so every row speaks the manifest's ids.
   R1's own bound `1e-12 (1 + d) / max(|d.n|, 1e-6)` needs the exit normal, which the benchmark does not
   have, and `1e-9 diag` is the benchmark's standard. On H1 (reduced, 2000 rays) all fires agree, every fire
   is a jump, and the face tests per fire are 57.9 (walk) and 10.7 (jump). H1's facets are icospheres and its
-  tets are stair-stepped, so a jump row and a DAGMC row on the facets differ by geometry (L3, `geom_error`):
+  tets are stair-stepped, so a jump row and a DAGMC row on the facets differ by geometry (L3, `geom_error`).
+  Rule: the W-fire rows of this group (`walk`, `jump`; `report::is_l3`) are outside the k-of-n verdict and
+  render in their own "L3 rows" table; no cell compares them with a baseline. Measured `max |delta d|`
+  jump against walk on H1 (reduced, 2000 rays, hinted fire): 6.4e-13 cm (diag 346.4 cm), inside R1's
+  `1e-12 (1 + d)` (`tests/smrt.rs::h1_jump_is_within_r1_level_of_the_walk_in_distance`; the CLI writes the
+  figure into the result's observations). The run's `1e-9 diag` tolerance is only the loose bound:
   the same-input comparison against XDG `ray_fire` on the tet model's region boundaries needs the per-region
   volume sets of `smtets_to_moab`'s second step, which is not done (not needed by any acceptance of this row).
 * **`poly-walk`** (L2b): `smrt::poly_twin` dualizes `tet_mesh(tets)` with `sm_poly::dualize`
@@ -126,9 +131,12 @@ and meshes, region name for CSG cells), so every row speaks the manifest's ids.
   and chords equal the tet walk's within `1e-9 diag` (`RunConfig::track_tol` replaces the manifest's chord
   tolerance for this group), chord sums equal the cube chord (`runner::walk_truth`), the dual volume equals
   the tet volume to 1e-12, and the flight tallies agree with the tet `walk` flight at 4 sigma. The mode
-  starts with `poly`, which `report::is_polyhedral` drops from the verdict and renders in its own table
+  starts with `poly`, as does the reference walk of the group (`poly-ref`, its own mode so that the
+  `smrt`/`walk`/`w-flight` row of `mesh_flight` is the only one of that key); `report::is_polyhedral` drops from the verdict and renders in its own table
   ("different mesh, same geometry"). `sm-rt-bench` depends on `sm-poly` (ruling W4-0.7) and on `sm-csgio`
-  (A17; a library dependency, the crate does not depend on `sm-rt-bench`).
+  (A17; a library dependency, the crate does not depend on `sm-rt-bench`). `PairEdges` declines (returns
+  `None`, an ambiguous edge) a face serial of 2^20 or more instead of colliding or overflowing. A deck
+  case (A17) has no facet twin: the competitor trackers are skipped with a note and a partial entry.
 * **W-track** ends at the first entry into the complement, as the truth scene does; sm-rt traces the
   whole line (the work is done, the timing includes it), DAGMC's loop stops at the complement, and the
   `segments` counter counts the segments up to that entry, so `segments_per_track` is comparable.
@@ -370,3 +378,7 @@ in the file itself, never in `result_hash`, in `Output::content_hash` or in the 
 * `smcase.json` embeds the platform tag, so its hash is platform-keyed even for C1-C3 and H1.
   Dropping the tag from the hashed manifest would move every blessed `smcase.json` hash; that
   needs an orchestrator ruling and a re-bless.
+* The row `geometry` field is not in `result_hash` (no hash impact now). It decides L3, so it should
+  be hashed; that moves the blessed hashes. To-do for the Linux bless: add it to the hash and
+  re-bless then. Until then `report` refuses a challenger row with an empty `geometry`
+  (`report::check_geometry`), so a legacy file cannot enter a k-of-n as non-L3.

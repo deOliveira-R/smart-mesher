@@ -267,11 +267,15 @@ fn flag_slot(f: BoundaryFlag) -> Option<usize> {
     }
 }
 
-/// True when the box of a body (vertices and 33 samples per curved edge) meets the interior of
-/// `r` by more than a sliver. A body that only touches the box from outside does not.
+/// True when the box of a body meets the interior of `r` by more than a sliver. The box holds the
+/// vertices and 33 samples per curved edge, enlarged by the largest chord sagitta found, so a
+/// curved straddle shallower than the sample spacing is still seen (it may over-report by up to
+/// that sagitta; the cuts that follow settle it exactly). A body that only touches the box from
+/// outside does not meet it.
 fn meets_interior(topo: &dyn TopoHost, body: EntityId, r: Reserved) -> bool {
     let Some(vol) = volume_of_body(topo, body) else { return true };
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let mut sag = 0.0_f64;
     let mut grow = |p: Point3| {
         for (a, v) in [p.x, p.y, p.z].into_iter().enumerate() {
             lo[a] = lo[a].min(v);
@@ -290,14 +294,22 @@ fn meets_interior(topo: &dyn TopoHost, body: EntityId, r: Reserved) -> bool {
             if let Carrier::Curve(cc) = topo.carrier(e)
                 && let Some(c) = topo.shapes().curve(cc.curve)
             {
-                for k in 0..=32 {
-                    grow(c.eval(cc.range.lo + (cc.range.hi - cc.range.lo) * f64::from(k) / 32.0));
+                // 32 chords; the arc bulges past a chord by at most its sagitta, which for a
+                // circular arc is the distance of the arc midpoint from the chord midpoint.
+                let at = |k: u32| c.eval(cc.range.lo + (cc.range.hi - cc.range.lo) * f64::from(k) / 64.0);
+                let mut prev = at(0);
+                grow(prev);
+                for k in 1..=32 {
+                    let (mid, next) = (at(2 * k - 1), at(2 * k));
+                    grow(next);
+                    sag = sag.max(((mid.x - 0.5 * (prev.x + next.x)).powi(2) + (mid.y - 0.5 * (prev.y + next.y)).powi(2) + (mid.z - 0.5 * (prev.z + next.z)).powi(2)).sqrt());
+                    prev = next;
                 }
             }
         }
     }
     let eps = 1e-9 * (0..3).map(|a| r.1[a] - r.0[a]).fold(0.0_f64, f64::max);
-    (0..3).all(|a| lo[a] < r.1[a] - eps && hi[a] > r.0[a] + eps)
+    (0..3).all(|a| lo[a] - sag < r.1[a] - eps && hi[a] + sag > r.0[a] + eps)
 }
 
 /// Build the B-rep volumes of `placed` inside the open operation of `topo`.
@@ -384,12 +396,13 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
             }
         }
     }
-    // ---- cut the owned pieces by the reserved boxes, so array membership is exact ----
-    // A remainder piece can straddle an array box with its centroid outside; cut by the six box
-    // planes, each part is then wholly in or out and the overlap volume is the part's.
+    // ---- cut the pieces by the reserved boxes, so array membership is exact ----
+    // A remainder piece (owned or not) can straddle an array box with its centroid outside; cut
+    // by the six box planes, each part is then wholly in or out: the overlap volume of an owned
+    // part and the gap volume of an unowned one are the part's.
     if !reserved.is_empty() {
         for (piece, owners) in core::mem::take(&mut done) {
-            if owners.is_empty() || !reserved.iter().any(|r| meets_interior(&*topo, piece.body, *r)) {
+            if !reserved.iter().any(|r| meets_interior(&*topo, piece.body, *r)) {
                 done.push((piece, owners));
                 continue;
             }
@@ -571,4 +584,33 @@ pub(crate) fn contains(placed: &Placed, e: &Expr, p: [f64; 3]) -> bool {
         signs.insert(s, v > 0.0);
     }
     eval(e, &signs) == Tri::T
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_topo_api::{OpId, TopologyEdit};
+
+    /// A unit-radius cylinder piece (z axis) and an array box on its -x side that reaches `depth`
+    /// into the circle. The 33 samples of the edge reach x = -0.999989, 1.1e-5 short of the true
+    /// extreme -1, so a straddle of 5e-6 is invisible to the samples alone.
+    fn meets(depth: f64) -> bool {
+        let mut t = sm_topo::TopoStore::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = brick(&mut t, Point3::new(-2.0, -2.0, -2.0), [4.0, 4.0, 4.0]).unwrap();
+        let def = SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
+        let tool = CutTool::Surface { surface: tool_def(&def).unwrap(), window: None };
+        let r = webcut(&mut t, &[b.body], &tool, &WebcutOptions::default()).unwrap();
+        let inside = r.negative[0];
+        let reserved: Reserved = ([-3.0, -0.5, -0.5], [-1.0 + depth, 0.5, 0.5]);
+        meets_interior(&t, inside, reserved)
+    }
+
+    #[test]
+    fn a_curved_straddle_shallower_than_the_sample_sagitta_is_seen() {
+        assert!(meets(5e-6), "below the sample spacing, within the sagitta margin");
+        assert!(meets(2e-3));
+        // A box clear of the circle by more than the margin (about 3e-3 here) is not met.
+        assert!(!meets(-1e-2));
+    }
 }

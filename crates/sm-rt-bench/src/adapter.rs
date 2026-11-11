@@ -197,6 +197,35 @@ pub struct BuildInfo {
     pub copies: u64,
 }
 
+/// The geometry a row's tracker traces, stamped on every row at the source (a row cannot be
+/// L3 by its mode name alone: [`crate::report::is_l3`] reads this).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Geometry {
+    /// The exact model (analytic surfaces).
+    Exact,
+    /// The facet twin (icospheres), the geometry DAGMC and XDG hold.
+    Facets,
+    /// The case's stair-stepped tet mesh, which the baselines do not hold (level L3).
+    Tets,
+    /// The tet mesh also held by the baseline of the same workload (W-walk): comparable.
+    SharedTets,
+    /// The polyhedral dual of the tets (L2b).
+    Polyhedra,
+}
+
+impl Geometry {
+    /// Name stored in the `geometry` field of a row.
+    pub fn name(self) -> &'static str {
+        match self {
+            Geometry::Exact => "exact",
+            Geometry::Facets => "facets",
+            Geometry::Tets => "tets",
+            Geometry::SharedTets => "shared-tets",
+            Geometry::Polyhedra => "polyhedra",
+        }
+    }
+}
+
 /// A tracker the runner can drive.
 pub trait Adapter {
     /// Tracker name in result files.
@@ -211,6 +240,10 @@ pub trait Adapter {
     /// false for a facet or mesh twin (judged against the first twin adapter).
     fn exact(&self) -> bool {
         true
+    }
+    /// Geometry this adapter traces; the default follows [`Adapter::exact`] (exact or facet twin).
+    fn geometry(&self) -> Geometry {
+        if self.exact() { Geometry::Exact } else { Geometry::Facets }
     }
     /// Build-side numbers.
     fn build_info(&self) -> BuildInfo;
@@ -271,6 +304,7 @@ pub struct TrackerAdapter {
     count_touched: bool,
     touched: Option<u64>,
     twin: bool,
+    geometry: Option<Geometry>,
     /// Record the tracker's work counters of W-fire runs (jump rows).
     fire_work: bool,
 }
@@ -278,7 +312,7 @@ pub struct TrackerAdapter {
 impl TrackerAdapter {
     /// Wrap a tracker under `label`.
     pub fn new(label: impl Into<String>, tracker: Box<dyn Tracker>) -> Self {
-        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), cell_map: Vec::new(), count_touched: false, touched: None, twin: false, fire_work: false }
+        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), cell_map: Vec::new(), count_touched: false, touched: None, twin: false, geometry: None, fire_work: false }
     }
 
     /// Name the traversal mode of this adapter's rows.
@@ -306,6 +340,17 @@ impl TrackerAdapter {
     /// Mark the geometry as a facet or mesh twin (not the exact model).
     pub fn on_twin(mut self) -> Self {
         self.twin = true;
+        self
+    }
+
+    /// Mark the geometry as the stair-stepped tet mesh (level L3 against facet baselines).
+    pub fn on_tets(self) -> Self {
+        self.on_twin().with_geometry(Geometry::Tets)
+    }
+
+    /// Override the geometry stamped on the rows (a twin adapter defaults to [`Geometry::Facets`]).
+    pub fn with_geometry(mut self, g: Geometry) -> Self {
+        self.geometry = Some(g);
         self
     }
 
@@ -727,6 +772,10 @@ impl Adapter for TrackerAdapter {
 
     fn exact(&self) -> bool {
         !self.twin
+    }
+
+    fn geometry(&self) -> Geometry {
+        self.geometry.unwrap_or(if self.twin { Geometry::Facets } else { Geometry::Exact })
     }
 
     fn precision(&self) -> &'static str {

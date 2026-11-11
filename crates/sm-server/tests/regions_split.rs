@@ -321,8 +321,9 @@ fn split_errors_are_typed_and_the_options_are_checked() {
     assert_eq!(kind(export(&mut s, ExportFormat::Gmsh, ring.clone())), "bad-request");
     assert_eq!(kind(export(&mut s, ExportFormat::Dagmc, ring.clone())), "bad-request");
 
-    // `source: model` (DAGMC, no mesh) takes no `regions` either, and so cannot be asked to split
-    // an instanced model: the instance refusal is `unsupported-instances` in both paths.
+    // `source: model` (DAGMC, no mesh) takes no `regions` either. (The instanced-model refusal of
+    // a split is `unsupported-instances`, pinned at the lowering by sm-fem `errors_are_typed`; no
+    // server-level instanced split is exercised here.)
     let r = Request::Export {
         path: None,
         format: Some(ExportFormat::Dagmc),

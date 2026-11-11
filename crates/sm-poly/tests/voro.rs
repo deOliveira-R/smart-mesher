@@ -269,7 +269,25 @@ fn acc1_all_polyhedra_face_count_and_acc4_keep_mode_is_planar_without_hubs() {
     assert_eq!(p.count(MeshEntityKind::Face), 144 + 96);
     let (q, rep) = dual_ref(&f.mesh, &circ().with_all_polyhedra(true), &VertexClassResolver).unwrap();
     assert_eq!(rep.cells, 64);
-    // 240 faces plus one subdivision face per cell
+    // 240 faces plus one subdivision face per hex-shaped cell (8 interior and 8 corner cells)
     assert_eq!(q.count(MeshEntityKind::Face), 256);
     assert!((0..64).all(|c| q.cell_shape(CellIx::new(c)) == CellShape::Polyhedron));
+}
+
+/// A merged cell is no longer the bisector cell of one generator, so agglomeration drops the
+/// generator tags instead of mislabelling the survivors.
+#[test]
+fn generator_tags_are_dropped_when_agglomeration_merges_cells() {
+    let f = meshes::tet_block([3, 3, 3], [1.0; 3]).unwrap();
+    let opts = circ().with_agglomerate(Some(sm_poly::Agglomerate::new(1.5)));
+    let (m, rep) = dual_ref(&f.mesh, &opts, &VertexClassResolver).unwrap();
+    assert!(rep.merges > 0, "the test needs merges");
+    for name in GENERATOR_TAGS {
+        assert!(m.tag(MeshEntityKind::Cell, name).is_none(), "{name} kept despite merges");
+    }
+    // no merge candidates: the tags stay
+    let opts = circ().with_agglomerate(Some(sm_poly::Agglomerate::new(1e-6)));
+    let (m, rep) = dual_ref(&f.mesh, &opts, &VertexClassResolver).unwrap();
+    assert_eq!(rep.merges, 0);
+    assert!(m.tag(MeshEntityKind::Cell, GENERATOR_TAGS[0]).is_some());
 }

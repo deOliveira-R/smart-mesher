@@ -22,6 +22,10 @@ fn runs_threads_and_cold_starts_agree() {
         (fixture("lattice2d", "geometry.xml"), Some(fixture("lattice2d", "materials.xml"))),
         (fixture("lattice_xf", "geometry.xml"), Some(fixture("lattice_xf", "materials.xml"))),
         (pin_lattice(3, 1.26, (0.35, 0.37, 0.42), 2.0, true), Some(mats4)),
+        (fixture("quadric_cyl", "geometry.xml"), Some(fixture("quadric_cyl", "materials.xml"))),
+        (fixture("disconnected", "geometry.xml"), Some(fixture("disconnected", "materials.xml"))),
+        (fixture("placed_z", "geometry.xml"), Some(fixture("placed_z", "materials.xml"))),
+        (fixture("ref_mini3x3_h2", "geometry.xml"), Some(fixture("ref_mini3x3_h2", "materials.xml"))),
     ];
     for (g, m) in &decks {
         let a = state(g, m.as_deref());

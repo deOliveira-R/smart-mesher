@@ -1,0 +1,97 @@
+// W4 enclosed-pin milestone (docs/design/w4/drafts/hexpin.md W4-HEX-PIN-INT, plan.md ruling D4).
+//
+// The W3c enclosed pin (fuel H = 0.8 inside a 1.0 moderator brick, r = 0.4), cut into all-hex
+// pieces with the three steps `mesh.decompose_plan` returns for the moderator (a cylinder cut at
+// the fuel radius, then two planes at the fuel's end faces), imprint and merge: six volumes (three
+// square-annulus slabs, two caps, the fuel). Then `hex_only` (no tet, no `mesh.auto_tet` warning),
+// every circle fixed to n = 16, and `mesh.preserve_volume` on the cylinder faces so the fuel holds
+// pi r^2 h and the moderator (1.26^2 h_b - pi r^2 h) to 1e-12.
+//
+// Same `key value` prints as tools/w4_pin_ogrid.smesh where they apply.
+
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 0.8, radius: 0.4)
+let tl = model.create_cylinder(height: 0.8, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "fuel and moderator"
+
+// The planner's steps for the moderator (the host row), as `mesh.decompose_plan` returns them.
+let plan = mesh.decompose_plan()
+assert len(plan.volumes) == 2, "one row per volume"
+let cut0 = model.webcut_cylinder(targets: mo.volumes, radius: 0.4, axis: [0.0, 0.0, 1.0], center: [0.0, 0.0, 0.0])
+let cut1 = model.webcut_plane(targets: cut0.positive, plane: {origin: [0.0, 0.0, -0.4], normal: [0.0, 0.0, 1.0]})
+let cut2 = model.webcut_plane(targets: cut1.positive, plane: {origin: [0.0, 0.0, 0.4], normal: [0.0, 0.0, 1.0]})
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 6, "three square-annulus slabs, two caps, the fuel"
+let h_cut = session.hash()
+print "h_cut", h_cut
+print "volumes", count(all volumes)
+fem.block_add(1, volumes: fu.volume, name: "fuel")
+fem.block_add(2, volumes: all volumes - fu.volume, name: "moderator")
+
+for e in all edges {
+  if model.measure(entity: e).length > 2.0 {
+    mesh.intervals(targets: e, count: 16)
+  }
+}
+mesh.size(targets: all volumes, size: 0.3)
+let h_model = session.hash()
+print "h_model", h_model
+
+let au = mesh.auto(strategy: "hex_only")
+let h_auto = session.hash()
+print "h_auto", h_auto
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+assert mi.cell_shapes == {Hex: mi.cells}, "all hex"
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "mesh", m.mesh[0]
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
+print "violations", val.total
+let mplan = mesh.plan(mesh: m.mesh[0])
+// The circle interval count n, read from the plan (the circle is the only edge near 2 pi r = 2.513).
+for r in mplan.intervals {
+  let ms = model.measure(entity: r.edge)
+  if ms.length > 2.5 and ms.length < 2.52 {
+    print "n", r.count
+  }
+}
+
+// The linear mesh: the fuel is the inscribed 16-gon prism h (n/2) r^2 sin(2 pi / n).
+let poly = 0.8 * 8.0 * 0.16 * sin(3.141592653589793 / 8.0)
+assert abs(mi.volume_by_owner["Topo" + str(fu.volume)] - poly) < 1e-12 * poly, "linear fuel is the 16-gon prism"
+print "poly_volume", poly
+print "fuel_volume_linear", mi.volume_by_owner["Topo" + str(fu.volume)]
+print "h_linear", session.hash()
+
+// VOLFIT on the cylinder faces (fuel side, and the three slabs' inner faces).
+let cyl = all faces - all faces
+for f in all faces {
+  let bb = model.measure(entity: f).bbox
+  if bb.hi[0] - bb.lo[0] > 0.79 and bb.hi[0] - bb.lo[0] < 0.81 and bb.hi[2] - bb.lo[2] > 0.05 {
+    set cyl = cyl | f
+  }
+}
+assert count(cyl) == 3, "the fuel side and the two caps' sides"
+mesh.preserve_volume(mesh: m.mesh[0], surfaces: cyl)
+let mj = mesh.info(mesh: m.mesh[0])
+let disk = 3.141592653589793 * 0.16 * 0.8
+assert abs(mj.volume_by_owner["Topo" + str(fu.volume)] - disk) < 1e-12 * disk, "fuel holds pi r^2 h"
+assert abs(mj.volume - 1.5876) < 1e-12 * 1.5876, "total unchanged"
+assert mj.cells == mi.cells, "no cell is added or removed"
+print "fuel_volume", mj.volume_by_owner["Topo" + str(fu.volume)]
+print "mesh_volume", mj.volume
+let val2 = mesh.validate(mesh: m.mesh[0])
+assert val2.valid and val2.total == 0, "validate is empty after VOLFIT"
+let h_mesh = session.hash()
+print "h_mesh", h_mesh
+
+session.export("enclosed.smrt")
+session.export("enclosed_foam", format: "openfoam")
+assert session.hash() == h_mesh, "exports leave the state hash unchanged"
+print "head", timeline.head().branch

@@ -1,0 +1,152 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="2" name="Intermediate grid pincell radial 0: Borated Water" material="16" region="11 -12 13 -14" universe="2"/>
+  <cell id="3" name="Intermediate grid pincell radial outer: Zircaloy 4" material="7" region="-11 | 12 | -13 | 14" universe="2"/>
+  <cell id="4" name="Top/Bottom grid pincell radial 0: Borated Water" material="16" region="7 -8 9 -10" universe="3"/>
+  <cell id="5" name="Top/Bottom grid pincell radial outer: Inconel 718" material="6" region="-7 | 8 | -9 | 10" universe="3"/>
+  <cell id="10" name="Grids axial universe axial 0: Borated Water" material="16" region="-1" universe="6"/>
+  <cell id="11" name="Grids axial universe axial 1: Water SPN" material="17" region="-4 1" universe="6"/>
+  <cell id="12" name="Grids axial universe axial 2: Borated Water" material="16" region="-19 4" universe="6"/>
+  <cell id="13" name="Grids axial universe axial 3: Top/Bottom grid pincell" fill="3" region="-20 19" universe="6"/>
+  <cell id="14" name="Grids axial universe axial 4: Borated Water" material="16" region="-21 20" universe="6"/>
+  <cell id="15" name="Grids axial universe axial 5: Intermediate grid pincell" fill="2" region="-22 21" universe="6"/>
+  <cell id="16" name="Grids axial universe axial 6: Borated Water" material="16" region="-23 22" universe="6"/>
+  <cell id="17" name="Grids axial universe axial 7: Intermediate grid pincell" fill="2" region="-24 23" universe="6"/>
+  <cell id="18" name="Grids axial universe axial 8: Borated Water" material="16" region="-25 24" universe="6"/>
+  <cell id="19" name="Grids axial universe axial 9: Intermediate grid pincell" fill="2" region="-26 25" universe="6"/>
+  <cell id="20" name="Grids axial universe axial 10: Borated Water" material="16" region="-27 26" universe="6"/>
+  <cell id="21" name="Grids axial universe axial 11: Intermediate grid pincell" fill="2" region="-28 27" universe="6"/>
+  <cell id="22" name="Grids axial universe axial 12: Borated Water" material="16" region="-29 28" universe="6"/>
+  <cell id="23" name="Grids axial universe axial 13: Intermediate grid pincell" fill="2" region="-30 29" universe="6"/>
+  <cell id="24" name="Grids axial universe axial 14: Borated Water" material="16" region="-31 30" universe="6"/>
+  <cell id="25" name="Grids axial universe axial 15: Intermediate grid pincell" fill="2" region="-32 31" universe="6"/>
+  <cell id="26" name="Grids axial universe axial 16: Borated Water" material="16" region="-33 32" universe="6"/>
+  <cell id="27" name="Grids axial universe axial 17: Top/Bottom grid pincell" fill="3" region="-34 33" universe="6"/>
+  <cell id="28" name="Grids axial universe axial 18: Borated Water" material="16" region="-5 34" universe="6"/>
+  <cell id="29" name="Grids axial universe axial 19: Water SPN" material="17" region="-6 5" universe="6"/>
+  <cell id="30" name="Grids axial universe axial top: Borated Water" material="16" region="6" universe="6"/>
+  <cell id="52" name="Fuel rod active region - 1.6% enr radial 0: Fuel 1.6%" material="10" region="-35" universe="8"/>
+  <cell id="53" name="Fuel rod active region - 1.6% enr radial 1: Helium" material="5" region="35 -36" universe="8"/>
+  <cell id="54" name="Fuel rod active region - 1.6% enr radial outer: Zircaloy 4" material="7" region="36" universe="8"/>
+  <cell id="67" name="Fuel rod plenum radial 0: Inconel 718" material="6" region="-38" universe="13"/>
+  <cell id="68" name="Fuel rod plenum radial 1: Helium" material="5" region="38 -36" universe="13"/>
+  <cell id="69" name="Fuel rod plenum radial outer: Zircaloy 4" material="7" region="36" universe="13"/>
+  <cell id="70" name="Fuel rod - 1.6% enr axial 0: Borated Water" material="16" region="-1" universe="14"/>
+  <cell id="71" name="Fuel rod - 1.6% enr axial 1: SS SPN" material="18" region="-39 1" universe="14"/>
+  <cell id="72" name="Fuel rod - 1.6% enr axial 2: Zircaloy 4" material="7" region="-40 39" universe="14"/>
+  <cell id="73" name="Fuel rod - 1.6% enr axial 3: Fuel rod active region - 1.6% enr" fill="8" region="-41 40" universe="14"/>
+  <cell id="74" name="Fuel rod - 1.6% enr axial 4: Fuel rod plenum" fill="13" region="-42 41" universe="14"/>
+  <cell id="75" name="Fuel rod - 1.6% enr axial 5: Zircaloy 4" material="7" region="-43 42" universe="14"/>
+  <cell id="76" name="Fuel rod - 1.6% enr axial 6: Borated Water" material="16" region="-5 43" universe="14"/>
+  <cell id="77" name="Fuel rod - 1.6% enr axial 7: SS SPN" material="18" region="-6 5" universe="14"/>
+  <cell id="78" name="Fuel rod - 1.6% enr axial top: Borated Water" material="16" region="6" universe="14"/>
+  <cell id="79" name="(Fuel rod - 1.6% enr) wrapped by (Grids axial universe) radial 0: Fuel rod - 1.6% enr" fill="14" region="-37" universe="15"/>
+  <cell id="80" name="(Fuel rod - 1.6% enr) wrapped by (Grids axial universe) radial outer: Grids axial universe" fill="6" region="37" universe="15"/>
+  <cell id="125" name="Empty GT below the dashpot radial 0: Borated Water" material="16" region="-46" universe="24"/>
+  <cell id="126" name="Empty GT below the dashpot radial 1: Zircaloy 4" material="7" region="46 -47" universe="24"/>
+  <cell id="127" name="Empty GT below the dashpot radial outer: Borated Water" material="16" region="47" universe="24"/>
+  <cell id="128" name="Empty GT above the dashpot radial 0: Borated Water" material="16" region="-44" universe="25"/>
+  <cell id="129" name="Empty GT above the dashpot radial outer: Zircaloy 4" material="7" region="44" universe="25"/>
+  <cell id="130" name="Empty Guide Tube axial 0: Borated Water" material="16" region="-1" universe="26"/>
+  <cell id="131" name="Empty Guide Tube axial 1: Water SPN" material="17" region="-48 1" universe="26"/>
+  <cell id="132" name="Empty Guide Tube axial 2: Empty GT below the dashpot" fill="24" region="-49 48" universe="26"/>
+  <cell id="133" name="Empty Guide Tube axial 3: Empty GT above the dashpot" fill="25" region="-50 49" universe="26"/>
+  <cell id="134" name="Empty Guide Tube axial 4: Water SPN" material="17" region="-6 50" universe="26"/>
+  <cell id="135" name="Empty Guide Tube axial top: Borated Water" material="16" region="6" universe="26"/>
+  <cell id="136" name="(Empty Guide Tube) wrapped by (Grids axial universe) radial 0: Empty Guide Tube" fill="26" region="-45" universe="27"/>
+  <cell id="137" name="(Empty Guide Tube) wrapped by (Grids axial universe) radial outer: Grids axial universe" fill="6" region="45" universe="27"/>
+  <cell id="138" name="Empty Guide Tube in Center Position axial 0: Borated Water" material="16" region="-1" universe="28"/>
+  <cell id="139" name="Empty Guide Tube in Center Position axial 1: Water SPN" material="17" region="-48 1" universe="28"/>
+  <cell id="140" name="Empty Guide Tube in Center Position axial 2: Empty GT above the dashpot" fill="25" region="-50 48" universe="28"/>
+  <cell id="141" name="Empty Guide Tube in Center Position axial 3: Water SPN" material="17" region="-6 50" universe="28"/>
+  <cell id="142" name="Empty Guide Tube in Center Position axial top: Borated Water" material="16" region="6" universe="28"/>
+  <cell id="143" name="(Empty Guide Tube in Center Position) wrapped by (Grids axial universe) radial 0: Empty Guide Tube in Center Position" fill="28" region="-45" universe="29"/>
+  <cell id="144" name="(Empty Guide Tube in Center Position) wrapped by (Grids axial universe) radial outer: Grids axial universe" fill="6" region="45" universe="29"/>
+  <cell id="145" name="Instrument tube thimble radial 0: Air TH" material="9" region="-51" universe="30"/>
+  <cell id="146" name="Instrument tube thimble radial outer: Zircaloy 4" material="7" region="51" universe="30"/>
+  <cell id="147" name="Instrument tube thimble support plane radial 0: Air" material="1" region="-51" universe="31"/>
+  <cell id="148" name="Instrument tube thimble support plane radial outer: Zircaloy 4" material="7" region="51" universe="31"/>
+  <cell id="149" name="Instrument tube axial stack axial 0: Instrument tube thimble" fill="30" region="-1" universe="32"/>
+  <cell id="150" name="Instrument tube axial stack axial 1: Instrument tube thimble support plane" fill="31" region="-39 1" universe="32"/>
+  <cell id="151" name="Instrument tube axial stack axial 2: Instrument tube thimble" fill="30" region="-5 39" universe="32"/>
+  <cell id="152" name="Instrument tube axial stack axial 3: Water SPN" material="17" region="-6 5" universe="32"/>
+  <cell id="153" name="Instrument tube axial stack axial top: Borated Water" material="16" region="6" universe="32"/>
+  <cell id="154" name="(Instrument tube axial stack) wrapped by ((Empty Guide Tube in Center Position) wrapped by (Grids axial universe)) radial 0: Instrument tube axial stack" fill="32" region="-52" universe="33"/>
+  <cell id="155" name="(Instrument tube axial stack) wrapped by ((Empty Guide Tube in Center Position) wrapped by (Grids axial universe)) radial outer: (Empty Guide Tube in Center Position) wrapped by (Grids axial universe)" fill="29" region="52" universe="33"/>
+  <cell id="1253" name="root cell" fill="63" region="150 -151 152 -153 154 -155" universe="763"/>
+  <lattice id="63" name="Fuel 1.6% enr instr no BAs">
+    <pitch>1.25984 1.25984</pitch>
+    <dimension>17 17</dimension>
+    <lower_left>-10.70864 -10.70864</lower_left>
+    <universes>
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 15 15 27 15 15 27 15 15 27 15 15 15 15 15 
+15 15 15 27 15 15 15 15 15 15 15 15 15 27 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 27 15 15 27 15 15 27 15 15 27 15 15 27 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 27 15 15 27 15 15 33 15 15 27 15 15 27 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 27 15 15 27 15 15 27 15 15 27 15 15 27 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 27 15 15 15 15 15 15 15 15 15 27 15 15 15 
+15 15 15 15 15 27 15 15 27 15 15 27 15 15 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 
+15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 15 </universes>
+  </lattice>
+  <surface id="1" name="Support plate bottom" type="z-plane" coeffs="20.0"/>
+  <surface id="4" name="Lower nozzle top" type="z-plane" coeffs="35.0"/>
+  <surface id="5" name="Upper nozzle bottom" type="z-plane" coeffs="423.049"/>
+  <surface id="6" name="Upper nozzle top" type="z-plane" coeffs="431.876"/>
+  <surface id="7" name="minimum x" type="x-plane" coeffs="-0.61015"/>
+  <surface id="8" name="maximum x" type="x-plane" coeffs="0.61015"/>
+  <surface id="9" name="minimum y" type="y-plane" coeffs="-0.61015"/>
+  <surface id="10" name="maximum y" type="y-plane" coeffs="0.61015"/>
+  <surface id="11" name="minimum x" type="x-plane" coeffs="-0.61049"/>
+  <surface id="12" name="maximum x" type="x-plane" coeffs="0.61049"/>
+  <surface id="13" name="minimum y" type="y-plane" coeffs="-0.61049"/>
+  <surface id="14" name="maximum y" type="y-plane" coeffs="0.61049"/>
+  <surface id="19" name="Bottom of grid 1" type="z-plane" coeffs="37.1621"/>
+  <surface id="20" name="Top of grid 1" type="z-plane" coeffs="40.52"/>
+  <surface id="21" name="Bottom of grid 2" type="z-plane" coeffs="98.025"/>
+  <surface id="22" name="Top of grid 2" type="z-plane" coeffs="103.74"/>
+  <surface id="23" name="Bottom of grid 3" type="z-plane" coeffs="150.222"/>
+  <surface id="24" name="Top of grid 3" type="z-plane" coeffs="155.937"/>
+  <surface id="25" name="Bottom of grid 4" type="z-plane" coeffs="202.419"/>
+  <surface id="26" name="Top of grid 4" type="z-plane" coeffs="208.134"/>
+  <surface id="27" name="Bottom of grid 5" type="z-plane" coeffs="254.616"/>
+  <surface id="28" name="Top of grid 5" type="z-plane" coeffs="260.331"/>
+  <surface id="29" name="Bottom of grid 6" type="z-plane" coeffs="306.813"/>
+  <surface id="30" name="Top of grid 6" type="z-plane" coeffs="312.528"/>
+  <surface id="31" name="Bottom of grid 7" type="z-plane" coeffs="359.01"/>
+  <surface id="32" name="Top of grid 7" type="z-plane" coeffs="364.725"/>
+  <surface id="33" name="Bottom of grid 8" type="z-plane" coeffs="411.806"/>
+  <surface id="34" name="Top of grid 8" type="z-plane" coeffs="415.164"/>
+  <surface id="35" name="Fuel pellet OR" type="z-cylinder" coeffs="0.0 0.0 0.39218"/>
+  <surface id="36" name="Fuel clad IR" type="z-cylinder" coeffs="0.0 0.0 0.40005"/>
+  <surface id="37" name="Fuel clad OR" type="z-cylinder" coeffs="0.0 0.0 0.4572"/>
+  <surface id="38" name="Fuel rod plenum spring OR" type="z-cylinder" coeffs="0.0 0.0 0.06459"/>
+  <surface id="39" name="Fuel rod bottom" type="z-plane" coeffs="35.0"/>
+  <surface id="40" name="Fuel lower fitting top" type="z-plane" coeffs="36.748"/>
+  <surface id="41" name="Fuel active region top" type="z-plane" coeffs="402.508"/>
+  <surface id="42" name="Fuel plenum top" type="z-plane" coeffs="417.164"/>
+  <surface id="43" name="Fuel upper fitting top" type="z-plane" coeffs="419.704"/>
+  <surface id="44" name="Guide tube IR" type="z-cylinder" coeffs="0.0 0.0 0.56134"/>
+  <surface id="45" name="Guide tube OR" type="z-cylinder" coeffs="0.0 0.0 0.60198"/>
+  <surface id="46" name="Guide tube IR below dashpot" type="z-cylinder" coeffs="0.0 0.0 0.50419"/>
+  <surface id="47" name="Guide tube OR below dashpot" type="z-cylinder" coeffs="0.0 0.0 0.5461"/>
+  <surface id="48" name="Bottom of GT rod" type="z-plane" coeffs="35.0"/>
+  <surface id="49" name="GT Dashpot plane" type="z-plane" coeffs="39.958"/>
+  <surface id="50" name="Top of GT rod" type="z-plane" coeffs="423.049"/>
+  <surface id="51" name="Instrument tube thimble IR" type="z-cylinder" coeffs="0.0 0.0 0.43688"/>
+  <surface id="52" name="Instrument tube thimble OR" type="z-cylinder" coeffs="0.0 0.0 0.48387"/>
+  <surface id="150" name="minimum x" type="x-plane" boundary="reflective" coeffs="-10.70864"/>
+  <surface id="151" name="maximum x" type="x-plane" boundary="reflective" coeffs="10.70864"/>
+  <surface id="152" name="minimum y" type="y-plane" boundary="reflective" coeffs="-10.70864"/>
+  <surface id="153" name="maximum y" type="y-plane" boundary="reflective" coeffs="10.70864"/>
+  <surface id="154" type="z-plane" boundary="vacuum" coeffs="0.0"/>
+  <surface id="155" type="z-plane" boundary="vacuum" coeffs="460.0"/>
+</geometry>

@@ -39,6 +39,9 @@ class MeshOps:
     def intervals(self, *, count: int, firmness: Literal['default', 'soft', 'hard'] | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.intervals`: ask for an interval count on volumes, faces or curves."""
 
+    def preserve_volume(self, *, curves: Sequence[EntityId | str] | None = ..., mesh: EntityId | str, surfaces: Sequence[EntityId | str] | None = ...) -> ApplyResult:
+        """`mesh.preserve_volume`: move the nodes classified on circular edges (`curves`), or on circular cylinder faces (`surfaces`), radially to the equal-area radius, so that the linear mesh of each round region has the exact volume of the cylinder it approximates. Opt-in; recorded in the history and replayed as an op (no strategy is consulted); deterministic; the node count and every id stay."""
+
     def run(self, *, targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.run`: mesh whole volumes, or faces only, with the driver and store the result as one mesh.
         Output `mesh` (one, Mesh): the new mesh"""
@@ -53,7 +56,7 @@ class MeshOps:
         """`mesh.smooth`: smooth the nodes of a mesh in place (the mesh keeps its ids; no id is minted or retired). Boundary nodes stay on their curves and surfaces, vertices never move, and the guard refuses any move that makes an incident cell worse than `min(its ScaledJacobian, guard_floor)` or turns a positive volume non-positive."""
 
     def to_poly(self, *, dual: Literal['barycentric', 'circumcentric'] = ..., keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
-        """`mesh.to_poly`: convert a whole all-tet mesh into a new polyhedral mesh.
+        """`mesh.to_poly`: convert a whole tet mesh into a new polyhedral mesh.
         Output `mesh` (one, Mesh): the new polyhedral mesh"""
 
     def unflag_cells(self, *, mesh: EntityId | str = ..., set: str) -> ApplyResult:

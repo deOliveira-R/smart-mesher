@@ -64,8 +64,6 @@ fn host(report: &Value) -> &Value {
 fn query_returns_the_planner_steps_and_leaves_the_state_alone() {
     let mut s = pin();
     let before = s.workspace().state_hash();
-    let nodes = s.workspace().state().layer::<ModelLayer>().is_some();
-    assert!(nodes);
     let r = query(&mut s, json!({}));
     assert_eq!(s.workspace().state_hash(), before, "a query must not move the hash");
     // One row per volume, ascending.

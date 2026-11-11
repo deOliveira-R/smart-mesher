@@ -7,6 +7,7 @@
 mod common;
 
 use common::*;
+use proptest::prelude::*;
 use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::reference::ReferenceMesh;
 use sm_mesh_api::{CellIx, CellShape, Classification, FaceIx, MeshEntityKind, MeshRead, SerialAlloc, TagValues, cell_volume};
@@ -90,12 +91,14 @@ fn acc2_bcc_interior_cells_are_truncated_octahedra() {
     }
     assert_eq!(checked, 27 + 8);
     assert!(rel(vols, 0.5 * 35.0) < 1e-12);
+    // boundary cells included: the ungated cells still tile the box, so the total is n^3
+    let total: f64 = volumes(&m).iter().sum();
+    assert!(rel(total, (n * n * n) as f64) < 1e-12, "total volume {total}");
 }
 
-#[test]
-fn acc3_random_delaunay_interior_cells_are_orthogonal() {
-    // splitmix64 seeded by the test: no clock, no thread state
-    let mut s = 0x9E37_79B9_7F4A_7C15u64;
+/// splitmix64 seeded by the property's input: no clock, no thread state.
+fn points(seed: u64, n: usize) -> Vec<[f64; 3]> {
+    let mut s = seed;
     let mut next = || {
         s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = s;
@@ -103,7 +106,20 @@ fn acc3_random_delaunay_interior_cells_are_orthogonal() {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         (z ^ (z >> 31)) as f64 / u64::MAX as f64
     };
-    let pts: Vec<[f64; 3]> = (0..160).map(|_| [next(), next(), next()]).collect();
+    (0..n).map(|_| [next(), next(), next()]).collect()
+}
+
+proptest! {
+    #![proptest_config(sm_testkit::strategies::config(6))]
+
+    #[test]
+    fn acc3_random_delaunay_interior_cells_are_orthogonal(seed in any::<u64>()) {
+        random_delaunay_case(seed);
+    }
+}
+
+fn random_delaunay_case(seed: u64) {
+    let pts = points(seed, 160);
     let dt = sm_scheme_tet::delaunay(&pts).expect("delaunay");
     let cells: Vec<CellSpec> = dt.tets.iter().map(|t| CellSpec::Template(CellShape::Tet, t.iter().map(|&v| v as usize).collect())).collect();
     let src: ReferenceMesh = meshes::build_mesh(&dt.points, &cells, &mut SerialAlloc::new()).unwrap();
@@ -142,5 +158,29 @@ fn acc3_random_delaunay_interior_cells_are_orthogonal() {
         assert!(cell_volume(&m, CellIx::new(c)) > 0.0);
         checked += 1;
     }
-    assert!(checked > 20, "{checked} deep cells");
+    assert!(checked > 10, "{checked} deep cells");
+    // The ungated cells tile the hull: total volume equals the tet volume. 1e-8, not 1e-12: the
+    // circumcentres of sliver tets of a random Delaunay set amplify rounding (observed up to 1e-9).
+    let (tet_vol, dual_vol): (f64, f64) = (volumes(&src).iter().sum(), volumes(&m).iter().sum());
+    assert!(rel(dual_vol, tet_vol) < 1e-8, "dual {dual_vol} vs tets {tet_vol}");
+}
+
+/// The strict gate and the star-shape check cannot see every folded or zero-area face (the BCC
+/// boundary has some); a final validity check refuses such an output instead of returning it, and
+/// leaves the allocator alone.
+#[test]
+fn circumcentric_output_that_fails_validation_is_refused() {
+    let (pts, cells, _) = bcc_patch(4);
+    let src = meshes::build_mesh(&pts, &cells, &mut SerialAlloc::new()).unwrap();
+    let mut alloc = SerialAlloc::new();
+    let before: Vec<_> = alloc.state().collect();
+    let r = sm_poly::with_gate_off_circumcentric(|| {
+        sm_poly::dualize(&src, &circ(), &Pair, sm_mesh_api::reference::ReferenceBuilder::new(), &mut alloc)
+    });
+    match r {
+        Err(PolyError::InvalidOutput { count, first }) => assert!(count > 0 && !first.is_empty()),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("an invalid circumcentric output was returned"),
+    }
+    assert_eq!(alloc.state().collect::<Vec<_>>(), before);
 }

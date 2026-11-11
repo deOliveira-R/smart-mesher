@@ -40,17 +40,19 @@ One worker per row. Rows that share a crate run one after the other, in the orde
 | W4-DAGMC-MODEL | `sm-server`, `sm-meshio/src/dagmc` | a1 | M/L | `crates/sm-server/`, `crates/sm-meshio/src/dagmc/` |
 | W4-REFCORPUS | tools + doc (new) | a1 | M | `tools/refcorpus/` (new), `docs/design/w4/refcorpus.md` (new) (explicit permission) |
 | W4-A1-TIDY | tools + `sm-exodus` + `sm-decomp` | a2 | S | `tools/refcorpus/`, `crates/sm-exodus/`, `crates/sm-decomp/`, `tools/ci.sh` (refcorpus checks only, explicit) |
-| W4-POLY-VORO | `sm-poly` | a2 | L | `crates/sm-poly/` (and the `.smsh` `gc_*` fill in `crates/sm-meshio/src/smsh/` if missing, explicit permission) |
+| W4-POLY-VORO | `sm-poly` | a2 | L | `crates/sm-poly/` (and the `.smsh` `gc_*` fill in `crates/sm-meshio/src/smsh/` if missing, explicit permission); ratified at a2 combine: also `crates/sm-quality/src/convexity.rs` (face planes from stored loop order plus a side sign, matching sm-rt's arithmetic; census unmoved) and `crates/sm-meshio/tests/common/mod.rs` |
 | W4-HEX-QUERY | `sm-mesher` | a2 | S | `crates/sm-mesher/` |
 | W4-HEX-OGRID-S | `sm-scheme-ogrid` | a2 | M | `crates/sm-scheme-ogrid/` |
 | W4-CSG-CORE | `sm-csgbrep` | a2 | L | `crates/sm-csgbrep/` |
 | W4-RT-ROWS | `sm-rt-bench` | a2 | M | `crates/sm-rt-bench/` |
 | W4-RT-CELLINDEX | `sm-rt` | a2 | L | `crates/sm-rt/` |
-| W4-REGIONS-SPLIT | `sm-model`, `sm-fem`, `sm-server` (files) | a2 | M/L | `crates/sm-model/` (new `src/region.rs`, the `lattice` key in `src/copy.rs`), `crates/sm-fem/src/lower.rs`, new `crates/sm-fem/src/region.rs`, `crates/sm-server/src/mesh_export.rs`, one section of `crates/sm-meshio/SMSH_FORMAT.md` (explicit) |
+| W4-REGIONS-SPLIT | `sm-model`, `sm-fem`, `sm-server` (files) | a2 | M/L | `crates/sm-model/` (new `src/region.rs`, the `lattice` key in `src/copy.rs`), `crates/sm-fem/src/lower.rs`, new `crates/sm-fem/src/region.rs`, `crates/sm-server/src/mesh_export.rs` (ratified at a2 combine: also `crates/sm-server/src/host.rs`, so `smsh` takes `options`), one section of `crates/sm-meshio/SMSH_FORMAT.md` (explicit) |
 | W4-HEX-PIN-INT | tests + tools (new files) | a3 | M | `crates/sm-cli/tests/milestone_w4_pin.rs`, `tools/w4_pin_ogrid.smesh`, `tools/w4_pin_enclosed_hex.smesh` (explicit permission) |
 | W4-MESHER-LISTS | `sm-mesher` | a3 | S/M | `crates/sm-mesher/`; the D5 re-bless lines of `crates/sm-cli/tests/milestone_w3c_pin.rs` (explicit, in the one D5 commit) |
 | W4-CSG-CHECK, then W4-CSG-ORACLE | `sm-csgbrep` (+ fixtures) | a3 | M + M | `crates/sm-csgbrep/`; ORACLE also `crates/sm-csgio/tests/fixtures/openmc/` (explicit permission) |
 | W4-POLY-MIXED | `sm-poly` | a3 | M | `crates/sm-poly/` |
+| W4-A2-RT | `sm-rt` | a3 | S/M | `crates/sm-rt/` |
+| W4-A2-RTBENCH | `sm-rt-bench` | a3 | S | `crates/sm-rt-bench/` |
 | W4-BENCH-X86 | orchestrator worker | after a2 | S/M | `tools/bench/` (new), `docs/design/w4/bench-x86.md` (new) |
 | W4-BOOL-TOOLS | `sm-boolean` | b1 | M/L | `crates/sm-boolean/` |
 | W4-BOOL-HEAL-A | `sm-boolean` | b2 | S + M | `crates/sm-boolean/` |
@@ -370,6 +372,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Owner:** `crates/sm-mesher/`; in the one D5 commit, also the re-bless lines named below (explicit permission).
 - **Scope:** (1) `ogrid` into `hex_only`'s surface list (`drafts/hexpin.md` D3). (2) Ruling D5: `ogrid` into `default`, as **one** commit that re-blesses exactly the R1 list of `drafts/hexpin.md` (`tools/platform/expected.txt:54-63`, `milestone_w3c_pin.rs:342-343`, `auto_select.rs:296`, the `w3c_pin_leftout` comparison) and lists every moved line in its message, with the census (`tools/census/census.sh --compare docs/design/w4/census-base.txt`) proving that nothing else moved; W2, W3a and W3b hashes stay; the orchestrator updates `expected.txt`. (3) Ruling D4: `drafts/hexpin.md` §W4-HEX-VOLFIT (`mesh.preserve_volume`, opt-in; plan delta: it tests on the W3c through pin and does not wait for PIN-INT). Plan delta (ruling D9): VOLFIT moves every selected circle to its own equal-area radius, so concentric ring cuts and sector cuts from W4-REGIONS-CUT keep each region's volume exact (`drafts/regions.md` R4).
 - **Acceptance:** `drafts/hexpin.md` §W4-HEX-STRAT acceptance 2 restated (`hex_only` = `default` except disk/annulus faces); §W4-HEX-VOLFIT acceptance; plus a pin subdivided into 3 equal-area rings x 4 sectors with `n = 16` on every circle: after VOLFIT every region's mesh volume is `pi r^2 h / 12` to 1e-12 relative; the census diff equals exactly the D5 list.
+- **Carries (a2 review):** the W4-HEX-QUERY documentation items (`mesh.decompose_plan` docs; see `a2-followups.json` key `W4-HEX-QUERY`).
 - **Gates:** after OGRID-S and QUERY merge; item (3)'s ring check after REGIONS-CUT.
 - **Hash impact:** exactly the D5 list (signed off by the user in ruling D5); nothing else.
 - **Plan delta (a1 review):** one optional W4-HEX-STRAT leftover (the rest was done by HEX-STRAT-FIX, ba231e9): cache the last owner and its running sum per chunk in `volume_by_owner` (not a hot path).
@@ -377,23 +380,38 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 ### W4-HEX-PIN-INT. tests and scripts: the W4 pin milestone
 - **Owner:** `crates/sm-cli/tests/milestone_w4_pin.rs`, `tools/w4_pin_ogrid.smesh`, `tools/w4_pin_enclosed_hex.smesh` (explicit permission for these new `tools/` files).
 - **Scope / acceptance:** `drafts/hexpin.md` §W4-HEX-PIN-INT acceptance 1-5. Plan delta (ruling D4): the scripts run VOLFIT, and the fuel volume per pin is `pi r^2 h` to 1e-12 relative (moderator `(1.26^2 - pi r^2) h`); a second assertion on the same mesh without VOLFIT checks the polygon value `h (n/2) r^2 sin(2 pi / n)`. Pinning in `expected.txt` is done by INT.
+- **Carries (a2 review):** the wire-level `mesh.decompose_plan` equality check (CLI, MCP and Python return the same plan as the server) from W4-HEX-QUERY.
 - **Gates:** after MESHER-LISTS.
 - **Hash impact:** new files only.
 
 ### W4-CSG-CHECK, then W4-CSG-ORACLE. `sm-csgbrep` (+ OpenMC fixtures)
 - **Owner:** `crates/sm-csgbrep/`; ORACLE also `crates/sm-csgio/tests/fixtures/openmc/` (explicit permission; HYGIENE-CSGIO rides along).
 - **Scope / acceptance:** `drafts/csgbrep.md` §CSGBREP-CHECK (sphere-lens row waits for W4-BOOL-TOOLS; the planar rows run now) and §CSGBREP-ORACLE. Plan delta: ORACLE's polyhedral row meshes the deck with `mesh.auto {strategy: "tet"}` (STRAT, a1), and with POLY-MIXED merged it also runs on the hex mesh. Plan delta (ruling D8): ORACLE adds the W4-REFCORPUS rectangular decks (pin, 3x3, 17x17 assembly, BEAVRS assembly) as fixtures (decks are small text; the committed `oracle.json` is generated at 600 points by `gen.py`). Plan delta (ruling D9): for the lattice decks, the lattice index of every oracle point from OpenMC's `find_cell` path equals the region tag of the B-rep volume that contains it.
+- **Carries (a2 review):** the W4-CSG-CORE limits on the sagitta bounding box and on the unowned-remainder cut.
 - **Gates:** after CORE; the REFCORPUS decks after W4-REFCORPUS.
 - **Hash impact:** new fixtures only; existing `oracle.json` files unchanged.
 
+- **Plan delta (a3 review), open items:** the 1e-3 gap and 1e-4 sliver rows of CSG-CHECK are not met (kernel limit, routed to W4-BOOL-TOOLS). ORACLE's polyhedral row ran on the tet mesh only; the hex-mesh run (POLY-MIXED is merged) and the lattice2d fixture (trimesh fails with 'points coincide' on its outer ring; `mesh.scheme(sweep)` fails on `quadric_cyl` with 'source and target share a vertex') go to a mesher follow-up. The placed-surface tolerance dedup in `deck.rs` is O(n^2) and first-match: bucket it before core-size decks (about 1e5 surfaces) land.
 ### W4-POLY-MIXED. `sm-poly`: `mesh.to_poly` on mixed meshes (ruling D1)
 - **Owner:** `crates/sm-poly/`.
 - **Scope:** `drafts/meshops.md` X-1: dualize the tet region, keep non-tet cells (hexes, wedges, pyramids) as polyhedra, cut each interface triangle into its dual sub-faces. Plan delta: this supersedes `drafts/poly.md`'s placement of POLY-MIXED in W5+; the transition rule needed is exactly this sub-face cut, not a general conformize.
 - **Acceptance (plan):** (1) a W3c B6 `{Tet, Wedge}` mesh and a hex pin next to a tet moderator dualize; every cell passes `validate_geometry`; the volume sum equals the source to 1e-12; interface faces are shared. (2) An all-tet input gives today's output byte for byte (state hash pinned before the change). (3) Determinism. (4) The `.smsh` export of a mixed result fills `gc_*` (ruling D2).
+- **Carries (a2 review):** the open W4-POLY-VORO items (acceptance 2 and 3 totals, a final validity check on circumcentric output, agglomerate plus generator tags).
 - **Gates:** after VORO (same crate).
 - **Hash impact:** none on existing hashes (all-tet path unchanged).
 
+- **Plan delta (a3 review):** acceptance 1's hex pin next to a tet moderator cannot be built by `mesh.run` today (`mesh.auto_tet` turns the fuel into tets too); the synthetic fixtures stand in, recorded in `crates/sm-poly/DESIGN.md`. A positive real-mesh test (W3c B6 `TWO_BRICKS_HARD_TET` through `mesh.auto` then `mesh.to_poly`: {Tet 160, Wedge 32} -> 90 polyhedra, volume 16, 0 violations) goes to the W4 INT tests (sm-server or sm-cli).
 #### After W4a's RT rows and cell index (ruling D6)
+
+### W4-A2-RT. `sm-rt`: cell-index follow-ups (a2 review)
+- **Owner:** `crates/sm-rt/`.
+- **Scope:** `a2-followups.json` key `W4-RT-CELLINDEX` items 1-6: `DESIGN.md` Cell index fixes (the stray `);.`, P2 is `pin_assembly(3)`: 81 pins, 162 cells, 324 surfaces; the stale line 597 now points to the Cell index section, 64-cell threshold) and the recorded P2 reduced and full counters; an ignored or release-only acceptance-4 test at P2 full (n = 17); `memory_bytes` counts the index; a total listed-cells budget in `CellIndex::split`; torus events (either `push_hits` with `max_dist` and a `t <= t_exit` filter, or a torus model in the cellindex ray test). Item 7 (`on_face_any`, `enter_from_outside`, `Wrap`, `locate_candidates`) is W4-RT-HEX's.
+- **Gates:** after RT-CELLINDEX. **Hash impact:** none; any move of `flat_golden` or W3b `h_*` stops the task.
+
+### W4-A2-RTBENCH. `sm-rt-bench`: bench follow-ups (a2 review)
+- **Owner:** `crates/sm-rt-bench/`.
+- **Scope:** `a2-followups.json` key `W4-RT-ROWS`: the L3 labelling or removal of the group-reference verdict cells, the duplicate H1 `w-flight` row, the measured jump-vs-walk max |delta d| recorded, `PairEdges` serial overflow, A17 competitor skip, and the uncompiled `xdg_driver.cpp` change (compiled first by W4-BENCH-X86).
+- **Gates:** after RT-ROWS. **Hash impact:** none.
 
 ### W4-BENCH-X86. orchestrator worker: the x86_64 benchmark script
 - **Owner:** `tools/bench/` (new), `docs/design/w4/bench-x86.md` (new).
@@ -411,6 +429,8 @@ W4-0b (ACR-LEVELMAP, ACR-V1, ACR-V3) lands first.
 - **BOOL-HEAL-A scope / acceptance:** `drafts/vtopo.md` §T0 REGULARIZE-OP and §T3 VTOPO-DETECT (`model.heal_check`), acceptance 1-6. Plan delta (ruling D8): thresholds are tuned on the W4-REFCORPUS dirty STEP files, and for each one the codes `model.heal_check` returns equal the manifest's `expected` codes.
 - **Hash impact:** none on existing hashes.
 - **Plan delta (a1 review):** find the cause of the REGIONS-CUT kernel finding: `webcut_cylinder` / `subtract` fail with `result volume invalid` for a 0.475-radius cylinder cut at 0.418 or 0.476 with the default tool frame, and turning the frame's x reference by 1 rad (SEAM_TURN) avoids it. A coincidence between the tool cylinder's seam and the target's faces is the first suspect. The fix or a documented limit is part of the acceptance, with a test at both cut positions. Also: `subdivide::guard` copies the private `ops::guard_volumes`; make that `pub(crate)` and drop the copy (no behaviour change).
+
+- **Plan delta (a3 review):** two more kernel limits for the same investigation. (1) A plane webcut of a 10-cube fails with `ResultInvalid{rule: "webcut"}` within 1e-3 relative of a face (x = 0.01, 0.001, 9.99; 0.02 works); W4-CSG-CHECK's 1e-3 gap and 1e-4 sliver rows stay `#[ignore]`d and unmet until this is fixed, then the CSG worker un-ignores them. (2) The tall W4-REFCORPUS PWR pin decks are refused by the kernel (W4-CSG-ORACLE pins them as typed refusals). Also: `sm_boolean::locate_point` gives a false `In` for thin annuli.
 
 ### W4-VTOPO-OPS. `sm-model`: virtual-topology ops on the layer's overlay
 - **Scope / acceptance:** `drafts/vtopo.md` §T1 VTOPO-OPS, acceptance 1-6. **Gates:** after ACR-V1, ACR-V3, and after W4-REGIONS-SPLIT (same crate). **Hash impact:** none on existing.
@@ -441,6 +461,8 @@ W4-0b (ACR-LEVELMAP, ACR-V1, ACR-V3) lands first.
 - **Acceptance:** (1) for both kinds, chords along the three lattice directions and along 1 000 seeded random directions cross elements at the analytic distances (hexagon of flat-to-flat pitch `p`) to 1e-12; (2) OpenMC oracle (C7): a test fixture generated with OpenMC 0.16.0 (`gen_hex.py` in `crates/sm-rt/tests/fixtures/openmc_hex/`, committed with its `oracle.json`) for a 3-ring hex lattice of pins in OpenMC orientation `x` and in orientation `y`; at 600 seeded points (5e-3 nudge as in `gen.py`) the element index and the region from the sm-rt world equal OpenMC's `find_cell` after the documented index map from OpenMC's (ring, position) or axial indices to `(q, r)`; the map and which OpenMC orientation equals which `LatticeKind` are written in `crates/sm-rt/DESIGN.md`; (3) a vertex-tie rule (three elements meet) is documented and tested; (4) `flat_golden`, W3b `h_*` and every existing world hash unchanged; (5) determinism.
 - **Gates:** after W4-RT-CELLINDEX (same crate).
 - **Hash impact:** none on existing hashes (hex worlds were refused before).
+- **Plan delta (a2 review):** RT-HEX also takes the RT-CELLINDEX leftovers that need hex-aware code: `on_face_any` (still O(surfaces); accepted and documented in a2), `enter_from_outside` and `Wrap`, and the `locate_candidates` hot spot: in P2 full it is about 977 candidates per segment, because the shared top and bottom z-planes' surface-to-cells CSR lists every cell in `across`; give those planes a per-tile list or skip them in the CSR.
+
 
 ### 4.3 W4c: last sub-wave (a task not started when W4-INT begins moves to W5 without replanning)
 
@@ -484,11 +506,12 @@ W4-0: 0.1 census ∥ 0.2 skeletons ∥ 0.3 sm-rt-api ACRs ∥ 0.4 CSGBRIEF ∥ 0
  │      REGIONS-SPLIT (REGIONS-CUT, DAGMC-MODEL, LIBFN) ; A1-TIDY (REFCORPUS, EXO-VERIFY, HEX-DECOMP)
  ├─ a3: MESHER-LISTS (OGRID-S, QUERY; D4, D5; ring check after REGIONS-CUT) → HEX-PIN-INT
  │      CSG-CHECK → CSG-ORACLE (CORE; STRAT; REFCORPUS) ; POLY-MIXED (VORO)
+ │      A2-RT (RT-CELLINDEX) ; A2-RTBENCH (RT-ROWS, RT-CELLINDEX)
  ├─ BENCH-X86 (RT-ROWS, RT-CELLINDEX)
  ├─ W4-0b: ACR-LEVELMAP, ACR-V1, ACR-V3
  ├─ b:  BOOL-TOOLS → BOOL-HEAL-A (REFCORPUS) ; VTOPO-OPS (V1, V3, REGIONS-SPLIT) ; MOD-REFINE-U (LEVELMAP)
  │      POLY-AGG (LEVELMAP, a3 sm-poly) ; POLY-SCHEME → SIZE-IIA-OP ; SIZE-IIA ; EXPORT-SELECT (REGIONS-SPLIT)
- │      CSG-CLI (CSG-CHECK) ; RT-HEX (RT-CELLINDEX)
+ │      CSG-CLI (CSG-CHECK) ; RT-HEX (RT-CELLINDEX, A2-RT)
  ├─ W4-0c: ACR-V2a, ACR-EXPFMT, ACR-CSG-HEXIR
  ├─ c:  SIZE-CURV → VTOPO-MESH (VTOPO-OPS, V2a) ; EXPORT-FLUENT → EXPORT-CGNS → EXPORT-ABAQUS
  │      CSG-HEX (CSG-ORACLE, HEXIR, RT-HEX) ; HEX-MSWEEP ; HEX-PYR (spike) ; MOD-HTET → MOD-REFINE-L ; HEAL-TOL → STEP-REPAIR

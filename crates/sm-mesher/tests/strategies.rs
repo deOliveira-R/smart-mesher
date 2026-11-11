@@ -293,8 +293,11 @@ fn tet_meshes_a_real_brick_with_all_tets_and_the_exact_volume() {
 #[test]
 fn strategy_lists_are_as_documented() {
     let h = AutoLists::hex_only();
-    assert_eq!(h.surface, ["map", "submap", "pave"]);
+    assert_eq!(h.surface, ["map", "ogrid", "submap", "pave"]);
     assert_eq!(h.volume, ["map", "sweep"]);
+    let d = AutoLists::standard();
+    assert_eq!(d.surface, ["map", "ogrid", "submap", "pave", "trimesh"]);
+    assert_eq!(d.volume, ["map", "sweep", "tetmesh"]);
     let t = AutoLists::tet();
     assert_eq!(
         (t.surface, t.volume),

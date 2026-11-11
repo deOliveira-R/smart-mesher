@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" fill="5" region="6 -7 8 -9 10 -11" translation="1.0 0.5 0.0" rotation="0 0 35" universe="0"/>
+  <cell id="101" material="1" region="1 -2 3 -4" universe="5"/>
+  <cell id="102" material="2" region="-5" universe="5"/>
+  <cell id="103" material="3" region="(-1 | 2 | -3 | 4) 5" universe="5"/>
+  <surface id="1" type="x-plane" coeffs="0.5"/>
+  <surface id="2" type="x-plane" coeffs="1.5"/>
+  <surface id="3" type="y-plane" coeffs="0.2"/>
+  <surface id="4" type="y-plane" coeffs="0.7"/>
+  <surface id="5" type="z-cylinder" coeffs="-1.0 1.2 0.4"/>
+  <surface id="6" type="x-plane" boundary="vacuum" coeffs="-3.0"/>
+  <surface id="7" type="x-plane" boundary="vacuum" coeffs="5.0"/>
+  <surface id="8" type="y-plane" boundary="vacuum" coeffs="-3.0"/>
+  <surface id="9" type="y-plane" boundary="vacuum" coeffs="5.0"/>
+  <surface id="10" type="z-plane" boundary="vacuum" coeffs="-1.0"/>
+  <surface id="11" type="z-plane" boundary="vacuum" coeffs="1.0"/>
+</geometry>

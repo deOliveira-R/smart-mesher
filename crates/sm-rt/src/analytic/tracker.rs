@@ -221,7 +221,7 @@ impl AnalyticTracker {
         info.tol = opts.tol;
         info.max_events = opts.max_events;
         info.key = Some(key);
-        info.memory_bytes = ns * core::mem::size_of::<super::kernel::Surf>() + leaf.n_cells() * 64;
+        info.memory_bytes = ns * core::mem::size_of::<super::kernel::Surf>() + leaf.n_cells() * 64 + leaf.index.as_ref().map_or(0, super::cellindex::CellIndex::bytes);
         let wrap = actions.iter().flatten().any(|a| matches!(a, FaceAction::Wrap { .. }));
         let caps = if wrap { TrackerCaps::ANALYTIC.union(TrackerCaps::PERIODIC) } else { TrackerCaps::ANALYTIC };
         let t = Self {
@@ -294,13 +294,21 @@ impl AnalyticTracker {
     /// paths, which are the oracle; `0` forces the index). Results do not depend on it.
     #[must_use]
     pub fn with_index_threshold(mut self, min_cells: usize) -> Self {
+        let bytes = |t: &Self| t.leaf.index.as_ref().map_or(0, super::cellindex::CellIndex::bytes);
+        let before = bytes(&self);
         self.leaf.set_index_threshold(min_cells);
+        self.info.memory_bytes = self.info.memory_bytes - before + bytes(&self);
         self
     }
 
     /// Number of tiles of the cell index, `None` when the leaf has none.
     pub fn index_tiles(&self) -> Option<usize> {
         self.leaf.index.as_ref().map(super::cellindex::CellIndex::n_tiles)
+    }
+
+    /// Total cells listed over the tiles of the cell index (at most 16 times the cell count).
+    pub fn index_listed_cells(&self) -> Option<usize> {
+        self.leaf.index.as_ref().map(super::cellindex::CellIndex::listed_cells)
     }
 
     /// Hash of the cell index (node order and tile lists), `None` when the leaf has none.
@@ -526,9 +534,11 @@ impl AnalyticTracker {
                 ix.walk(o, d, t_box.min(max_dist), |tile, t_exit| {
                     sc.hits.clear();
                     for &s in ix.tile_surfs(tile) {
-                        self.push_hits(s, o, d, t_exit, entry, sc);
+                        // Roots up to `max_dist` like the oracle path (a torus quartic is
+                        // bracketed by its `t_max`), then cut to the tile.
+                        self.push_hits(s, o, d, max_dist, entry, sc);
                     }
-                    sc.hits.retain(|h| h.0 > after);
+                    sc.hits.retain(|h| h.0 > after && h.0 <= t_exit);
                     sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
                     after = t_exit;
                     event = self.first_event(cur_cell, comp, t_box, o, d, sc);

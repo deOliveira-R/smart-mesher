@@ -285,15 +285,17 @@ fn b4_tetrahedron_falls_to_tetmesh_with_a_warning() {
 // ---- B5: plate with a hole --------------------------------------------------------------------------
 
 /// A plate with a through hole meshes all-hex through `mesh.auto` (W3c-CYL-SCHEMES: the sweep strip check
-/// picks the annulus pair). Volume is the 12-sided polygon, 16 - 3 = 13, and within 1.1 percent of 16 - pi.
+/// picks the annulus pair). Ruling D5 (`ogrid` in `default`, with layers and score following the size): the annulus is an
+/// O-grid with 20 circle nodes and 3 radial layers, so the volume is 16 minus the 20-gon (10 sin 18 degrees) and
+/// within 0.5 percent of 16 - pi (the 12-sided pave polygon was 13, 1.1 percent).
 #[test]
 fn b5_plate_with_a_hole_meshes_all_hex() {
     let (mut s, run) = run_fixture(PLATE, RUN);
     let i = info(&mut s);
     let got = i["volume"].as_f64().expect("volume");
-    assert!((got - 13.0).abs() < 1e-9, "polygon volume {got}");
-    assert!((got - (16.0 - std::f64::consts::PI)).abs() / (16.0 - std::f64::consts::PI) < 0.012, "{got}");
-    assert_eq!(i["cell_shapes"], json!({"Hex": 154}), "observed on the merged code: {i}");
+    assert!((got - (16.0 - 10.0 * (std::f64::consts::PI / 10.0).sin())).abs() < 1e-9, "O-grid polygon volume {got}");
+    assert!((got - (16.0 - std::f64::consts::PI)).abs() / (16.0 - std::f64::consts::PI) < 0.005, "{got}");
+    assert_eq!(i["cell_shapes"], json!({"Hex": 120}), "observed on the merged code: {i}");
     assert!(valid(&mut s));
     assert!(auto_tet(&run).is_empty(), "no tet fallback warning");
 
@@ -307,6 +309,33 @@ fn b5_plate_with_a_hole_meshes_all_hex() {
     assert!(valid(&mut t));
     assert_eq!(i["cell_shapes"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["Tet".to_owned()]), "{i}");
     assert!(i["rejections"].as_u64().is_some_and(|r| r <= 2), "{i}");
+}
+
+/// Two plate cells side by side with holes of different radius share a wall edge: the ogrid side rows
+/// of the two faces must not make the interval solve infeasible (a3 review, `mesh.auto failed: infeasible`).
+#[test]
+fn two_plate_cells_with_different_holes_mesh_under_default() {
+    for r2 in ["0.6", "0.25", "0.8"] {
+        let mut s = server();
+        let text = format!(
+            "let a = model.create_brick(x: 4.0, y: 4.0, z: 1.0)\n\
+             let t = model.create_cylinder(height: 3.0, radius: 1.0)\n\
+             let r1 = model.subtract(targets: a.body, tools: t.body)\n\
+             let b = model.create_brick(x: 4.0, y: 4.0, z: 1.0, center: [4.0, 0.0, 0.0])\n\
+             let u = model.create_cylinder(height: 3.0, radius: {r2}, center: [4.0, 0.0, 0.0])\n\
+             let r2 = model.subtract(targets: b.body, tools: u.body)\n\
+             model.imprint(bodies: all bodies)\nmodel.merge()\n\
+             mesh.size(targets: all volumes, size: 0.3)\nmesh.auto(strategy: \"default\")\n\
+             let m = mesh.run(targets: all volumes)\n"
+        );
+        ok(&mut s, &text);
+        let i = info(&mut s);
+        assert!(i["cells"].as_u64().is_some_and(|c| c > 0), "r2 = {r2}: {i}");
+        assert!(valid(&mut s), "r2 = {r2}");
+        let want = 32.0 - std::f64::consts::PI * (1.0 + r2.parse::<f64>().expect("radius").powi(2));
+        let got = i["volume"].as_f64().expect("volume");
+        assert!((got - want).abs() / want < 0.05, "r2 = {r2}: volume {got} vs {want}");
+    }
 }
 
 // ---- B6: auto next to a hard neighbour (pinned) --------------------------------------------------

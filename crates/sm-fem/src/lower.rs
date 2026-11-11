@@ -149,7 +149,7 @@ pub enum SplitError {
 /// [`lower`], then one cell set `region/<name>` per region of `split` (see [`crate::region`]).
 ///
 /// The block, sideset and deck sets are exactly those of [`lower`]; the region sets follow them,
-/// ordered by name. An empty `split` is [`lower`] itself. Every cell must be in a block, so each
+/// ordered by the structured name (indices numerically). An empty `split` is [`lower`] itself. Every cell must be in a block, so each
 /// region has a block to be named after: cells of a volume without a tag in a requested part
 /// simply have no such part in the name.
 ///
