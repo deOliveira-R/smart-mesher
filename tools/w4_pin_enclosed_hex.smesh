@@ -26,6 +26,8 @@ let cut2 = model.webcut_plane(targets: cut1.positive, plane: {origin: [0.0, 0.0,
 model.imprint(bodies: all bodies)
 model.merge()
 assert count(all volumes) == 6, "three square-annulus slabs, two caps, the fuel"
+let h_cut = session.hash()
+print "h_cut", h_cut
 print "volumes", count(all volumes)
 fem.block_add(1, volumes: fu.volume, name: "fuel")
 fem.block_add(2, volumes: all volumes - fu.volume, name: "moderator")
@@ -51,6 +53,14 @@ print "mesh", m.mesh[0]
 let val = mesh.validate(mesh: m.mesh[0])
 assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
 print "violations", val.total
+let mplan = mesh.plan(mesh: m.mesh[0])
+// The circle interval count n, read from the plan (the circle is the only edge near 2 pi r = 2.513).
+for r in mplan.intervals {
+  let ms = model.measure(entity: r.edge)
+  if ms.length > 2.5 and ms.length < 2.52 {
+    print "n", r.count
+  }
+}
 
 // The linear mesh: the fuel is the inscribed 16-gon prism h (n/2) r^2 sin(2 pi / n).
 let poly = 0.8 * 8.0 * 0.16 * sin(3.141592653589793 / 8.0)
@@ -67,6 +77,7 @@ for f in all faces {
     set cyl = cyl | f
   }
 }
+assert count(cyl) == 3, "the fuel side and the two caps' sides"
 mesh.preserve_volume(mesh: m.mesh[0], surfaces: cyl)
 let mj = mesh.info(mesh: m.mesh[0])
 let disk = 3.141592653589793 * 0.16 * 0.8

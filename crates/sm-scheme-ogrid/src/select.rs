@@ -81,6 +81,22 @@ pub(crate) fn wanted_size(cx: &PlanCtx<'_>, f: EntityId) -> Option<f64> {
         })
 }
 
+/// Whether the user fixed an interval count on face `f`, on one of its edges or on a volume
+/// around it. Then the scheme steers nothing: the counts are the user's.
+pub(crate) fn has_user_counts(cx: &PlanCtx<'_>, f: EntityId) -> bool {
+    let counts = |id: EntityId| {
+        cx.intent
+            .entities
+            .get(&id)
+            .and_then(|e| e.intervals)
+            .is_some_and(|r| matches!(r.value, IntervalRequest::Count(_)))
+    };
+    let topo = cx.input.topo;
+    counts(f)
+        || cx.input.face_edges(f).into_iter().any(counts)
+        || topo.coboundary(f).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Volume)).any(|i| counts(i.cell))
+}
+
 /// The layer counts and ratios to try: `k` fixed by the user or around `k0`, `ratio` fixed or
 /// one and the value that makes the radial thickness follow the tangential spacing (`rho` is the
 /// outer over inner tangential spacing).

@@ -188,6 +188,11 @@ fn same_input_same_state_hash_and_node_bits() {
         (s.workspace().state_hash(), info(&mut s)["geometry_hash"].clone())
     };
     assert_eq!(run(), run());
+    // Bit-identical for 1 thread and N threads.
+    let in_pool = |threads: usize| {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("pool").install(run)
+    };
+    assert_eq!(in_pool(1), in_pool(4), "1 vs 4 threads");
 }
 
 /// VOLFIT acceptance on the W3c through pin (default auto, size 0.3): fuel and moderator hold their
@@ -227,5 +232,4 @@ fn the_w3c_through_pin_holds_fuel_and_moderator_volumes() {
     assert_eq!(after["cells"], before["cells"]);
     let val = s.call(Request::Query { name: "mesh.validate".into(), input: json!({"mesh": "Mesh#1"}), at: None }).expect("validate");
     assert_eq!(val["total"], 0, "{val}");
-    assert_eq!(val["inverted"].as_u64().unwrap_or(0), 0, "{val}");
 }

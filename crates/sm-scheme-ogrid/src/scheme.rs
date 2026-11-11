@@ -176,6 +176,14 @@ impl Scheme for Ogrid {
         }
         // Score the mesh `generate` would build at the size's circle count: 70 where it keeps the
         // quality and the size intent, below pave (40) where it does not.
+        // Counts the user fixed are the user's resolution: nothing to predict or protect.
+        if select::has_user_counts(cx, f) {
+            return Applicability::yes(70, match shape {
+                Shape::Disk { .. } => "exact disk",
+                Shape::SquareAnnulus { .. } => "circle in a square",
+                Shape::Ring { .. } => "two concentric circles",
+            });
+        }
         let size = select::wanted_size(cx, f);
         let fx = Fixed { rings: o.rings, ratio: o.ratio, phase_deg: o.phase };
         let (name, verdict) = match shape {
@@ -219,8 +227,9 @@ impl Scheme for Ogrid {
     ) -> sm_scheme_api::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Free);
-            // The interval phase has no intent: hand it the wanted size.
-            if let Some(h) = select::wanted_size(cx, f) {
+            // The interval phase has no intent: hand it the wanted size, unless the user fixed
+            // counts (then the scheme steers nothing).
+            if let Some(h) = select::wanted_size(cx, f).filter(|_| !select::has_user_counts(cx, f)) {
                 out.set_data(Params(serde_json::json!({ "size": h })));
             }
         }
@@ -280,9 +289,10 @@ impl Scheme for Ogrid {
                 terms(&loops[0], -1, &mut t);
                 out.linear(&rows(t), Rel::Eq, 0);
                 // Equal sides: the radial lines then leave the square corners on the diagonals
-                // (unequal sides twist them and cost the corner quads their Jacobian).
+                // (unequal sides twist them and cost the corner quads their Jacobian). Only when the
+                // scheme steers (a size, no user counts), so a user's counts never become infeasible.
                 let sides: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
-                if sides.len() == 4 {
+                if size.is_some() && sides.len() == 4 {
                     for w in sides.windows(2) {
                         out.linear(&[(w[0], 1), (w[1], -1)], Rel::Eq, 0);
                     }

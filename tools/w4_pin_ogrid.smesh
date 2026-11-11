@@ -57,6 +57,13 @@ assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
 print "violations", val.total
 let mplan = mesh.plan(mesh: m.mesh[0])
 assert mplan.status == "ran", "plan of the ran mesh"
+// The circle interval count n, read from the plan (the circle is the only edge near 2 pi r = 2.513).
+for r in mplan.intervals {
+  let ms = model.measure(entity: r.edge)
+  if ms.length > 2.5 and ms.length < 2.52 {
+    print "n", r.count
+  }
+}
 
 // The linear mesh: every fuel pin is the inscribed 16-gon prism h (n/2) r^2 sin(2 pi / n).
 let poly = 8.0 * 0.16 * sin(3.141592653589793 / 8.0)

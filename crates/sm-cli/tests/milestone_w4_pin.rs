@@ -10,7 +10,7 @@
 //!
 //! | row | what |
 //! |---|---|
-//! | H1 | through pin and lattice: all Hex, cell count equals `layers (n^2/16 + 2 n)`, 0 violations, fuel per pin `pi r^2 h` and moderator `(1.26^2 - pi r^2) h` to 1e-12 after VOLFIT; the same mesh before VOLFIT holds `h (n/2) r^2 sin(2 pi / n)` |
+//! | H1 | through pin and lattice: all Hex, cell count equals `layers (n^2/16 + 4 n)`, 0 violations, fuel per pin `pi r^2 h` and moderator `(1.26^2 - pi r^2) h` to 1e-12 after VOLFIT; the same mesh before VOLFIT holds `h (n/2) r^2 sin(2 pi / n)` |
 //! | H2 | enclosed pin: 6 volumes, all Hex, no `mesh.auto_tet` warning, 0 violations, the same fuel-volume checks |
 //! | H3 | CLI (twice, 1 thread, project), MCP and in-process agree on prints and files; the `.smrt` and OpenFOAM exports have no warning |
 //! | H4 | the hashes are printed for INT to pin in `tools/platform/expected.txt` (not asserted here) |
@@ -404,28 +404,15 @@ fn region_volumes(smrt: &Path) -> R<Vec<(String, f64)>> {
     Ok(loaded.regions().0.iter().zip(vols).map(|(r, v)| (r.name.clone(), v)).collect())
 }
 
-/// The side count `n` of the regular polygon inscribed in radius `r` whose prism of height `h`
-/// has volume `v`: `v = (n/2) r^2 sin(2 pi / n) h`, matched to 1e-9 relative. `None` unless
-/// exactly one `n` in 3..=256 fits.
-fn polygon_sides(v: f64, r: f64, h: f64) -> Option<usize> {
-    let fits: Vec<usize> = (3..=256usize)
-        .filter(|&n| {
-            let want = 0.5 * n as f64 * r * r * (2.0 * PI / n as f64).sin() * h;
-            (v - want).abs() <= 1e-9 * want
-        })
-        .collect();
-    (fits.len() == 1).then(|| fits[0])
-}
-
 /// Axial layers of a sweep over height `h` at mesh size `size`: `max(1, round(h / size))`.
 fn layers(h: f64, size: f64) -> usize {
     ((h / size).round() as usize).max(1)
 }
 
 /// Quads of one ogrid disc (`(n/4)^2` core plus `k n` collar) and one ogrid annulus (`k n`),
-/// per axial layer, with one ring (`k = 1`, the default at n = 16 and size 0.3).
+/// per axial layer, with two rings (`k = 2`: the layers follow the size, 0.3, at n = 16).
 fn ogrid_cells_per_layer(n: usize) -> (usize, usize) {
-    ((n / 4) * (n / 4) + n, n)
+    ((n / 4) * (n / 4) + 2 * n, 2 * n)
 }
 
 fn info(s: &mut Server) -> Value {
@@ -553,13 +540,13 @@ fn milestone_w4_pin() {
         if let Some(l) = &py {
             compare_python(&mut rows, 3, "w4_pin_ogrid", "ogrid", l, &cli);
         }
-        let n = floats(&cli.prints, "poly_volume").ok().and_then(|v| polygon_sides(v / 1.0, r, h)).unwrap_or(0);
-        rows.eq(1, "circle intervals (n-gon of the linear fuel)", &n, &16);
+        let n = floats(&cli.prints, "n").map_or(0, |v| v as usize);
+        rows.eq(1, "circle intervals (from mesh.plan)", &n, &16);
         let (core, ring) = ogrid_cells_per_layer(n.max(4));
         let l = layers(h, 0.3);
         // 9 discs (core + collar) and 9 annuli, each `l` layers.
         let want = 9 * l * (core + ring);
-        rows.eq(1, "cells = 9 layers (n^2/16 + 2 n)", &one(&cli.prints, "cells").unwrap_or_default(), &want.to_string());
+        rows.eq(1, "cells = 9 layers (n^2/16 + 4 n)", &one(&cli.prints, "cells").unwrap_or_default(), &want.to_string());
         rows.eq(1, "shapes", &one(&cli.prints, "shapes").unwrap_or_default(), &format!("{{Hex: {want}}}"));
         rows.eq(1, "violations", &one(&cli.prints, "violations").unwrap_or_default(), &"0".to_owned());
         rows.eq(1, "head", &one(&cli.prints, "head").unwrap_or_default(), &"main".to_owned());
@@ -624,13 +611,15 @@ fn milestone_w4_pin() {
         }
         let hf = 0.8;
         rows.eq(2, "volumes after the cuts", &one(&cli.prints, "volumes").unwrap_or_default(), &"6".to_owned());
-        let n = floats(&cli.prints, "poly_volume").ok().and_then(|v| polygon_sides(v, r, hf)).unwrap_or(0);
-        rows.eq(2, "circle intervals", &n, &16);
+        let n = floats(&cli.prints, "n").map_or(0, |v| v as usize);
+        rows.eq(2, "circle intervals (from mesh.plan)", &n, &16);
+        // The hand-written cuts of the script are the steps `mesh.decompose_plan` returns.
+        rows.eq(2, "cuts equal the plan steps (h_cut == h_ref)", &one(&cli.prints, "h_cut").unwrap_or_default(), &enclosed_reference_hash());
         let (core, ring) = ogrid_cells_per_layer(n.max(4));
         // The fuel (0.8) and two caps (0.1 each) are discs; three square-annulus slabs of the same heights.
         let l = layers(0.8, 0.3) + 2 * layers(0.1, 0.3);
         let want = l * (core + ring);
-        rows.eq(2, "cells = layers (n^2/16 + 2 n)", &one(&cli.prints, "cells").unwrap_or_default(), &want.to_string());
+        rows.eq(2, "cells = layers (n^2/16 + 4 n)", &one(&cli.prints, "cells").unwrap_or_default(), &want.to_string());
         rows.eq(2, "shapes (all Hex, no tet)", &one(&cli.prints, "shapes").unwrap_or_default(), &format!("{{Hex: {want}}}"));
         rows.eq(2, "violations", &one(&cli.prints, "violations").unwrap_or_default(), &"0".to_owned());
         let poly = 0.5 * n as f64 * r * r * (2.0 * PI / n.max(1) as f64).sin() * hf;
@@ -703,6 +692,23 @@ fn host_row(plan: &Value) -> R<Value> {
         return Err(format!("{} rows with cuts: {plan}", rows.len()));
     }
     Ok(rows[0].clone())
+}
+
+/// State hash after the enclosed model, the three steps of `mesh.decompose_plan` applied as raw
+/// ops, then imprint and merge (the reference of H6, and of the script's `h_cut`).
+fn enclosed_reference_hash() -> String {
+    let mut s = Server::new(standard_with(Some(AUTHOR.into()), Some(TIME.into()))).expect("server");
+    s.call(Request::ScriptRun { text: ENCLOSED_MODEL.into(), path: None, includes: Default::default() }).expect("model");
+    let plan = s.call(Request::Query { name: "mesh.decompose_plan".into(), input: json!({}), at: None }).expect("plan");
+    let host = host_row(&plan).expect("host row");
+    let mut outs: Vec<Value> = Vec::new();
+    for st in host["steps"].as_array().expect("steps") {
+        let (op, params) = resolve(st, &outs).expect("resolve");
+        let r = s.call(Request::Apply { op: op.clone(), params, version: None }).unwrap_or_else(|x| panic!("{op}: {x}"));
+        outs.push(r["delta"]["outputs"].clone());
+    }
+    s.call(Request::ScriptRun { text: IMPRINT_MERGE.into(), path: None, includes: Default::default() }).expect("imprint");
+    s.call(Request::Hash { at: None }).expect("hash")["state"].as_str().unwrap_or_default().to_owned()
 }
 
 #[test]
