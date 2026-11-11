@@ -13,10 +13,12 @@ use crate::options::{DualPoints, PolyOptions};
 use crate::resolver::TopologyResolver;
 use crate::stats::{PolyStats, poly_stats};
 
-/// `mesh.to_poly`: convert a whole all-tet mesh into a new polyhedral mesh.
+/// `mesh.to_poly`: convert a whole tet mesh into a new polyhedral mesh.
 ///
 /// The source mesh entry (`mesh`) must be a dimension-3 mesh of tetrahedra with `Interior` and
-/// `Boundary` faces only. The result is a NEW mesh entry (output role `mesh`): one cell per
+/// `Boundary` faces only. A mixed mesh (tets plus hexes, wedges or pyramids) is accepted too: the
+/// non-tet cells are kept as polyhedra and the faces between them and the tets are cut into dual
+/// sub-faces; a mesh with no tet is refused. The result is a NEW mesh entry (output role `mesh`): one cell per
 /// (vertex, volume), every face planar, boundary faces classified on the source's model faces.
 /// With the default `keep_source` the source stays, and the volume then has two mesh entries,
 /// so exports must name the mesh. `keep_source: false` retires the source's `Mesh*` ids.
@@ -25,7 +27,7 @@ use crate::stats::{PolyStats, poly_stats};
 /// `keep_source: false`), so layers and front ends can tell the new mesh is derived from the
 /// source. The entry's `selection`, `plan`, `quanta` and `stale` are copied from the source.
 ///
-/// Atomic: any refusal (not 3D, a non-tet cell, an already polyhedral mesh, a non-conformal
+/// Atomic: any refusal (not 3D, a mesh with no tet, an already polyhedral mesh, a non-conformal
 /// face, an unsupported mesh topology) fails with `OpError::Invalid`, and a mesh with an
 /// unsupported feature (a seam or dangling feature edge) with `OpError::Unsupported`; a cell that
 /// cannot be repaired to a valid star-shaped polyhedron with `OpError::Failed`; the state
@@ -57,13 +59,13 @@ const OUTPUTS: &[OutputRole] = &[OutputRole::new(
 fn refuse(e: PolyError) -> OpError {
     match e {
         PolyError::Mesh(m) => OpError::Failed(m.to_string()),
-        e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. } | PolyError::NotOrthogonalDual { .. }) => OpError::Failed(e.to_string()),
+        e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. } | PolyError::NotOrthogonalDual { .. } | PolyError::InvalidOutput { .. }) => OpError::Failed(e.to_string()),
         PolyError::UnsupportedFeature { vertex } => OpError::Unsupported(format!(
             "vertex {} has exactly one feature edge in a region (a seam or a dangling curve); not supported in this version",
             vertex.0
         )),
         PolyError::NotTet { cell } => OpError::Invalid(format!(
-            "cell {} is not a tetrahedron; mesh.to_poly converts all-tet meshes only (a polyhedral or mixed mesh cannot be converted)",
+            "cell {} is not a tetrahedron and the mesh has no tetrahedron; mesh.to_poly needs at least one (a polyhedral or all-hex mesh cannot be converted)",
             cell.0
         )),
         other => OpError::Invalid(other.to_string()),
