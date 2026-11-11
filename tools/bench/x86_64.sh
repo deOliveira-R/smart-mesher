@@ -270,9 +270,11 @@ stage docker-check docker_check || {
   exit 1
 }
 # The linux-x86_64 conda locks (docker/locks/README.md): untracked files, so the clean check is
-# unaffected. Copied into the session so they are in the tarball. A lock that already exists
-# (session 1 wrote it, and docker-check above built with it) is reused, not rewritten: writing
-# it again makes the next docker-check rebuild both conda images.
+# unaffected. Copied into the session so they are in the tarball. The Dockerfiles take the lock
+# through a build arg, so the first build WITHOUT a lock (session 1 above) differs from every
+# build with one. Session 1 therefore writes the locks and then repeats docker-check below: it
+# runs on the locked images, and sessions 2 and 3 (lock files already there) are fully cached.
+# An existing lock is reused, not rewritten.
 # shellcheck disable=SC2317  # run through `stage`
 lock_images() {
   local k lock
@@ -282,11 +284,20 @@ lock_images() {
       echo "docker-lock: $k lock exists, reusing it (not rewritten)"
     else
       "$bin" docker-lock "$k" || return 1
+      : >"$session/.locks-written"
     fi
     cp "$lock" "$session/" || return 1
   done
 }
 stage docker-lock lock_images || stage_fail=1
+if [ -e "$session/.locks-written" ]; then
+  rm -f "$session/.locks-written"
+  echo "locks were written: rebuilding the images with them so this session runs on the locked images"
+  stage docker-check-locked docker_check || {
+    echo "an image did not build with its lock: no competitor row is possible, stopping" >&2
+    exit 1
+  }
+fi
 # Linux hash lines for blessing (unblessed until an orchestrator ruling).
 stage gen-print gen_print || stage_fail=1
 

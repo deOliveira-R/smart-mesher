@@ -56,12 +56,19 @@ The checkout must have no local changes. The script writes to
 one UTC day cannot mix. It does, in order: host self-check, `cargo build --release`,
 `smrt-bench self-test`, `docker-check` (builds the three competitor images, pinned in
 `crates/sm-rt-bench/docker/pins.env`), `docker-lock` (writes the two linux-x86_64 conda locks
-in session 1; untracked files, so the checkout stays clean; sessions 2 and 3 find the files,
-reuse them without rewriting, so the images stay cached; in every session they are copied into
-the session directory), `gen --print` (the Linux hash lines), the run, and `report`. The run is `--scale full --cases P1,H1,P2
---trackers smrt,dagmc-moab,dagmc-dd,xdg --threads 1,<physical cores> --reps 7 --warmup 3`, pinned to one thread per physical core
-(`taskset` for native code, `--cpuset-cpus` for containers, the same list, recorded in
-`bench-env.json`).
+if they do not exist yet; untracked files, so the checkout stays clean; in every session they are
+copied into the session directory). In session 1 the first `docker-check` builds the conda images
+without a lock; after writing the locks, session 1 runs `docker-check` again, which rebuilds both
+conda images once with the locks, so session 1 also runs on the locked images (this costs extra
+time before the UTC-midnight cutoff). Sessions 2 and 3 find the lock files and are fully cached,
+with the same image ids as session 1's final build. The first `docker-check` result of session 1
+is superseded by the second. Session 1's image ids and `conda_lock_sha256` before that rebuild
+differ from sessions 2 and 3, but the results are produced after it.
+
+Then come `gen --print` (the Linux hash lines), the run, and `report`. The run is
+`--scale full --cases P1,H1,P2 --trackers smrt,dagmc-moab,dagmc-dd,xdg --threads 1,<physical cores>
+--reps 7 --warmup 3`, pinned to one thread per physical core (`taskset` for native code,
+`--cpuset-cpus` for containers, the same list, recorded in `bench-env.json`).
 
 If a stage fails the script says which; if an image does not build it stops (no competitor
 row is possible then), and the session log is still the thing to send.
