@@ -93,8 +93,9 @@ It holds `results/` (the result JSON files and `bench-env.json`), `report.md` (t
 its own), `gen-print.txt` (Linux hash lines for blessing), `docker-check.txt` (image identities),
 `dagmc-moab.linux-x86_64.txt` and `dagmc-dd.linux-x86_64.txt` (the conda locks of the images; they
 have never been captured on x86_64 and this is the only run on that machine), `host.txt`,
-`commit.txt`, `stages.txt`, `session.log` and `SHA256SUMS`. It contains no model or customer data. Also say anything unusual (a throttling warning,
-another job running, a reboot between sessions).
+`commit.txt`, `stages.txt`, `session.log` and `SHA256SUMS`. It contains no model or customer
+data. Also say anything unusual (a throttling warning, another job running, a reboot between
+sessions).
 
 ## After the third session (orchestrator)
 

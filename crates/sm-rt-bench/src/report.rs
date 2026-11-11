@@ -59,6 +59,17 @@ pub fn check_same_machine(files: &[ResultFile]) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a challenger row whose `geometry` is empty (legacy file, custom adapter): it could be
+/// the stair-stepped tets, so it fails closed instead of entering the k-of-n verdict as non-L3.
+pub fn check_geometry(files: &[ResultFile]) -> Result<()> {
+    for f in files {
+        if let Some(r) = f.rows.iter().find(|r| r.tracker == CHALLENGER && r.geometry.is_empty()) {
+            return Err(BenchError::Fairness(format!("refusing {} row {}/{}/{}: empty `geometry` (re-run with a current adapter; the report cannot tell whether it is L3)", r.tracker, f.case, r.mode, r.workload)));
+        }
+    }
+    Ok(())
+}
+
 /// True when any row of `r`'s tracker and mode in `f` failed its agreement check (rule g).
 /// Polyhedral rows are a separate population (ruling D6): they neither judge nor are judged by
 /// non-polyhedral rows, however they are named (mode or workload).
@@ -96,6 +107,7 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
 /// under the banner, followed by the identity of every competitor image in the files.
 pub fn render_with_docker(files: &[ResultFile], vm: Option<&crate::result::DockerVm>) -> Result<String> {
     check_same_machine(files)?;
+    check_geometry(files)?;
     let env = &files[0].env;
     let mut out = String::new();
     let _ = writeln!(out, "# smrt-bench report\n");
@@ -354,6 +366,7 @@ fn point(c: Pair, baselines: &[Pair]) -> (Sign, Vec<String>, String) {
 /// [`render`]. Polyhedral rows and L3 rows ([`is_l3`]) are dropped before anything is read, so they cannot change a verdict.
 pub fn verdicts(files: &[ResultFile], baseline: &str) -> Result<Vec<CellVerdict>> {
     check_same_machine(files)?;
+    check_geometry(files)?;
     let mut cells: BTreeMap<(&str, &str, &str), Vec<Pair>> = BTreeMap::new();
     let mut base: BTreeMap<&str, Vec<Pair>> = BTreeMap::new();
     for f in files {
@@ -453,6 +466,7 @@ pub fn render_sessions(sessions: &[Vec<ResultFile>]) -> Result<String> {
     let mut days = BTreeSet::new();
     for s in sessions {
         check_same_machine(s)?;
+        check_geometry(s)?;
         let e = &s[0].env;
         if e.smoke() {
             return Err(BenchError::Fairness(format!("refusing a published verdict from a smoke session ({})", e.smoke_reasons().join("; "))));
