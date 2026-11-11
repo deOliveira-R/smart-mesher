@@ -391,6 +391,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Gates:** after CORE; the REFCORPUS decks after W4-REFCORPUS.
 - **Hash impact:** new fixtures only; existing `oracle.json` files unchanged.
 
+- **Plan delta (a3 review), open items:** the 1e-3 gap and 1e-4 sliver rows of CSG-CHECK are not met (kernel limit, routed to W4-BOOL-TOOLS). ORACLE's polyhedral row ran on the tet mesh only; the hex-mesh run (POLY-MIXED is merged) and the lattice2d fixture (trimesh fails with 'points coincide' on its outer ring; `mesh.scheme(sweep)` fails on `quadric_cyl` with 'source and target share a vertex') go to a mesher follow-up. The placed-surface tolerance dedup in `deck.rs` is O(n^2) and first-match: bucket it before core-size decks (about 1e5 surfaces) land.
 ### W4-POLY-MIXED. `sm-poly`: `mesh.to_poly` on mixed meshes (ruling D1)
 - **Owner:** `crates/sm-poly/`.
 - **Scope:** `drafts/meshops.md` X-1: dualize the tet region, keep non-tet cells (hexes, wedges, pyramids) as polyhedra, cut each interface triangle into its dual sub-faces. Plan delta: this supersedes `drafts/poly.md`'s placement of POLY-MIXED in W5+; the transition rule needed is exactly this sub-face cut, not a general conformize.
@@ -399,6 +400,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Gates:** after VORO (same crate).
 - **Hash impact:** none on existing hashes (all-tet path unchanged).
 
+- **Plan delta (a3 review):** acceptance 1's hex pin next to a tet moderator cannot be built by `mesh.run` today (`mesh.auto_tet` turns the fuel into tets too); the synthetic fixtures stand in, recorded in `crates/sm-poly/DESIGN.md`. A positive real-mesh test (W3c B6 `TWO_BRICKS_HARD_TET` through `mesh.auto` then `mesh.to_poly`: {Tet 160, Wedge 32} -> 90 polyhedra, volume 16, 0 violations) goes to the W4 INT tests (sm-server or sm-cli).
 #### After W4a's RT rows and cell index (ruling D6)
 
 ### W4-A2-RT. `sm-rt`: cell-index follow-ups (a2 review)
@@ -427,6 +429,8 @@ W4-0b (ACR-LEVELMAP, ACR-V1, ACR-V3) lands first.
 - **BOOL-HEAL-A scope / acceptance:** `drafts/vtopo.md` §T0 REGULARIZE-OP and §T3 VTOPO-DETECT (`model.heal_check`), acceptance 1-6. Plan delta (ruling D8): thresholds are tuned on the W4-REFCORPUS dirty STEP files, and for each one the codes `model.heal_check` returns equal the manifest's `expected` codes.
 - **Hash impact:** none on existing hashes.
 - **Plan delta (a1 review):** find the cause of the REGIONS-CUT kernel finding: `webcut_cylinder` / `subtract` fail with `result volume invalid` for a 0.475-radius cylinder cut at 0.418 or 0.476 with the default tool frame, and turning the frame's x reference by 1 rad (SEAM_TURN) avoids it. A coincidence between the tool cylinder's seam and the target's faces is the first suspect. The fix or a documented limit is part of the acceptance, with a test at both cut positions. Also: `subdivide::guard` copies the private `ops::guard_volumes`; make that `pub(crate)` and drop the copy (no behaviour change).
+
+- **Plan delta (a3 review):** two more kernel limits for the same investigation. (1) A plane webcut of a 10-cube fails with `ResultInvalid{rule: "webcut"}` within 1e-3 relative of a face (x = 0.01, 0.001, 9.99; 0.02 works); W4-CSG-CHECK's 1e-3 gap and 1e-4 sliver rows stay `#[ignore]`d and unmet until this is fixed, then the CSG worker un-ignores them. (2) The tall W4-REFCORPUS PWR pin decks are refused by the kernel (W4-CSG-ORACLE pins them as typed refusals). Also: `sm_boolean::locate_point` gives a false `In` for thin annuli.
 
 ### W4-VTOPO-OPS. `sm-model`: virtual-topology ops on the layer's overlay
 - **Scope / acceptance:** `drafts/vtopo.md` §T1 VTOPO-OPS, acceptance 1-6. **Gates:** after ACR-V1, ACR-V3, and after W4-REGIONS-SPLIT (same crate). **Hash impact:** none on existing.
