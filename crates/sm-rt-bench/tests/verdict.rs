@@ -36,7 +36,11 @@ fn row(x: &R) -> Row {
         workload: x.workload.into(),
         threads: x.threads,
         precision: "f64".into(),
-        geometry: if x.tracker == "smrt" && matches!(x.mode, "jump" | "walk") { "tets".into() } else { String::new() },
+        geometry: match (x.tracker, x.mode) {
+            ("smrt", "jump" | "walk") => "tets".into(),
+            ("smrt", _) => "exact".into(),
+            _ => String::new(),
+        },
         rays_per_s: Stat { median: x.median, min: x.median - x.spread / 2.0, max: x.median + x.spread / 2.0, reps: 7 },
         build_s: x.build_s,
         structure_bytes: x.structure,
@@ -329,4 +333,39 @@ fn l3_fire_rows_are_outside_the_verdict() {
     with.push(file("P1", &e, &extra));
     assert_eq!(verdicts(&with, "dagmc-dd").unwrap(), want);
     assert!(render(&with).unwrap().contains("L3 rows"));
+}
+
+/// A W-walk row on `shared-tets` (the mesh the baselines hold) is not L3: it stays in the verdict.
+#[test]
+fn a_shared_tets_walk_row_is_not_l3() {
+    use sm_rt_bench::report::is_l3;
+    let mut shared = row(&r("smrt", "walk", "w-flight", 1, 1.0, 1.0));
+    shared.geometry = "shared-tets".into();
+    assert!(!is_l3(&shared));
+}
+
+/// A challenger row with an empty geometry (legacy file, custom adapter) fails closed: render,
+/// verdicts and `report` on a results directory all refuse it, so it never enters a k-of-n.
+#[test]
+fn an_empty_geometry_challenger_row_is_refused_by_report() {
+    use sm_rt_bench::cli::main_with;
+    use sm_rt_bench::result::write_result;
+    let e = bare("2026-11-10");
+    let mut files = session(&e, false);
+    files[0].rows.iter_mut().find(|x| x.tracker == "smrt").unwrap().geometry.clear();
+    files[0].seal().unwrap();
+    for err in [render(&files).unwrap_err().to_string(), verdicts(&files, "dagmc-dd").unwrap_err().to_string()] {
+        assert!(err.contains("empty `geometry`"), "{err}");
+    }
+    let dir = std::env::temp_dir().join(format!("smrt-bench-geom-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for f in &files {
+        write_result(&dir, f).unwrap();
+    }
+    let out = dir.join("t.md");
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let res = main_with(&a(&["report", "--results", &dir.display().to_string(), "--out", &out.display().to_string()]));
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = res.unwrap_err().to_string();
+    assert!(err.contains("empty `geometry`"), "{err}");
 }

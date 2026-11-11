@@ -226,6 +226,7 @@ fn file(case: &str, tracker: &str, e: Env, failed: usize) -> ResultFile {
         workload: "w-track".into(),
         threads: 1,
         precision: "f64".into(),
+        geometry: if tracker == "smrt" { "exact".into() } else { String::new() },
         rays_per_s: Stat { median: 123456.0, min: 100000.0, max: 130000.0, reps: 7 },
         agreement: AgreementSummary { checked: 100, failed, grazing: 0 },
         ..Row::default()

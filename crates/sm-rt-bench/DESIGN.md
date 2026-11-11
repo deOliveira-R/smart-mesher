@@ -378,3 +378,7 @@ in the file itself, never in `result_hash`, in `Output::content_hash` or in the 
 * `smcase.json` embeds the platform tag, so its hash is platform-keyed even for C1-C3 and H1.
   Dropping the tag from the hashed manifest would move every blessed `smcase.json` hash; that
   needs an orchestrator ruling and a re-bless.
+* The row `geometry` field is not in `result_hash` (no hash impact now). It decides L3, so it should
+  be hashed; that moves the blessed hashes. To-do for the Linux bless: add it to the hash and
+  re-bless then. Until then `report` refuses a challenger row with an empty `geometry`
+  (`report::check_geometry`), so a legacy file cannot enter a k-of-n as non-L3.
