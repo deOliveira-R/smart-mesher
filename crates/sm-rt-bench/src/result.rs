@@ -91,6 +91,10 @@ pub struct Row {
     pub mode: String,
     /// Workload name.
     pub workload: String,
+    /// Geometry the tracker traced (`exact`, `facets`, `tets`, `shared-tets`, `polyhedra`); empty
+    /// for competitor rows, which hold the facets (or the shared mesh) by construction. Not in the
+    /// result hash.
+    pub geometry: String,
     /// Threads.
     pub threads: usize,
     /// Precision of the traversal.

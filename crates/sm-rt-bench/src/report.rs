@@ -63,8 +63,18 @@ pub fn check_same_machine(files: &[ResultFile]) -> Result<()> {
 /// Polyhedral rows are a separate population (ruling D6): they neither judge nor are judged by
 /// non-polyhedral rows, however they are named (mode or workload).
 fn disagrees(f: &ResultFile, r: &Row) -> bool {
-    let poly = is_polyhedral(r);
-    f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && is_polyhedral(x) == poly && x.agreement.failed > 0)
+    let class = (is_polyhedral(r), is_l3(r));
+    f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && (is_polyhedral(x), is_l3(x)) == class && x.agreement.failed > 0)
+}
+
+/// True for an sm-rt row on the stair-stepped tets (`geometry` = `tets`: the W-fire `walk` and
+/// `jump` rows, the W-flight `walk`/`delta`/`block` rows of the mesh twin): geometry level L3 of
+/// `DESIGN.md`. The baselines hold the facet twin (icospheres), so a cell of these rows would compare
+/// two geometries; they render in their own table and no verdict reads them (their own checks stay in
+/// the agreement column). The adapter stamps the field, so no mode name decides it. Polyhedral rows
+/// keep their own table ([`is_polyhedral`]).
+pub fn is_l3(r: &Row) -> bool {
+    r.tracker == CHALLENGER && r.geometry == "tets" && !is_polyhedral(r)
 }
 
 /// True for a polyhedral-mesh row: its `mode` or `workload` starts with `poly` (the L2b rows;
@@ -117,9 +127,14 @@ pub fn render_with_docker(files: &[ResultFile], vm: Option<&crate::result::Docke
         let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         let mut poly_rows: Vec<(&ResultFile, &Row)> = Vec::new();
+        let mut l3_rows: Vec<(&ResultFile, &Row)> = Vec::new();
         for f in &cfiles {
             for r in &f.rows {
                 seen.insert(r.tracker.as_str());
+                if is_l3(r) {
+                    l3_rows.push((f, r));
+                    continue;
+                }
                 if is_polyhedral(r) {
                     poly_rows.push((f, r));
                     continue;
@@ -152,6 +167,15 @@ pub fn render_with_docker(files: &[ResultFile], vm: Option<&crate::result::Docke
                     r.agreement.grazing,
                     det
                 );
+            }
+        }
+        if !l3_rows.is_empty() {
+            let _ = writeln!(out, "\nL3 rows (stair-stepped tets, not the facet twin the baselines hold; never read by the verdict, VERDICT.md):\n");
+            let _ = writeln!(out, "| tracker | mode | workload | threads | precision | rays/s median [min, max] | build s | structure bytes | lost | agreement failed/checked (grazing) |");
+            let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
+            for (f, r) in l3_rows {
+                let failed = disagrees(f, r);
+                let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {:.3} | {} | {} | {}/{} ({}) |", r.tracker, r.mode, r.workload, r.threads, r.precision, rate_cell(failed, &r.rays_per_s), r.build_s, r.structure_bytes, r.lost, r.agreement.failed, r.agreement.checked, r.agreement.grazing);
             }
         }
         if !poly_rows.is_empty() {
@@ -327,13 +351,13 @@ fn point(c: Pair, baselines: &[Pair]) -> (Sign, Vec<String>, String) {
 
 /// Pre-registered verdicts of `files` (one session) against `baseline`: one per challenger cell
 /// (case, workload, mode), in that order. Same machine and UTC day are enforced as for
-/// [`render`]. Polyhedral rows are dropped before anything is read, so they cannot change a verdict.
+/// [`render`]. Polyhedral rows and L3 rows ([`is_l3`]) are dropped before anything is read, so they cannot change a verdict.
 pub fn verdicts(files: &[ResultFile], baseline: &str) -> Result<Vec<CellVerdict>> {
     check_same_machine(files)?;
     let mut cells: BTreeMap<(&str, &str, &str), Vec<Pair>> = BTreeMap::new();
     let mut base: BTreeMap<&str, Vec<Pair>> = BTreeMap::new();
     for f in files {
-        for r in f.rows.iter().filter(|r| !is_polyhedral(r)) {
+        for r in f.rows.iter().filter(|r| !is_polyhedral(r) && !is_l3(r)) {
             if r.tracker == CHALLENGER {
                 cells.entry((f.case.as_str(), r.workload.as_str(), r.mode.as_str())).or_default().push((f, r));
             } else if r.tracker == baseline {
@@ -394,7 +418,7 @@ pub fn statement(v: &[CellVerdict], baseline: &str) -> String {
 }
 
 fn baselines_of(files: &[ResultFile]) -> Vec<&'static str> {
-    let present: BTreeSet<&str> = files.iter().flat_map(|f| f.rows.iter()).filter(|r| !is_polyhedral(r)).map(|r| r.tracker.as_str()).collect();
+    let present: BTreeSet<&str> = files.iter().flat_map(|f| f.rows.iter()).filter(|r| !is_polyhedral(r) && !is_l3(r)).map(|r| r.tracker.as_str()).collect();
     if !present.contains(CHALLENGER) {
         return vec![];
     }

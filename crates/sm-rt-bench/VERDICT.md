@@ -48,6 +48,22 @@ geometry; never read by the verdict)", and is dropped before the verdict reads a
 challenger and as baseline. `tests/verdict.rs::a_polyhedral_row_cannot_change_a_verdict` proves it,
 also through the three-session aggregate.
 
+## L3 rows are outside the verdict
+
+Every sm-rt row on the stair-stepped tets is L3: the W-fire `walk`/`jump` rows and the W-flight
+`walk`/`delta`/`block` rows of the tet twin. The adapter stamps `geometry: tets` on the row at the
+source (`exact`, `facets`, `tets`, `shared-tets`, `polyhedra` are the values), and `report::is_l3` reads
+that field, never a mode name, so a future row cannot slip into k-of-n. The baselines hold the facet twin
+(icospheres): a cell of these rows would compare two geometries. They render in their own "L3 rows" table,
+are dropped before the verdict reads anything (as challenger, and they cannot make another cell `n/c`),
+and their own checks stay in the agreement column. The reference walk of the polyhedral group is the
+`poly-ref` mode, so it is polyhedral and outside the verdict. The W-walk row is `shared-tets`: XDG walks
+the same tets, so it stays a k-of-n cell. Competitor rows carry no geometry (empty): they hold the facets
+or the shared mesh by construction.
+`tests/verdict.rs::l3_fire_rows_are_outside_the_verdict` and
+`tests/smrt.rs::no_k_of_n_cell_mixes_geometries` (every row stamped, no tet row outside L3, one geometry
+per k-of-n cell) prove it.
+
 ## Three sessions (`report::render_sessions`)
 
 `report::render` still refuses mixed machines or UTC days (rule b). The aggregator takes three
