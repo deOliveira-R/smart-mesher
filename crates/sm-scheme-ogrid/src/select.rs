@@ -81,6 +81,16 @@ pub(crate) fn wanted_size(cx: &PlanCtx<'_>, f: EntityId) -> Option<f64> {
         })
 }
 
+/// Whether the user fixed an interval count anywhere in the intent. A count elsewhere reaches
+/// this face's edges through equal-count chains (map side faces, copy classes), so the hard
+/// rows the scheme adds would then make the user's script infeasible.
+pub(crate) fn any_user_counts(cx: &PlanCtx<'_>) -> bool {
+    cx.intent
+        .entities
+        .values()
+        .any(|e| e.intervals.is_some_and(|r| matches!(r.value, IntervalRequest::Count(_))))
+}
+
 /// Whether the user fixed an interval count on face `f`, on one of its edges or on a volume
 /// around it. Then the scheme steers nothing: the counts are the user's.
 pub(crate) fn has_user_counts(cx: &PlanCtx<'_>, f: EntityId) -> bool {

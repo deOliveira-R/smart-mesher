@@ -335,6 +335,35 @@ fn the_score_follows_the_size_ogrid_where_it_is_good_pave_where_it_is_not() {
     assert_eq!(face, "pave");
 }
 
+/// A user count on the plate's top square edges only reaches the annulus sides through the map
+/// side faces' equal-count chains: the size must not add hard rows that make it infeasible.
+#[test]
+fn a_user_count_elsewhere_in_the_intent_never_makes_default_infeasible() {
+    let script = r#"
+let a = model.create_brick(x: 4.0, y: 4.0, z: 1.0)
+let t = model.create_cylinder(height: 3.0, radius: 1.0)
+let r = model.subtract(targets: a.body, tools: t.body)
+for e in all edges {
+  let ms = model.measure(entity: e)
+  if ms.length > 3.9 and ms.length < 4.1 and ms.bbox.lo[2] > 0.4 {
+    mesh.intervals(targets: e, count: 8)
+  }
+}
+mesh.size(targets: r.volumes, size: 0.5)
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: r.volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "cells", mi.cells
+let q = mesh.quality(mesh: m.mesh[0], metrics: ["scaled_jacobian"], worst_n: 0)
+for x in q.metrics {
+  print "sj", x.summary.min
+}
+"#;
+    let out = run("b5-top-count", script).unwrap_or_else(|e| panic!("default failed: {e}"));
+    assert!(val(&out, "cells") > 0.0, "{out}");
+    assert!(val(&out, "sj") > 0.5, "{out}");
+}
+
 #[test]
 fn the_pin_at_the_pin_size_stays_with_the_unstructured_schemes() {
     // At size 0.3 a disk of r = 0.4 gets 8 circle nodes; the best five-block O-grid there has a

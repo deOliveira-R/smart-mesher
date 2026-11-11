@@ -230,7 +230,8 @@ impl Scheme for Ogrid {
             // The interval phase has no intent: hand it the wanted size, unless the user fixed
             // counts (then the scheme steers nothing).
             if let Some(h) = select::wanted_size(cx, f).filter(|_| !select::has_user_counts(cx, f)) {
-                out.set_data(Params(serde_json::json!({ "size": h })));
+                // `hard`: the size may bind the counts; off when any user count exists.
+                out.set_data(Params(serde_json::json!({ "size": h, "hard": !select::any_user_counts(cx) })));
             }
         }
         Ok(())
@@ -252,6 +253,7 @@ impl Scheme for Ogrid {
         let shape = fit::analyze(topo, f).map_err(SchemeError::Input)?;
         let loops = geom::face_loops(topo, f);
         let size = cx.data(target).and_then(|d| d.0.get("size")).and_then(serde_json::Value::as_f64);
+        let hard = cx.data(target).and_then(|d| d.0.get("hard")).and_then(serde_json::Value::as_bool) == Some(true);
         match shape {
             Shape::Disk { .. } => {
                 let mut t = BTreeMap::new();
@@ -276,8 +278,11 @@ impl Scheme for Ogrid {
                     let per = (n / side_edges.len() as f64).max(1.0);
                     for e in &side_edges {
                         out.prefer(*e, per);
-                        // The preference alone is averaged away by the neighbours' goals.
-                        out.range(*e, per.floor() as u32, Some(per.ceil() as u32 + u32::from(per.fract() == 0.0)));
+                        // The preference alone is averaged away by the neighbours' goals; the hard
+                        // range only when no user count exists anywhere.
+                        if hard {
+                            out.range(*e, per.floor() as u32, Some(per.ceil() as u32 + u32::from(per.fract() == 0.0)));
+                        }
                     }
                     for e in loops[1].iter().map(|k| k.edge) {
                         out.prefer(e, (n / loops[1].len() as f64).max(1.0));
@@ -292,7 +297,7 @@ impl Scheme for Ogrid {
                 // (unequal sides twist them and cost the corner quads their Jacobian). Only when the
                 // scheme steers (a size, no user counts), so a user's counts never become infeasible.
                 let sides: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
-                if size.is_some() && sides.len() == 4 {
+                if size.is_some() && hard && sides.len() == 4 {
                     for w in sides.windows(2) {
                         out.linear(&[(w[0], 1), (w[1], -1)], Rel::Eq, 0);
                     }
