@@ -14,6 +14,7 @@ mod fit;
 mod kernels;
 mod mesh;
 mod scheme;
+mod select;
 
 pub use kernels::{
     AnnulusQuadParams, DiskParams, PolarParams, RingParams, ogrid_annulus_quad, ogrid_disk, polar_disk, ring,
