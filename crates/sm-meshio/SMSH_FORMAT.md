@@ -203,7 +203,7 @@ ordinary cell set per region to `sets` (section 2.3), named `region/<name>`. It 
 array or version: a reader that does not know the convention sees extra cell sets. The block sets
 (`fuel`, `water`, ...) are written as without the option, so `region/fuel` and the block `fuel`
 never collide (`/` is reserved in block names when a split is requested). The region sets of one
-mesh partition its cells (every cell is in exactly one), and are ordered by name.
+mesh partition its cells (every cell is in exactly one), and are ordered by the structured name (indices numerically).
 
 `<name>` is `<block>`, then `@<frame>[i,j]` for every lattice frame the cell's volume is tagged
 in (outer frame first; `[i,j,k]` when the frame has more than one layer), then `/r<ring>`, then

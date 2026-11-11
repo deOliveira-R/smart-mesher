@@ -1968,6 +1968,7 @@ name = "sm-scheme-ogrid"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "rayon",
  "serde",
  "serde_json",
  "sm-core",

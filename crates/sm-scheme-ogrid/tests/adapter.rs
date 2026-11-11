@@ -40,6 +40,46 @@ fn ngon(n: f64, r: f64) -> f64 {
     0.5 * n * r * r * (std::f64::consts::TAU / n).sin()
 }
 
+/// The per-owner volumes of the `by_owner` line, in the printed (ascending id) order.
+fn owner_volumes(out: &str) -> Vec<f64> {
+    text(out, "by_owner")
+        .trim_matches(|c| c == '{' || c == '}')
+        .split(", ")
+        .map(|kv| kv.rsplit(": ").next().and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("by_owner: {kv}")))
+        .collect()
+}
+
+/// Every `circ` line (the solved count of each circle edge); they must all be equal.
+fn circle_count(out: &str) -> f64 {
+    let all: Vec<f64> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("circ ").map(|v| v.trim().parse().expect("count")))
+        .collect();
+    assert!(!all.is_empty() && all.iter().all(|&c| c == all[0]), "circle counts {all:?} in {out}");
+    all[0]
+}
+
+/// Each fuel owner is the inscribed n-gon prism and each moderator owner the brick minus it,
+/// to 1e-12 relative; `pins` of each. This fails for any mesh that merely fills the brick.
+fn check_owners(out: &str, pins: usize) {
+    let n = circle_count(out);
+    assert_eq!(n, 16.0, "the circle count the plan solved");
+    let fuel = ngon(n, 0.4);
+    let moder = 1.26 * 1.26 - fuel;
+    let vols = owner_volumes(out);
+    assert_eq!(vols.len(), 2 * pins, "{vols:?}");
+    let near = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b;
+    assert_eq!(vols.iter().filter(|&&v| near(v, fuel)).count(), pins, "fuel {fuel}: {vols:?}");
+    assert_eq!(vols.iter().filter(|&&v| near(v, moder)).count(), pins, "moderator {moder}: {vols:?}");
+}
+
+/// `session.hash` of the script under a pool of `threads`.
+fn hash_with(threads: usize, name: &str, text_: &str) -> String {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("pool");
+    let out = pool.install(|| run(&format!("{name}{threads}"), text_)).unwrap();
+    text(&out, "hash")
+}
+
 /// A z cylinder swept from an `ogrid` bottom cap; `{SIZE}` and `{PARAMS}` are substituted.
 fn cyl(size: &str, params: &str) -> String {
     r#"
@@ -179,10 +219,16 @@ let m = mesh.run(targets: all volumes)
 let mi = mesh.info(mesh: m.mesh[0])
 let val = mesh.validate(mesh: m.mesh[0])
 let pl = mesh.plan(mesh: m.mesh[0])
-print "n", pl.intervals[0].count
+for r in pl.intervals {{
+  let ms = model.measure(entity: r.edge)
+  if ms.length > 2.5 and ms.length < 2.52 {{
+    print "circ", r.count
+  }}
+}}
 print "cells", mi.cells
 print "shapes", mi.cell_shapes
 print "volume", mi.volume
+print "by_owner", mi.volume_by_owner
 print "violations", val.total
 print "plan", pl
 print "hash", session.hash()
@@ -193,10 +239,13 @@ print "hash", session.hash()
 #[test]
 fn acc1_pin_square_annulus_and_disk_are_conformal_and_exact() {
     let out = run("pin", &pin(false)).unwrap();
-    let n = val(&out, "n");
     assert_eq!(val(&out, "violations"), 0.0, "{out}");
-    // Moderator and fuel share the circle, so the total is the brick volume exactly.
-    assert!((val(&out, "volume") - 1.26 * 1.26).abs() <= 1e-12, "{} (n = {n})", val(&out, "volume"));
+    // Moderator and fuel share the circle, so the total is the brick volume exactly ...
+    assert!((val(&out, "volume") - 1.26 * 1.26).abs() <= 1e-12, "{}", val(&out, "volume"));
+    // ... and each owner is its own exact n-gon prism (fuel 0.489834793427315 at n = 16).
+    check_owners(&out, 1);
+    // 5 layers x (16 + 16 fuel + 16 moderator): ogrid, not a fallback, made the annulus.
+    assert_eq!(val(&out, "cells"), 240.0, "{out}");
     assert!(
         text(&out, "shapes").starts_with("{Hex:") && !text(&out, "shapes").contains(','),
         "{}",
@@ -237,6 +286,17 @@ fn acc1_lattice_is_conformal_and_two_runs_agree() {
     assert_eq!(val(&a, "violations"), 0.0, "{a}");
     assert!((val(&a, "volume") - 9.0 * 1.26 * 1.26).abs() <= 1e-11, "{}", val(&a, "volume"));
     assert_eq!(text(&a, "hash"), text(&b, "hash"));
+    check_owners(&a, 9);
+    assert_eq!(val(&a, "cells"), 9.0 * 240.0, "{a}");
+}
+
+#[test]
+fn pin_and_lattice_hashes_agree_for_1_and_n_threads() {
+    for (name, lattice) in [("hp", false), ("hl", true)] {
+        let script = pin(lattice);
+        let one = hash_with(1, name, &script);
+        assert_eq!(one, hash_with(4, name, &script), "{name}: 1 vs 4 threads");
+    }
 }
 
 #[test]
