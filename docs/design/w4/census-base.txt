@@ -4,6 +4,9 @@
 # note: golden-reviewed rows for sm-protocol rejected.json and requests.json refreshed at a9d86ca after W4-0.5 (ACR-DAGMC-SRC, additive golden insertions)
 # note: golden-reviewed rows refreshed at the W4a-a1 part-2 combine (bdeea2a): sm-mcp tools.standard.txt (+mesh__volume_check, +model__subdivide_pin; OR-e), session.out.jsonl and session.out.respell.jsonl (session_export `source` property; OR-b), new sm-diag mesh.volume_check.* goldens (W4-POLY-VOLDIAG)
 # note: golden-reviewed row refreshed at the W4a-a2 combine (6123200): sm-mcp tools.standard.txt (+mesh__decompose_plan W4-HEX-QUERY, +model__import_openmc W4-CSG-CORE, +model__lattice_define, +model__lattice_tag, +model__region_clear, +model__region_tags W4-REGIONS-SPLIT; OR-e)
+# note: D5 move (rulings D5, OR-f) refreshed at the W4a-a3 combine: W4-MESHER-LISTS 5a0d3ea (ogrid enters default/hex_only) and 3128fa0, merged via W4-HEX-PIN-INT e83545b; rows old -> new: platform w3c_pin.branch.main, .mem.state, .print.h_mesh, .state 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> 1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e; w3c_pin.layer.intent 931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd -> 9bee9cf0e703b7912c4843ef112b417e627499c7ae5686e12944d300b0a418e1; w3c_pin.layer.meshes 469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683 -> 81ec9c490b5b5604279e860793cfc059e68379001a63c751622731dd516426aa; w3c_pin.print.cells 432 -> 891; w3c_pin.print.h_auto 1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1 -> dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab; platform expected.txt.sha256 e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247 -> 24a1cf0cbd5d7923a3f68db74ad4592be6f548dce5550974072f7e2f04a214ab; w3c_pin leftout.print.h_mesh, leftout.state 87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256 -> c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59; w3c_pin pin.hexes 432 -> 891. Unchanged: w3c_pin.h_model, w3c_pin.layer.model, W2, W3a, W3b and the enclosed pin rows
+# note: new rows at the W4a-a3 combine for the 10 new OpenMC fixtures of W4-CSG-ORACLE d32864e (disconnected, placed_z, quadric_cyl, ref_assembly17, ref_assembly17_h2, ref_beavrs_assembly, ref_mini3x3, ref_mini3x3_h2, ref_pin, ref_pin_h2): csgio oracle.<name>.sha256 (any) and content_hash.<name> (macos-aarch64)
+# note: golden-reviewed row refreshed at the W4a-a3 combine (7acd147): sm-mcp tools.standard.txt (+mesh__preserve_volume W4-MESHER-LISTS; OR-e) 1941f43752ce706ef52745b6900d94bd5340b1644773455d152bd02fa323d265 -> 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
@@ -14,6 +17,7 @@ conformance|polydual.smesh|any|2bbb48bf7fe7bf80c961df04ca655a84c56e3c921d1c8100e
 conformance|tetbox.smesh|any|f09391d01605bba85c5798a2d0d7af723273bbff2127589b3eb503ef00eb998c
 conformance|wedgeprism.smesh|any|ba42aa67098317a92f53f7fa2d9cc52bf2c3a6f8818533c2957278d8d6055dbd
 csgio|content_hash.deck_o|macos-aarch64|b240ce707ff6a7d383dc79622befdafa
+csgio|content_hash.disconnected|macos-aarch64|5616e4dd297a776251c439b8c5531617
 csgio|content_hash.grammar|macos-aarch64|395932b07c0656d9dcd9d12e84f7edaf
 csgio|content_hash.lattice2d|macos-aarch64|7d32c320d196aa2b9e8acbe83c4ca57a
 csgio|content_hash.lattice3d|macos-aarch64|e16b60a8099d6537e254604375a8767d
@@ -21,11 +25,21 @@ csgio|content_hash.lattice_xf|macos-aarch64|32deb26e2d419cff97599baf9b427587
 csgio|content_hash.nested|macos-aarch64|02a7cf3f8b8e2ca6bab4691b2c65d881
 csgio|content_hash.outer_structured|any|error: unsupported (line 7): lattice 20: outer universe 30 depends on position (OpenMC tiles `outer` at the lattice pitch around the array, this reader places it once); only an `outer` whose cells have no region, recursively, is supported
 csgio|content_hash.pin|macos-aarch64|34007f986ca0b73dea9384553f850100
+csgio|content_hash.placed_z|macos-aarch64|2b2cc96843464df1fec8c7c0d4d1eb32
+csgio|content_hash.quadric_cyl|macos-aarch64|1608a3533c066815a93f482e71ea45dd
+csgio|content_hash.ref_assembly17_h2|macos-aarch64|6db4bec22a4832dc848705a84a9ac0a3
+csgio|content_hash.ref_assembly17|macos-aarch64|6e8649525bb2ae977824bb3e68bb1037
+csgio|content_hash.ref_beavrs_assembly|macos-aarch64|0902512f9a6af377ec99fa0382824ec5
+csgio|content_hash.ref_mini3x3_h2|macos-aarch64|a3d7e86ad55af8aa4541818bd1c04fcf
+csgio|content_hash.ref_mini3x3|macos-aarch64|9e93d6998381d40a630d84c90902a55d
+csgio|content_hash.ref_pin_h2|macos-aarch64|a78d927dd4cde8207dd10d8ef6aa41e8
+csgio|content_hash.ref_pin|macos-aarch64|c208a8c53ab150759affb0ebdfd91a1e
 csgio|content_hash.rotations|macos-aarch64|152f0b7aeee397c48e6695985cb430ae
 csgio|content_hash.surfaces|macos-aarch64|963b76d8ee45628867548e93c48ff27d
 csgio|content_hash.translated|macos-aarch64|55857f088a948bf0ab5faa75ae1bb9c1
 csgio|golden.deck_o_overlap.json.sha256|any|b80ad1ffa99e66987312ac0cc1abdb9f12f673ada125ce25aa6fbe58c21f6897
 csgio|oracle.deck_o.sha256|any|d393d844bf790c01db44a6c83c3c8193c41c9ed11dff02afe9d48df8f7057cd9
+csgio|oracle.disconnected.sha256|any|98d22b72c15858dff4af7a6c0067ffb24a6707a2137a568a93c862869d868c33
 csgio|oracle.grammar.sha256|any|90ec1df67a66e4e10a71e01f1cdea03dae9540bd69042687970208d5e07c8295
 csgio|oracle.lattice2d.sha256|any|9fe24095e1e90b06bf6edfda46ba759be9c5d77702c5ca197a18218d9bd0e8ac
 csgio|oracle.lattice3d.sha256|any|11ee11978c9d9dbf6b10426a69cb28ae2210db6a3acfcf1a844b472892d0432c
@@ -33,6 +47,15 @@ csgio|oracle.lattice_xf.sha256|any|aaf8804e8b8171e0a9984bf52e412d1f6ad08c986f80c
 csgio|oracle.nested.sha256|any|6165237542a099922a92bd57b5462338a1b1306662aec603fa43e1394eb4599a
 csgio|oracle.outer_structured.sha256|any|600e4bfb4ec233cee2ca04084d84b46f28696e8b5c41b667edd3c73505e95c9b
 csgio|oracle.pin.sha256|any|53d04a0f73cf4e54e0598fc1cef9574c0697d0208ef2f56c124c0f4cee223141
+csgio|oracle.placed_z.sha256|any|b32e64c9868d79d77b24f35414ef6c2c43f5e330e83a15fed5db59a1b15d6f7b
+csgio|oracle.quadric_cyl.sha256|any|ccdfd9a6dd55ac7048ee7e65fd1e30503856ef03ce0fe95756fe7f0474f68f72
+csgio|oracle.ref_assembly17.sha256|any|556f35a69d8f02f08b074288b25c5143d2a7cb00ec9f7cef0d381a5f4839cc13
+csgio|oracle.ref_assembly17_h2.sha256|any|00511ebe38757173f9c760b6405de7db13bdf0d5eae980c40a95ff5b5c23994c
+csgio|oracle.ref_beavrs_assembly.sha256|any|8c6c6d4e02b8303257254b1aaa29783d941b1fae8ecb012b77d853d2095f56ad
+csgio|oracle.ref_mini3x3.sha256|any|9c92f63eb83af7a68a42330387338a0a3a2e877781e3bff2584c45ec1c1dc373
+csgio|oracle.ref_mini3x3_h2.sha256|any|90ac82991c4fc129b5afe63f7ebfc7149aeed514c8c6980886d7c979eef7b69e
+csgio|oracle.ref_pin.sha256|any|58830d28b9587323bf1bfc28223beb1279b7b81def7cd3db10dddb6c292893c7
+csgio|oracle.ref_pin_h2.sha256|any|368ad9f9b4f9bae4e3d09c1a0fadb2fd83d77b0885aa0be42372497e1a4249f8
 csgio|oracle.rotations.sha256|any|9b1a07202e37828297d7d861d1f735e494bf1179b96c05e99eb3d75a7e8595e5
 csgio|oracle.surfaces.sha256|any|8b59eb3e261fbc8ecbaf02f62e606d96b61bc526e3a681319c11e3dabcad9480
 csgio|oracle.translated.sha256|any|3102bf9c8a6a6a0aca86f829c4ef5629da6e67e3b43e3d2f5ae4082ba86e94fb
@@ -243,7 +266,7 @@ golden-reviewed|crates/sm-lang/tests/golden/w2/wrong_kind_in_array.txt|any|416af
 golden-reviewed|crates/sm-mcp/tests/golden/session.in.jsonl|any|6e78c1f184ddd2601deb019714f0def4730d7cc4fd730fde2e7d93bc3a326419
 golden-reviewed|crates/sm-mcp/tests/golden/session.out.jsonl|any|4fe5380a28c1449b938c7612cf721bd5219c5976d368b5a8570b9949546a3d3a
 golden-reviewed|crates/sm-mcp/tests/golden/session.out.respell.jsonl|any|3d025964e068c69b4f4d7add46fbc2888463adf93c46951e7ff95eaa98ca0c58
-golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|1941f43752ce706ef52745b6900d94bd5340b1644773455d152bd02fa323d265
+golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9
 golden-reviewed|crates/sm-mesh-api/tests/golden/validate_broken.txt|any|1bae7b5412546e55a0011438cdea9f8d016e9f90845ec64eb96f8bd23fc6dfad
 golden-reviewed|crates/sm-protocol/golden/catalog.json|any|01d3b85aefa31cbb182bf06cafdae2c2ec604ed2a172706354f1817212ffc60a
 golden-reviewed|crates/sm-protocol/golden/lenient.json|any|104ca833bb34bfd34ae1123f86615f45267a272a7c72dcb8a8adb2470a272be0
@@ -313,7 +336,7 @@ platform_linux|test.each_format_is_byte_identical_in_process_cli_and_mcp|linux-x
 platform_linux|test.flat_inputs_keep_their_w3a_hashes|linux-x86_64|ok
 platform_linux|test.identity_hashes_match_expected_on_every_platform|linux-x86_64|ok
 platform_linux|test.milestone_w3c_pin|linux-x86_64|ok
-platform|expected.txt.sha256|any|e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247
+platform|expected.txt.sha256|any|24a1cf0cbd5d7923a3f68db74ad4592be6f548dce5550974072f7e2f04a214ab
 platform|w2_fork.branch.alt|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
 platform|w2_fork.branch.coarse|any|f5f2866af4e7f14369b8f9367c06d1dc52ce9b20e764bf81c690073452050164
 platform|w2_fork.branch.main|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
@@ -366,16 +389,16 @@ platform|w3b_submap_graded.print.cells|any|36
 platform|w3b_submap_graded.print.geometry_hash|any|43ecc0a4b59b3715
 platform|w3b_submap_graded.print.topology_hash|any|c99bcaa8d93e9a5e
 platform|w3b_submap_graded.state|any|7b71fd6dd5c3dd7136a6a1b78a40c8fa3f851877e9f069a73f164f731b0c0b1f
-platform|w3c_pin.branch.main|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
-platform|w3c_pin.layer.intent|any|931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd
-platform|w3c_pin.layer.meshes|any|469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683
+platform|w3c_pin.branch.main|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
+platform|w3c_pin.layer.intent|any|9bee9cf0e703b7912c4843ef112b417e627499c7ae5686e12944d300b0a418e1
+platform|w3c_pin.layer.meshes|any|81ec9c490b5b5604279e860793cfc059e68379001a63c751622731dd516426aa
 platform|w3c_pin.layer.model|any|a2c1c6aa45de6bf4c96c3ae21a4aaca9ba2b58b6134e1f5dd2fe905b569971ba
-platform|w3c_pin.mem.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
-platform|w3c_pin.print.cells|any|432
-platform|w3c_pin.print.h_auto|any|1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1
-platform|w3c_pin.print.h_mesh|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.mem.state|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
+platform|w3c_pin.print.cells|any|891
+platform|w3c_pin.print.h_auto|any|dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab
+platform|w3c_pin.print.h_mesh|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
 platform|w3c_pin.print.h_model|any|f238f0340fc123ef799f241e7f9ff99e3d5d7ef848113f9a6c20f768d47b4e9d
-platform|w3c_pin.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.state|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
 poly|acc7.tet_block.keep.geometry_hash|macos-aarch64|dd13302baaae7a87
 poly|acc7.tet_block.keep.topology_hash|any|66fe41de52386ec9
 poly|acc7.tet_block.planar.geometry_hash|macos-aarch64|ad8dcab2f3fe1e87
@@ -478,10 +501,10 @@ w3c_pin|enclosed.print.h_model|any|8cdcb65bfef688ff4804606968a1be43f8261b7b5bd9a
 w3c_pin|enclosed.print.head|any|main
 w3c_pin|enclosed.print.mesh_volume|macos-aarch64|1.5875999999999972
 w3c_pin|enclosed.state|any|0804bbbffc493a1a399145c657edbb7554381df129af432830f312a4a72204b2
-w3c_pin|leftout.print.h_mesh|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
+w3c_pin|leftout.print.h_mesh|any|c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59
 w3c_pin|leftout.print.mesh|any|Mesh#1
-w3c_pin|leftout.state|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
-w3c_pin|pin.hexes|any|432
+w3c_pin|leftout.state|any|c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59
+w3c_pin|pin.hexes|any|891
 w3c_pin|warped.print.h_mesh|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8
 w3c_pin|warped.print.mesh|any|Mesh#1
 w3c_pin|warped.state|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8
