@@ -32,7 +32,7 @@ use crate::mesh_ops::{estimate_face_cells, faces_mode, failed, make_driver, size
 /// Name of the strategy `mesh.auto` uses when none is given.
 pub const DEFAULT_STRATEGY: &str = "default";
 
-const DEFAULT_DESCRIPTION: &str = "planner scores over surface [map, submap, pave, trimesh] \
+const DEFAULT_DESCRIPTION: &str = "planner scores over surface [map, ogrid, submap, pave, trimesh] \
      and volume [map, sweep, tetmesh]; list order breaks ties; failed candidates fall back \
      through the replan loop";
 
@@ -170,13 +170,13 @@ pub struct AutoLists {
 }
 
 impl AutoLists {
-    /// The hex-only lists: surface `[map, submap, pave]`, volume `[map, sweep]`, curve `[equal]`.
+    /// The hex-only lists: surface `[map, ogrid, submap, pave]`, volume `[map, sweep]`, curve `[equal]`.
     /// No tet candidate, so a volume that cannot be meshed with hexes makes `mesh.auto` fail.
     pub fn hex_only() -> Self {
         let v = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect();
         Self {
             curve: v(&["equal"]),
-            surface: v(&["map", "submap", "pave"]),
+            surface: v(&["map", "ogrid", "submap", "pave"]),
             volume: v(&["map", "sweep"]),
         }
     }
@@ -189,13 +189,13 @@ impl AutoLists {
             volume: v(&["tetmesh"]),
         }
     }
-    /// The standard lists: surface `[map, submap, pave, trimesh]`, volume `[map, sweep,
+    /// The standard lists: surface `[map, ogrid, submap, pave, trimesh]`, volume `[map, sweep,
     /// tetmesh]`, curve `[equal]`.
     pub fn standard() -> Self {
         let v = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect();
         Self {
             curve: v(&["equal"]),
-            surface: v(&["map", "submap", "pave", "trimesh"]),
+            surface: v(&["map", "ogrid", "submap", "pave", "trimesh"]),
             volume: v(&["map", "sweep", "tetmesh"]),
         }
     }
@@ -485,7 +485,7 @@ impl Default for StrategyRegistry {
         r.insert(Arc::new(
             DefaultStrategy::with_lists(AutoLists::hex_only()).named(
                 HEX_ONLY_STRATEGY,
-                "hexes only: surface [map, submap, pave], volume [map, sweep]; a volume with no \
+                "hexes only: surface [map, ogrid, submap, pave], volume [map, sweep]; a volume with no \
                  hex scheme fails instead of getting tets",
             ),
         ));

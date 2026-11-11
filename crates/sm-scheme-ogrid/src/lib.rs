@@ -24,8 +24,8 @@ pub use scheme::{NAME, Ogrid, OgridParams};
 
 use sm_scheme_api::SchemeRegistry;
 
-/// Register the `ogrid` surface scheme ([`Ogrid`]). No automatic list names it yet; select it
-/// with an explicit `mesh.scheme`.
+/// Register the `ogrid` surface scheme ([`Ogrid`]). The automatic surface list names it (W4 D5), so
+/// faces with circular holes pick it; an explicit `mesh.scheme` also selects it.
 pub fn register(registry: &mut SchemeRegistry) -> sm_scheme_api::Result<()> {
     registry.register(Box::new(Ogrid))
 }

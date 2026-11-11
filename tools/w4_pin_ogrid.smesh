@@ -1,0 +1,100 @@
+// W4 round-pin milestone, through pin and lattice (docs/design/w4/drafts/hexpin.md W4-HEX-PIN-INT,
+// plan.md ruling D4).
+//
+// The W3c through pin (H = 1.0, r = 0.4 in a 1.26 square) and its 3x3 lattice by `model.copy`
+// (18 volumes), meshed with `hex_only` (ogrid on the discs and square annuli, sweep in z), every
+// circle fixed to n = 16 intervals (n % 4 == 0, so the lattice mesh is mirror symmetric). The
+// linear mesh holds the polygon volume h (n/2) r^2 sin(2 pi / n); `mesh.preserve_volume` (VOLFIT)
+// then moves the nodes on the cylinder faces radially so every fuel pin holds pi r^2 h and every
+// moderator cell (1.26^2 - pi r^2) h, to 1e-12 relative.
+//
+// It prints `key value...` lines; tests/milestone_w4_pin.rs compares them between the CLI, MCP and
+// in-process front ends. Files are written relative to the session's working directory.
+
+// ---------------------------------------------------------------- model: pin cell and lattice
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "pin cell: fuel and moderator"
+
+let fx = model.copy(entities: fu.volume, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let mx = model.copy(entities: mo.volumes, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let fy = model.copy(entities: fu.volume | fx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+let my = model.copy(entities: mo.volumes | mx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 18, "3x3 lattice: 9 pin cells of 2 volumes"
+let fuels = fu.volume | fx.volumes | fy.volumes
+let mods = mo.volumes | mx.volumes | my.volumes
+assert count(fuels) == 9 and count(mods) == 9, "9 fuel pins, 9 moderator cells"
+fem.block_add(1, volumes: fuels, name: "fuel")
+fem.block_add(2, volumes: mods, name: "moderator")
+
+// n = 16 on every circle (the only edges longer than 2: a circle is 2 pi 0.4 = 2.513 long)
+for e in all edges {
+  if model.measure(entity: e).length > 2.0 {
+    mesh.intervals(targets: e, count: 16)
+  }
+}
+mesh.size(targets: all volumes, size: 0.3)
+let h_model = session.hash()
+print "h_model", h_model
+
+// ---------------------------------------------------------------- auto and the volume run
+let au = mesh.auto(strategy: "hex_only")
+let h_auto = session.hash()
+print "h_auto", h_auto
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "mesh", m.mesh[0]
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
+print "violations", val.total
+let mplan = mesh.plan(mesh: m.mesh[0])
+assert mplan.status == "ran", "plan of the ran mesh"
+
+// The linear mesh: every fuel pin is the inscribed 16-gon prism h (n/2) r^2 sin(2 pi / n).
+let poly = 8.0 * 0.16 * sin(3.141592653589793 / 8.0)
+for v in fuels {
+  assert abs(mi.volume_by_owner["Topo" + str(v)] - poly) < 1e-12 * poly, "linear fuel pin is the 16-gon prism"
+}
+print "poly_volume", poly
+print "fuel_volume_linear", mi.volume_by_owner["Topo" + str(fu.volume)]
+print "h_linear", session.hash()
+
+// ---------------------------------------------------------------- VOLFIT on the cylinder faces
+let cyl = all faces - all faces
+for f in all faces {
+  let bb = model.measure(entity: f).bbox
+  if bb.hi[0] - bb.lo[0] > 0.79 and bb.hi[0] - bb.lo[0] < 0.81 and bb.hi[2] - bb.lo[2] > 0.5 {
+    set cyl = cyl | f
+  }
+}
+assert count(cyl) == 9, "one cylinder face per pin"
+mesh.preserve_volume(mesh: m.mesh[0], surfaces: cyl)
+let mj = mesh.info(mesh: m.mesh[0])
+let disk = 3.141592653589793 * 0.16
+for v in fuels {
+  assert abs(mj.volume_by_owner["Topo" + str(v)] - disk) < 1e-12 * disk, "fuel pin holds pi r^2 h"
+}
+for v in mods {
+  assert abs(mj.volume_by_owner["Topo" + str(v)] - (1.5876 - disk)) < 1e-12 * 1.5876, "moderator holds (1.26^2 - pi r^2) h"
+}
+assert mj.cells == mi.cells, "no cell is added or removed"
+print "fuel_volume", mj.volume_by_owner["Topo" + str(fu.volume)]
+print "mesh_volume", mj.volume
+let val2 = mesh.validate(mesh: m.mesh[0])
+assert val2.valid and val2.total == 0, "validate is empty after VOLFIT"
+let h_mesh = session.hash()
+print "h_mesh", h_mesh
+
+// ---------------------------------------------------------------- exports
+session.export("pin.smrt")
+session.export("pin_foam", format: "openfoam")
+assert session.hash() == h_mesh, "exports leave the state hash unchanged"
+print "head", timeline.head().branch

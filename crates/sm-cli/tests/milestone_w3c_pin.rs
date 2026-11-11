@@ -2,7 +2,7 @@
 //!
 //! `tools/w3c_pin.smesh` builds a through pin (H = 1.0: a moderator brick minus a consumed copy of
 //! the fuel cylinder, imprint, merge) and its 3x3 lattice with `model.copy` (18 volumes), lets
-//! `mesh.auto { strategy: "default" }` choose the schemes (all-hex, 432 hexes), meshes, validates,
+//! `mesh.auto { strategy: "default" }` choose the schemes (all-hex, 891 hexes), meshes, validates,
 //! and writes the `.smrt` and an OpenFOAM case. `tools/w3c_pin_enclosed.smesh` is the enclosed pin
 //! (H = 0.8, all-tet by C1). `tools/w3c_pin_leftout.smesh` leaves one volume out of the blocks (the
 //! R10 warning) and `tools/w3c_warped.smesh` is the warped-hexahedron fixture for
@@ -12,7 +12,7 @@
 //!
 //! | row | what |
 //! |---|---|
-//! | P1 | through pin and 3x3 lattice by `model.copy`: 18 volumes, volume 9 x 1.26^2, 432 hexes (script asserts) |
+//! | P1 | through pin and 3x3 lattice by `model.copy`: 18 volumes, volume 9 x 1.26^2, 891 hexes (script asserts) |
 //! | P2 | `mesh.auto` stores explicit assignments; replay under an unregistered strategy reaches the same hash |
 //! | P3 | `validate` is empty (conformal interfaces) |
 //! | P4 | blocks per material; `.smrt` with no warning, loaded by `sm_rt::read_smrt` with regions = blocks |
@@ -43,15 +43,15 @@ use w3a_support::*;
 /// Measured on macOS arm64; per-platform identity is `tools/platform/expected.txt`'s business.
 const PIN_HASHES: [&str; 3] = [
     "f238f0340fc123ef799f241e7f9ff99e3d5d7ef848113f9a6c20f768d47b4e9d",
-    "1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1",
-    "6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6",
+    "dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab",
+    "1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e",
 ];
 const ENCLOSED_HASHES: [&str; 3] = [
     "8cdcb65bfef688ff4804606968a1be43f8261b7b5bd9a683bbd22ffcef958bfe",
     "5dd202e512ebe0b55bed8c6f88a1e1449e625da091ba4c6d94a0841d0a6ffc47",
     "0804bbbffc493a1a399145c657edbb7554381df129af432830f312a4a72204b2",
 ];
-const LEFTOUT_H_MESH: &str = "87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256";
+const LEFTOUT_H_MESH: &str = "c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59";
 const WARPED_H_MESH: &str = "45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8";
 
 const KEYS: [&str; 3] = ["h_model", "h_auto", "h_mesh"];
@@ -412,13 +412,13 @@ fn milestone_w3c_pin() {
     let h = |f: &Front, k: &str| one(&f.prints, k);
 
     // P1 and P3: the script's own assertions passed (exit 0); read back what it printed.
-    rows.note(1, "script asserts: 2 volumes per pin cell, 18 in the lattice, 9 fuel + 9 moderator, volume 9 x 1.26^2, 432 hexes");
+    rows.note(1, "script asserts: 2 volumes per pin cell, 18 in the lattice, 9 fuel + 9 moderator, volume 9 x 1.26^2, 891 hexes");
     match (floats(&cli.prints, "model_volume"), floats(&cli.prints, "mesh_volume"), one(&cli.prints, "cells"), one(&cli.prints, "shapes")) {
         (Ok(v), Ok(mv), Ok(c), Ok(sh)) => {
             rows.near(1, "lattice volume", v, 9.0 * 1.26 * 1.26, 1e-9);
             rows.near(1, "mesh volume", mv, 9.0 * 1.26 * 1.26, 1e-9);
-            rows.eq(1, "hex cells", &c, &"432".to_owned());
-            rows.eq(1, "cell shapes", &sh, &"{Hex: 432}".to_owned());
+            rows.eq(1, "hex cells", &c, &"891".to_owned());
+            rows.eq(1, "cell shapes", &sh, &"{Hex: 891}".to_owned());
         }
         other => rows.fail(1, format!("model_volume/mesh_volume/cells/shapes: {other:?}")),
     }
