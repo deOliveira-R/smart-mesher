@@ -189,3 +189,43 @@ fn same_input_same_state_hash_and_node_bits() {
     };
     assert_eq!(run(), run());
 }
+
+/// VOLFIT acceptance on the W3c through pin (default auto, size 0.3): fuel and moderator hold their
+/// analytic volumes to 1e-12 after the op on the cylinder face, the total is unchanged, the mesh is valid.
+#[test]
+fn the_w3c_through_pin_holds_fuel_and_moderator_volumes() {
+    let mut s = server();
+    script(
+        &mut s,
+        "let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)\n\
+         let fu = model.create_cylinder(height: 1.0, radius: 0.4)\n\
+         let tl = model.create_cylinder(height: 1.0, radius: 0.4)\n\
+         let mo = model.subtract(targets: br.body, tools: tl.body)\n\
+         model.imprint(bodies: all bodies)\n\
+         model.merge()\n\
+         mesh.size(targets: all volumes, size: 0.3)\n\
+         mesh.auto(strategy: \"default\")\n\
+         let m = mesh.run(targets: all volumes)\n",
+    )
+    .unwrap_or_else(|e| panic!("pin: {}", brief(&e)));
+    let before = info(&mut s);
+    let (_, cyl) = circles_and_cylinders(&s);
+    assert!(!cyl.is_empty(), "the pin has a cylindrical face");
+    let ids: Vec<String> = cyl.iter().map(|e| e.to_string()).collect();
+    apply(&mut s, "mesh.preserve_volume", json!({"mesh": "Mesh#1", "surfaces": ids})).expect("preserve");
+    let after = info(&mut s);
+    let mut vols = volumes_by_owner(&after);
+    vols.sort_by(f64::total_cmp);
+    assert_eq!(vols.len(), 2, "fuel and moderator: {after}");
+    let fuel = PI * 0.16;
+    let moderator = 1.26 * 1.26 - fuel;
+    assert!((vols[0] / fuel - 1.0).abs() < 1e-12, "fuel {} vs {fuel}", vols[0]);
+    assert!((vols[1] / moderator - 1.0).abs() < 1e-12, "moderator {} vs {moderator}", vols[1]);
+    let total = after["volume"].as_f64().expect("vol");
+    assert!((total / (1.26 * 1.26) - 1.0).abs() < 1e-12, "total {total}");
+    assert!((total / before["volume"].as_f64().expect("vol") - 1.0).abs() < 1e-12, "the brick total is unchanged");
+    assert_eq!(after["cells"], before["cells"]);
+    let val = s.call(Request::Query { name: "mesh.validate".into(), input: json!({"mesh": "Mesh#1"}), at: None }).expect("validate");
+    assert_eq!(val["total"], 0, "{val}");
+    assert_eq!(val["inverted"].as_u64().unwrap_or(0), 0, "{val}");
+}
