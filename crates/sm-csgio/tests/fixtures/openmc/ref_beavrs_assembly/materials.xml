@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <material id="1" name="Air">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="5" name="Helium">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="6" name="Inconel 718">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="7" name="Zircaloy 4">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="9" name="Air TH">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="10" name="Fuel 1.6%">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="16" name="Borated Water">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="17" name="Water SPN">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="18" name="SS SPN">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+</materials>

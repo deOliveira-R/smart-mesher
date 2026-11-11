@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" material="1" region="-1 2 -3 4 -5 6 -7" universe="0"/>
+  <cell id="2" material="2" region="1 2 -3 4 -5 6 -7" universe="0"/>
+  <surface id="1" type="quadric" coeffs="1.0 1.0 0.0 0.0 0.0 0.0 -0.7 0.4 0.0 -0.1975"/>
+  <surface id="2" type="x-plane" boundary="vacuum" coeffs="-1.5"/>
+  <surface id="3" type="x-plane" boundary="vacuum" coeffs="1.5"/>
+  <surface id="4" type="y-plane" boundary="vacuum" coeffs="-1.5"/>
+  <surface id="5" type="y-plane" boundary="vacuum" coeffs="1.5"/>
+  <surface id="6" type="z-plane" boundary="vacuum" coeffs="0.0"/>
+  <surface id="7" type="z-plane" boundary="vacuum" coeffs="0.2"/>
+</geometry>

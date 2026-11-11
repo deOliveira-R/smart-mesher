@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" name="pin inner" material="1" region="-1" universe="1"/>
+  <cell id="2" name="pin gap" material="4" region="1 -2" universe="1"/>
+  <cell id="3" name="pin clad" material="2" region="2 -3" universe="1"/>
+  <cell id="4" name="pin water" material="3" region="3" universe="1"/>
+  <cell id="5" name="root cell" fill="1" region="4 -5 6 -7 8 -9" universe="2"/>
+  <surface id="1" type="z-cylinder" coeffs="0.0 0.0 0.4096"/>
+  <surface id="2" type="z-cylinder" coeffs="0.0 0.0 0.418"/>
+  <surface id="3" type="z-cylinder" coeffs="0.0 0.0 0.475"/>
+  <surface id="4" type="x-plane" boundary="reflective" coeffs="-0.63"/>
+  <surface id="5" type="x-plane" boundary="reflective" coeffs="0.63"/>
+  <surface id="6" type="y-plane" boundary="reflective" coeffs="-0.63"/>
+  <surface id="7" type="y-plane" boundary="reflective" coeffs="0.63"/>
+  <surface id="8" type="z-plane" boundary="vacuum" coeffs="-1.0"/>
+  <surface id="9" type="z-plane" boundary="vacuum" coeffs="1.0"/>
+</geometry>
