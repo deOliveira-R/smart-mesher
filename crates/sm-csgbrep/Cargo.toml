@@ -35,6 +35,10 @@ sm-protocol = { path = "../sm-protocol" }
 sm-engine = { path = "../sm-engine" }
 rayon = "1"
 sm-testkit = { path = "../sm-testkit" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-rt = { path = "../sm-rt" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-meshio = { path = "../sm-meshio" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

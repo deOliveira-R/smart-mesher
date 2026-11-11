@@ -5,7 +5,7 @@ mod common;
 use common::*;
 
 /// `(fixture, imports)`: the expected outcome of each committed fixture today.
-const EXPECTED: [(&str, bool); 11] = [
+const EXPECTED: [(&str, bool); 21] = [
     ("pin", true),
     ("lattice2d", true),
     ("lattice_xf", true),
@@ -17,6 +17,17 @@ const EXPECTED: [(&str, bool); 11] = [
     ("surfaces", false),
     ("outer_structured", false),
     ("grammar", false),
+    // CSGBREP-ORACLE fixtures. The tall corpus decks meet kernel limits (see `oracle.rs`).
+    ("quadric_cyl", true),
+    ("disconnected", true),
+    ("placed_z", true),
+    ("ref_pin_h2", true),
+    ("ref_mini3x3_h2", true),
+    ("ref_assembly17_h2", true),
+    ("ref_pin", false),
+    ("ref_mini3x3", false),
+    ("ref_assembly17", false),
+    ("ref_beavrs_assembly", false),
 ];
 
 #[test]
@@ -30,7 +41,7 @@ fn every_fixture_imports_or_is_refused_typed() {
             (Ok(d), true) => report.push(format!("{name}: {} volumes", d.outputs["deck_volumes"].len())),
             (Err(e), false) => {
                 let e = e.to_string();
-                assert!(e.contains("csg.unsupported"), "{name}: not a typed Unsupported: {e}");
+                assert!(e.contains("csg.unsupported") || e.contains("csg.kernel"), "{name}: not a typed refusal: {e}");
                 // Names the element: a deck surface id or a deck line.
                 assert!(e.contains("surface ") || e.contains("line "), "{name}: {e}");
                 report.push(format!("{name}: {e}"));

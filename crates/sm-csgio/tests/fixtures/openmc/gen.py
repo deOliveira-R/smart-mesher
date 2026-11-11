@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import signal
+import re
 import tempfile
 
 import warnings
@@ -441,6 +442,123 @@ def grammar():
     return Spec(raw_geometry=geometry, materials=mats, box=((-4, -4, -4), (4, 4, 4)), rays=rays)
 
 
+@model
+def quadric_cyl():
+    """A z-cylinder written as a general `quadric` (so the importer must classify it), off the
+    coordinate axes: `(x-cx)^2 + (y-cy)^2 - r^2` in a vacuum box. The box is 0.2 high, about the
+    length of the circle's mesh intervals, so a mesh of the lateral face needs no interior node and
+    is exactly the prism of the inscribed polygon (`tests/oracle_mesh.rs`)."""
+    import openmc
+
+    m = Mats()
+    cx, cy, r = 0.35, -0.2, 0.6
+    q = openmc.Quadric(a=1.0, b=1.0, c=0.0, g=-2.0 * cx, h=-2.0 * cy, k=cx * cx + cy * cy - r * r)
+    reg, _ = box_region(openmc, (-1.5, -1.5, 0.0), (1.5, 1.5, 0.2), VAC)
+    cells = [openmc.Cell(1, fill=m("fuel"), region=-q & reg), openmc.Cell(2, fill=m("water"), region=+q & reg)]
+    rays = [((-1.5, -0.1, 0.1), (1, 0, 0)), ((-1.5, 0.3, 0.12), (1, 0, 0)), ((0.3, -1.5, 0.05), (0, 1, 0)), ((0.35, -0.2, 0.0), (0, 0, 1)), ((-1.4, -1.3, 0.04), (0.7, 0.6, 0.015)), ((1.4, 1.2, 0.17), (-0.6, -0.7, -0.015))]
+    return Spec(openmc.Geometry(openmc.Universe(0, cells=cells)), m.collection(), ((-1.5, -1.5, 0.0), (1.5, 1.5, 0.2)), rays)
+
+
+@model
+def disconnected():
+    """One cell of two disconnected parts (water on both sides of a slab), planes only: a union
+    region, so the cell is several volumes in one block."""
+    import openmc
+
+    m = Mats()
+    a, b = openmc.XPlane(-0.35), openmc.XPlane(0.35)
+    reg, _ = box_region(openmc, (-1.5, -1.0, 0.0), (1.5, 1.0, 1.0), VAC)
+    cells = [openmc.Cell(1, fill=m("fuel"), region=+a & -b & reg), openmc.Cell(2, fill=m("water"), region=(-a | +b) & reg)]
+    rays = [((-1.5, 0.1, 0.5), (1, 0, 0)), ((-1.5, -0.7, 0.2), (1, 0.05, 0.1)), ((-1.4, -0.9, 0.1), (0.8, 0.5, 0.25)), ((0.1, -1.0, 0.5), (0, 1, 0)), ((1.2, 0.9, 0.95), (-0.9, -0.4, -0.1))]
+    return Spec(openmc.Geometry(openmc.Universe(0, cells=cells)), m.collection(), ((-1.5, -1.0, 0.0), (1.5, 1.0, 1.0)), rays)
+
+
+@model
+def placed_z():
+    """A universe of a box, a z-cylinder and the rest, filling a cell with a translation and a
+    rotation about z by 35 degrees (planes in general position). No cell is symmetric under the
+    rotation, so a wrong sense of rotation moves points between cells."""
+    import openmc
+
+    m = Mats()
+    px0, px1 = openmc.XPlane(0.5), openmc.XPlane(1.5)
+    py0, py1 = openmc.YPlane(0.2), openmc.YPlane(0.7)
+    cyl = openmc.ZCylinder(x0=-1.0, y0=1.2, r=0.4)
+    boxr = +px0 & -px1 & +py0 & -py1
+    uni = openmc.Universe(5, cells=[openmc.Cell(101, fill=m("red"), region=boxr), openmc.Cell(102, fill=m("blue"), region=-cyl), openmc.Cell(103, fill=m("mod"), region=~(boxr | -cyl))])
+    reg, _ = box_region(openmc, (-3.0, -3.0, -1.0), (5.0, 5.0, 1.0), VAC)
+    top = openmc.Cell(1, fill=uni, region=reg)
+    top.translation = (1.0, 0.5, 0.0)
+    top.rotation = (0, 0, 35)
+    rays = [((-3.0, 1.2, 0.1), (1, 0, 0)), ((1.0, -3.0, -0.3), (0, 1, 0)), ((-2.9, -2.9, -0.9), (0.6, 0.65, 0.3)), ((4.9, 4.9, 0.8), (-0.55, -0.7, -0.2))]
+    return Spec(openmc.Geometry(openmc.Universe(0, cells=[top])), m.collection(), ((-3.0, -3.0, -1.0), (5.0, 5.0, 1.0)), rays)
+
+
+# The W4-REFCORPUS decks (`tools/refcorpus/`, `gen_openmc.py`, the BEAVRS builder) are copied byte for
+# byte from the corpus directory; their cross sections are replaced by the dummy library as for
+# every other model (the committed `materials.xml` keeps the ids and names only).
+REFCORPUS = os.environ.get("SM_REFCORPUS_DIR", os.path.expanduser("~/.cache/smart-mesh/refcorpus"))
+
+
+def ref_deck(entry, box, rays, seed=1, zhalf=None):
+    """The corpus deck `entry`; with `zhalf` the two z planes are moved to -zhalf and +zhalf (the
+    kernel cannot yet cut a 20 cm tall PWR pin: `the_ref_decks_*` in sm-csgbrep tests)."""
+    import xml.etree.ElementTree as ET
+
+    d = os.path.join(REFCORPUS, entry)
+    with open(os.path.join(d, "geometry.xml")) as f:
+        geometry = f.read()
+    if zhalf is not None:
+        geometry = re.sub(r'(type="z-plane"[^>]*coeffs=")-[0-9.]+"', r'\g<1>-%s"' % zhalf, geometry)
+        geometry = re.sub(r'(type="z-plane"[^>]*coeffs=")[0-9.]+"', r'\g<1>%s"' % zhalf, geometry)
+        box = ((box[0][0], box[0][1], -float(zhalf)), (box[1][0], box[1][1], float(zhalf)))
+    mats = [(int(e.attrib["id"]), e.attrib.get("name") or "material_" + e.attrib["id"]) for e in ET.parse(os.path.join(d, "materials.xml")).getroot().findall("material")]
+    return Spec(raw_geometry=geometry, materials=mats, box=box, rays=rays, seed=seed)
+
+
+@model
+def ref_pin():
+    """W4-REFCORPUS `openmc-pin`: the PWR pin (fuel, gap 0.0084, clad, water) in a box."""
+    return ref_deck("openmc-pin", ((-0.63, -0.63, -10.0), (0.63, 0.63, 10.0)), [((-0.63, 0.1, 0.3), (1, 0, 0)), ((0.2, -0.63, -1.0), (0, 1, 0)), ((-0.6, -0.6, -9.0), (0.3, 0.35, 0.88))])
+
+
+@model
+def ref_mini3x3():
+    """W4-REFCORPUS `openmc-mini-3x3`: a 3x3 lattice of fuel pins with a guide tube in the middle."""
+    return ref_deck("openmc-mini-3x3", ((-1.89, -1.89, -10.0), (1.89, 1.89, 10.0)), [((-1.89, 0.1, 0.3), (1, 0, 0)), ((0.2, -1.89, -1.0), (0, 1, 0)), ((-1.8, -1.8, -9.0), (0.3, 0.35, 0.88))])
+
+
+@model
+def ref_assembly17():
+    """W4-REFCORPUS `openmc-assembly-17x17`: a 17x17 assembly, 24 guide tubes and the instrument tube."""
+    return ref_deck("openmc-assembly-17x17", ((-10.71, -10.71, -10.0), (10.71, 10.71, 10.0)), [((-10.71, 0.3, 0.3), (1, 0, 0)), ((0.2, -10.71, -1.0), (0, 1, 0)), ((-10.6, -10.6, -9.0), (0.5, 0.55, 0.3))])
+
+
+@model
+def ref_pin_h2():
+    """`ref_pin` with the z planes at +-1 (the kernel imports it; the 20 cm deck it cannot yet)."""
+    return ref_deck("openmc-pin", ((-0.63, -0.63, -10.0), (0.63, 0.63, 10.0)), [((-0.63, 0.1, 0.3), (1, 0, 0)), ((0.2, -0.63, -0.9), (0, 1, 0)), ((-0.6, -0.6, -0.9), (0.3, 0.35, 0.88))], zhalf="1.0")
+
+
+@model
+def ref_mini3x3_h2():
+    """`ref_mini3x3` with the z planes at +-1."""
+    return ref_deck("openmc-mini-3x3", ((-1.89, -1.89, -10.0), (1.89, 1.89, 10.0)), [((-1.89, 0.1, 0.3), (1, 0, 0)), ((0.2, -1.89, -0.9), (0, 1, 0)), ((-1.8, -1.8, -0.9), (0.3, 0.35, 0.88))], zhalf="1.0")
+
+
+@model
+def ref_assembly17_h2():
+    """`ref_assembly17` with the z planes at +-1: 289 elements, guide tubes at the OpenMC positions."""
+    return ref_deck("openmc-assembly-17x17", ((-10.71, -10.71, -10.0), (10.71, 10.71, 10.0)), [((-10.71, 0.3, 0.3), (1, 0, 0)), ((0.2, -10.71, -0.9), (0, 1, 0)), ((-10.6, -10.6, -0.9), (0.5, 0.55, 0.3))], zhalf="1.0")
+
+
+@model
+def ref_beavrs_assembly():
+    """W4-REFCORPUS `beavrs-assembly`: a BEAVRS 1.6 % assembly with its axial structure (grids,
+    plena, nozzles) and nested pin universes, 460 cm high."""
+    return ref_deck("beavrs-assembly", ((-10.70864, -10.70864, 0.0), (10.70864, 10.70864, 460.0)), [((-10.70864, 0.3, 100.0), (1, 0, 0)), ((0.2, -10.70864, 200.0), (0, 1, 0)), ((-10.6, -10.6, 5.0), (0.05, 0.05, 1.0))])
+
+
 # ----------------------------------------------------------------------------------------------
 # writing and asking OpenMC
 # ----------------------------------------------------------------------------------------------
@@ -505,7 +623,7 @@ def oracle(work, spec_name):
     import openmc
     import openmc.lib
 
-    spec = MODELS[spec_name]()
+    spec = build_spec(spec_name)
     openmc.lib.init(["-s", "1"], output=False)
     box = np.array(spec.box, dtype=float)
     rng = np.random.default_rng(spec.seed)
@@ -535,11 +653,32 @@ def oracle(work, spec_name):
         if mat is not None:
             cell_mat[int(e.attrib["id"])] = "void" if mat == "void" else names[mat]
 
+    # The lattice elements OpenMC's own path of every cell instance passes through (D9):
+    # `u0->c1->l20(1,0,0)->u11->c101` gives lattice 20, element (1, 0, 0) in OpenMC's index order.
+    geom = openmc.Geometry.from_xml(os.path.join(work, "geometry.xml"), os.path.join(work, "materials.xml"))
+    geom.determine_paths()
+    cells_by_id = geom.get_all_cells()
+
+    def lattice_path(cell, inst):
+        """[[lattice id, ix, iy, iz], ...] along the path; 2D lattices have iz = 0. A cell of an
+        `outer` universe has no path in OpenMC's python API: no lattice element, empty list."""
+        paths = cells_by_id[cell].paths
+        if inst >= len(paths):
+            return []
+        path = paths[inst]
+        assert path.split("->")[-1] == "c%d" % cell, (path, cell)
+        return [[int(m[0]), int(m[1]), int(m[2]), int(m[3] or 0)] for m in re.findall(r"l(\d+)\((\d+),(\d+)(?:,(\d+))?\)", path)]
+
     pts = []
     for _ in range(N_POINTS):
         p = box[0] + rng.random(3) * (box[1] - box[0])
         r = find(p)
-        pts.append({"p": [float(x) for x in p], "cell": None if r is None else r[0], "instance": None if r is None else r[1]})
+        pt = {"p": [float(x) for x in p], "cell": None if r is None else r[0], "instance": None if r is None else r[1]}
+        if r is not None:
+            lat = lattice_path(*r)
+            if lat:
+                pt["lattices"] = lat
+        pts.append(pt)
 
     chords = []
     for o, d in spec.rays:
@@ -609,13 +748,23 @@ def oracle(work, spec_name):
     openmc.lib.finalize()
 
 
+def build_spec(name):
+    """The model `name` with OpenMC's auto ids reset, so a subset run writes the same bytes as a
+    full run (ids no longer depend on which models were built before)."""
+    import openmc
+
+    openmc.reset_auto_ids()
+    return MODELS[name]()
+
+
 def run_model(name, outdir):
-    spec = MODELS[name]()
+    spec = build_spec(name)
     # Everything temporary (ours and any `omc_*` file OpenMC itself creates) lives under one
     # directory that is removed on every exit path, including SIGINT/SIGTERM; nothing is left in
     # the system temp dir.
     work = tempfile.mkdtemp(prefix="smcsg_omc_")
-    prev = {s: signal.signal(s, lambda *_: sys.exit(130)) for s in (signal.SIGINT, signal.SIGTERM)}
+    # SIGINT exits 130 and SIGTERM 143 (128 + signal), through the `finally` below.
+    prev = {signal.SIGINT: signal.signal(signal.SIGINT, lambda *_: sys.exit(130)), signal.SIGTERM: signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))}
     try:
         write_model(spec, work)
         write_support(work)
