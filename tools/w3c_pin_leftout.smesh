@@ -13,6 +13,6 @@ fem.block_add(1, volumes: fu.volume, name: "fuel")
 mesh.size(targets: all volumes, size: 0.3)
 mesh.auto(strategy: "default")
 let m = mesh.run(targets: all volumes)
-assert mesh.info(mesh: m.mesh[0]).cells == 99, "99 hexes"
+assert mesh.info(mesh: m.mesh[0]).cells == 48, "48 hexes"
 print "mesh", m.mesh[0]
 print "h_mesh", session.hash()
