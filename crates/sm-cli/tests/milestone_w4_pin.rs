@@ -17,14 +17,18 @@
 //! | H5 | lattice mesh is mirror symmetric in x and y through the lattice centre (1e-12) |
 //! | H6 | `mesh.decompose_plan` gives equal replies and equal state hashes through in-process, CLI and MCP |
 //!
-//! The Python leg of H3 and H6 is not run here (no driver for these scripts, and `sm-py` is not
-//! owned by this task); the combine's `tools/w3b_python.sh` run covers it.
+//! The Python leg runs here too: an inline driver (written into the scratch dir at test time) runs
+//! both scripts and the `mesh.decompose_plan` steps through `smartmesh.Session` from the installed
+//! wheel (`W3C_PYTHON` / `W3B_PYTHON`, else `tools/w3b_python.sh`), and the printed hashes and
+//! export digests are compared with the CLI front. A missing wheel is a skip, or a failure under
+//! `CI=true` (as in `milestone_w3c_pin`).
 
 mod w3a_support;
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde_json::{Value, json};
 use sm_core::EntityId;
@@ -211,6 +215,180 @@ fn export_in_process(s: &mut Server, path: &Path, format: Option<ExportFormat>) 
     serde_json::from_value(v).map_err(e)
 }
 
+// ------------------------------------------------------------------ Python leg
+
+/// Inline driver. `pin <tools> <out>`: both scripts through `Session.memory`, printing `<tag>_<key>`
+/// and `<tag>_file <name> <digest>` lines. `plan <model> <imprint>`: H6 through `Session`.
+const PY_DRIVER: &str = r#"
+import hashlib, json, os, sys
+import smartmesh as sm
+
+TIME = sys.argv[1]
+AUTHOR = sys.argv[2]
+MODE = sys.argv[3]
+
+def sha(path):
+    if os.path.isdir(path):
+        rows = []
+        for d, _, names in os.walk(path):
+            for n in names:
+                p = os.path.join(d, n)
+                with open(p, "rb") as fh:
+                    rows.append(os.path.relpath(p, path).replace(os.sep, "/") + " " + hashlib.sha256(fh.read()).hexdigest() + "\n")
+        return hashlib.sha256("".join(sorted(rows)).encode()).hexdigest()
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+def printed(output):
+    out = {}
+    for line in output.splitlines():
+        k, _, rest = line.partition(" ")
+        out.setdefault(k, []).append(rest.strip())
+    return out
+
+def fail(msg):
+    print("FAIL " + msg)
+    sys.exit(1)
+
+def new():
+    return sm.Session.memory(author=AUTHOR, fixed_time=TIME)
+
+if MODE == "pin":
+    tools, out = sys.argv[4], sys.argv[5]
+    os.makedirs(out, exist_ok=True)
+    os.chdir(out)
+    for tag, script, files in (("ogrid", "w4_pin_ogrid.smesh", ["pin.smrt", "pin_foam"]), ("enclosed", "w4_pin_enclosed_hex.smesh", ["enclosed.smrt", "enclosed_foam"])):
+        s = new()
+        with open(os.path.join(tools, script), encoding="utf-8") as fh:
+            r = s.run_script(fh.read())
+        p = printed(r.output)
+        if s.hash().state != p["h_mesh"][0]:
+            fail(script + ": session hash differs from h_mesh")
+        for k in ("h_model", "h_auto", "h_linear", "h_mesh"):
+            print(tag + "_" + k + " " + p[k][0])
+        for f in files:
+            print(tag + "_file " + f + " " + sha(f))
+else:
+    model, imprint = open(sys.argv[4], encoding="utf-8").read(), open(sys.argv[5], encoding="utf-8").read()
+    s = new()
+    s.run_script(model)
+    h0 = s.hash().state
+    print("h_model " + h0)
+    plan = s.query("mesh.decompose_plan")
+    if s.hash().state != h0:
+        fail("the query moved the state hash")
+    print("plan " + json.dumps(plan, sort_keys=True))
+    host = [r for r in plan["volumes"] if r["status"] == "cuts"]
+    if len(host) != 1:
+        fail("%d rows with cuts" % len(host))
+    outs = []
+    for st in host[0]["steps"]:
+        ids = []
+        for t in st["targets"]:
+            if "id" in t:
+                ids.append(t["id"])
+            else:
+                ids.extend(outs[t["step"]][t["role"]])
+        params = {k: v for k, v in st.items() if k not in ("targets", "op", "step")}
+        params["targets"] = ids
+        r = s.apply(st["op"], **params)
+        outs.append(r.raw["delta"]["outputs"])
+    s.run_script(imprint)
+    print("h_final " + s.hash().state)
+print("OK")
+"#;
+
+/// The venv python with the wheel installed, or the reason to skip (maturin unavailable).
+fn python() -> R<Result<PathBuf, String>> {
+    // Built once per test process (the two tests share the wheel).
+    static PY: std::sync::OnceLock<R<Result<PathBuf, String>>> = std::sync::OnceLock::new();
+    PY.get_or_init(python_uncached).clone()
+}
+
+fn python_uncached() -> R<Result<PathBuf, String>> {
+    for var in ["W3C_PYTHON", "W3B_PYTHON"] {
+        if let Some(p) = std::env::var_os(var) {
+            return Ok(Ok(PathBuf::from(p)));
+        }
+    }
+    let venv = Path::new(env!("CARGO_TARGET_TMPDIR")).join("w4-venv");
+    let o = Command::new("bash")
+        .arg(repo().join("tools").join("w3b_python.sh"))
+        .arg(&venv)
+        .env("CARGO_TARGET_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).parent().expect("target dir"))
+        .output()
+        .map_err(|x| format!("run w3b_python.sh: {x}"))?;
+    match o.status.code() {
+        Some(0) => {
+            let out = String::from_utf8_lossy(&o.stdout);
+            Ok(Ok(PathBuf::from(out.lines().last().ok_or("w3b_python.sh printed nothing")?.trim())))
+        }
+        Some(3) => Ok(Err(String::from_utf8_lossy(&o.stderr).trim().to_owned())),
+        _ => Err(format!("w3b_python.sh failed ({}): {}", o.status, String::from_utf8_lossy(&o.stderr))),
+    }
+}
+
+/// With `CI=true` a missing Python wheel (maturin) is a failure, not a skip.
+fn python_skip_is_fatal(ci: Option<&str>) -> bool {
+    ci == Some("true")
+}
+
+/// Runs the inline driver; returns its output lines (which end in `OK`).
+fn python_driver(py: &Path, name: &str, mode_args: &[String]) -> R<Vec<String>> {
+    let dir = scratch(name);
+    let drv = dir.join("driver.py");
+    std::fs::write(&drv, PY_DRIVER).map_err(e)?;
+    let o = Command::new(py).arg("-I").arg(&drv).arg(TIME).arg(AUTHOR).args(mode_args).output().map_err(|x| format!("run python driver: {x}"))?;
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    if o.status.code() != Some(0) || !out.lines().any(|l| l == "OK") {
+        return Err(format!("python driver exited {:?}:\n{out}\n{}", o.status.code(), String::from_utf8_lossy(&o.stderr)));
+    }
+    Ok(out.lines().map(str::to_owned).collect())
+}
+
+/// The Python lines, or `None` after recording a skip (a failure under `CI=true`, or a setup error) on `rows`.
+fn python_lines(rows: &mut Rows, tags: &[u8], name: &str, mode_args: &[String]) -> Option<Vec<String>> {
+    let res = match python() {
+        Ok(Ok(py)) => python_driver(&py, name, mode_args),
+        Ok(Err(reason)) => {
+            let fatal = python_skip_is_fatal(std::env::var("CI").ok().as_deref());
+            println!("{} H{tags:?} Python leg (wheel): {reason}", if fatal { "FAIL" } else { "SKIP" });
+            for t in tags {
+                if fatal {
+                    rows.fail(*t, format!("Python wheel unavailable under CI=true: {reason}"));
+                } else {
+                    rows.note(*t, format!("Python skipped: {reason}"));
+                }
+            }
+            return None;
+        }
+        Err(x) => Err(x),
+    };
+    match res {
+        Ok(l) => Some(l),
+        Err(x) => {
+            for t in tags {
+                rows.fail(*t, format!("Python leg: {x}"));
+            }
+            None
+        }
+    }
+}
+
+fn line_after(lines: &[String], prefix: &str) -> String {
+    lines.iter().find_map(|l| l.strip_prefix(prefix).and_then(|r| r.strip_prefix(' '))).map(str::to_owned).unwrap_or_default()
+}
+
+/// Python's hashes and export digests for one script against the CLI front.
+fn compare_python(rows: &mut Rows, tag: u8, script: &str, py_tag: &str, lines: &[String], cli: &Front) {
+    for k in KEYS {
+        rows.eq(tag, &format!("{script}: python {k} vs CLI"), &line_after(lines, &format!("{py_tag}_{k}")), &one(&cli.prints, k).unwrap_or_default());
+    }
+    for (f, d) in &cli.files {
+        rows.eq(tag, &format!("{script}: python {f} vs CLI"), &line_after(lines, &format!("{py_tag}_file {f}")), d);
+    }
+}
+
 // ------------------------------------------------------------------ helpers over results
 
 /// Volume per region of a `.smrt`, summed from the tracker's cell volumes (regions in table order).
@@ -366,10 +544,15 @@ fn milestone_w4_pin() {
     let mut rows = Rows::default();
     let (r, h) = (0.4_f64, 1.0_f64);
     let disk = PI * r * r;
+    let py_args = ["pin".to_owned(), ts(&repo().join("tools")), ts(&scratch("python-out"))];
+    let py = python_lines(&mut rows, &[3], "python-pin", &py_args);
 
     // ---------------- H1: the through pin and its lattice
     if let Some((cli, mut s, proj)) = all_fronts(&mut rows, 1, "w4_pin_ogrid.smesh", &PIN_FILES) {
         hashes(&mut rows, 4, "w4_pin_ogrid", &cli);
+        if let Some(l) = &py {
+            compare_python(&mut rows, 3, "w4_pin_ogrid", "ogrid", l, &cli);
+        }
         let n = floats(&cli.prints, "poly_volume").ok().and_then(|v| polygon_sides(v / 1.0, r, h)).unwrap_or(0);
         rows.eq(1, "circle intervals (n-gon of the linear fuel)", &n, &16);
         let (core, ring) = ogrid_cells_per_layer(n.max(4));
@@ -436,6 +619,9 @@ fn milestone_w4_pin() {
     // ---------------- H2: the enclosed pin
     if let Some((cli, mut s, proj)) = all_fronts(&mut rows, 2, "w4_pin_enclosed_hex.smesh", &ENCLOSED_FILES) {
         hashes(&mut rows, 4, "w4_pin_enclosed_hex", &cli);
+        if let Some(l) = &py {
+            compare_python(&mut rows, 3, "w4_pin_enclosed_hex", "enclosed", l, &cli);
+        }
         let hf = 0.8;
         rows.eq(2, "volumes after the cuts", &one(&cli.prints, "volumes").unwrap_or_default(), &"6".to_owned());
         let n = floats(&cli.prints, "poly_volume").ok().and_then(|v| polygon_sides(v, r, hf)).unwrap_or(0);
@@ -614,7 +800,26 @@ fn decompose_plan_gives_equal_replies_and_hashes_through_cli_and_mcp() {
         }
         Err(x) => rows.fail(6, format!("MCP leg: {x}")),
     }
-    println!("NOTE H6 Python leg: not run here; tools/w3b_python.sh / the combine's py.sh covers it");
+
+    // Python: the query reply and the state hashes through `smartmesh.Session`.
+    let dir = scratch("plan-py-files");
+    let (mp, ip) = (dir.join("model.smesh"), dir.join("imprint.smesh"));
+    let wrote = std::fs::write(&mp, ENCLOSED_MODEL).and_then(|()| std::fs::write(&ip, IMPRINT_MERGE));
+    match wrote {
+        Ok(()) => {
+            let args = ["plan".to_owned(), ts(&mp), ts(&ip)];
+            if let Some(l) = python_lines(&mut rows, &[6], "plan-py", &args) {
+                rows.eq(6, "Python model hash equals in-process", &line_after(&l, "h_model"), &h_model);
+                let q: R<Value> = serde_json::from_str(&line_after(&l, "plan")).map_err(e);
+                match q {
+                    Ok(q) => rows.eq(6, "Python plan reply equals in-process", &q, &plan),
+                    Err(x) => rows.fail(6, format!("Python plan reply: {x}")),
+                }
+                rows.eq(6, "Python state hash equals in-process", &line_after(&l, "h_final"), &h_ref);
+            }
+        }
+        Err(x) => rows.fail(6, format!("write python inputs: {x}")),
+    }
     finish(&rows);
 }
 
