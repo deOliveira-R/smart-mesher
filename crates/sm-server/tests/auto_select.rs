@@ -285,15 +285,17 @@ fn b4_tetrahedron_falls_to_tetmesh_with_a_warning() {
 // ---- B5: plate with a hole --------------------------------------------------------------------------
 
 /// A plate with a through hole meshes all-hex through `mesh.auto` (W3c-CYL-SCHEMES: the sweep strip check
-/// picks the annulus pair). Volume is the O-grid polygon (ruling D5: `ogrid` in `default`; the 12-sided pave polygon was 13), and within 1.1 percent of 16 - pi.
+/// picks the annulus pair). Ruling D5 (`ogrid` in `default`, with layers and score following the size): the annulus is an
+/// O-grid with 20 circle nodes and 3 radial layers, so the volume is 16 minus the 20-gon (10 sin 18 degrees) and
+/// within 0.5 percent of 16 - pi (the 12-sided pave polygon was 13, 1.1 percent).
 #[test]
 fn b5_plate_with_a_hole_meshes_all_hex() {
     let (mut s, run) = run_fixture(PLATE, RUN);
     let i = info(&mut s);
     let got = i["volume"].as_f64().expect("volume");
-    assert!((got - 12.92181871006898).abs() < 1e-9, "O-grid polygon volume {got}");
-    assert!((got - (16.0 - std::f64::consts::PI)).abs() / (16.0 - std::f64::consts::PI) < 0.012, "{got}");
-    assert_eq!(i["cell_shapes"], json!({"Hex": 36}), "observed on the merged code: {i}");
+    assert!((got - (16.0 - 10.0 * (std::f64::consts::PI / 10.0).sin())).abs() < 1e-9, "O-grid polygon volume {got}");
+    assert!((got - (16.0 - std::f64::consts::PI)).abs() / (16.0 - std::f64::consts::PI) < 0.005, "{got}");
+    assert_eq!(i["cell_shapes"], json!({"Hex": 120}), "observed on the merged code: {i}");
     assert!(valid(&mut s));
     assert!(auto_tet(&run).is_empty(), "no tet fallback warning");
 
@@ -307,6 +309,33 @@ fn b5_plate_with_a_hole_meshes_all_hex() {
     assert!(valid(&mut t));
     assert_eq!(i["cell_shapes"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["Tet".to_owned()]), "{i}");
     assert!(i["rejections"].as_u64().is_some_and(|r| r <= 2), "{i}");
+}
+
+/// Two plate cells side by side with holes of different radius share a wall edge: the ogrid side rows
+/// of the two faces must not make the interval solve infeasible (a3 review, `mesh.auto failed: infeasible`).
+#[test]
+fn two_plate_cells_with_different_holes_mesh_under_default() {
+    for r2 in ["0.6", "0.25", "0.8"] {
+        let mut s = server();
+        let text = format!(
+            "let a = model.create_brick(x: 4.0, y: 4.0, z: 1.0)\n\
+             let t = model.create_cylinder(height: 3.0, radius: 1.0)\n\
+             let r1 = model.subtract(targets: a.body, tools: t.body)\n\
+             let b = model.create_brick(x: 4.0, y: 4.0, z: 1.0, center: [4.0, 0.0, 0.0])\n\
+             let u = model.create_cylinder(height: 3.0, radius: {r2}, center: [4.0, 0.0, 0.0])\n\
+             let r2 = model.subtract(targets: b.body, tools: u.body)\n\
+             model.imprint(bodies: all bodies)\nmodel.merge()\n\
+             mesh.size(targets: all volumes, size: 0.3)\nmesh.auto(strategy: \"default\")\n\
+             let m = mesh.run(targets: all volumes)\n"
+        );
+        ok(&mut s, &text);
+        let i = info(&mut s);
+        assert!(i["cells"].as_u64().is_some_and(|c| c > 0), "r2 = {r2}: {i}");
+        assert!(valid(&mut s), "r2 = {r2}");
+        let want = 32.0 - std::f64::consts::PI * (1.0 + r2.parse::<f64>().expect("radius").powi(2));
+        let got = i["volume"].as_f64().expect("volume");
+        assert!((got - want).abs() / want < 0.05, "r2 = {r2}: volume {got} vs {want}");
+    }
 }
 
 // ---- B6: auto next to a hard neighbour (pinned) --------------------------------------------------
@@ -593,22 +622,20 @@ fn assert_pin(text: &str, volumes: f64, shapes: Value, tet_warnings: usize) -> S
     state_hash(&mut s)
 }
 
-/// Through pin (H = 1.0): all-hex, both creation orders. The cylinder sweeps an ogrid disk, the moderator an
-/// ogrid annulus; the shared cylinder face is quads on both sides, so `validate` is empty.
+/// Through pin (H = 1.0): all-hex, both creation orders. The cylinder sweeps a pave disk, the moderator an
+/// annulus; the shared cylinder face is quads on both sides, so `validate` is empty.
 #[test]
 fn pin_through_is_all_hex_in_both_creation_orders() {
-    let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 99}), 0);
-    let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 99}), 0);
+    let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 48}), 0);
+    let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 48}), 0);
     assert_ne!(a, b, "different entity ids are different states");
 
-    // Per-volume check against the polygon formula (fuel = H (n/2) r^2 sin(2 pi/n)). With `ogrid`
-    // (ruling D5) the size-0.3 disk of the r = 0.4 cylinder meshed alone has n = 8 nodes on its circle;
-    // the moderator meshed alone has n = 12 on the same circle (the square's side counts set it), so
-    // its hole is the inscribed dodecagon.
-    let (r, h) = (0.4_f64, 1.0_f64);
-    let poly = |n: f64| h * (n / 2.0) * r * r * (2.0 * std::f64::consts::PI / n).sin();
-    let (fuel, hole) = (poly(8.0), poly(12.0));
-    for (target, want, hex) in [("fu.volume", fuel, 36), ("mo.volumes", PIN_VOLUME - hole, 36)] {
+    // Per-volume check against the polygon formula. The size-0.3 pave disk of the r = 0.4 cylinder is an
+    // n = 8 polygon, so the curved interface is the inscribed octagon: fuel = H (n/2) r^2 sin(2 pi/n).
+    // The draft's "2.2 percent of pi r^2" bound was written for n = 12 and does not hold at n = 8.
+    let (n, r, h) = (8.0_f64, 0.4_f64, 1.0_f64);
+    let fuel = h * (n / 2.0) * r * r * (2.0 * std::f64::consts::PI / n).sin();
+    for (target, want, hex) in [("fu.volume", fuel, 12), ("mo.volumes", PIN_VOLUME - fuel, 36)] {
         let tail = format!("mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: {target})\n");
         let (mut s, _, i) = run_info(&format!("{}{tail}", pin_fixture(1.0, true)));
         let got = i["volume"].as_f64().expect("volume");
@@ -657,10 +684,10 @@ fn pin_enclosed_is_all_tet_in_both_creation_orders() {
     }
 }
 
-/// The through pin's stored plan: the cylinder and the moderator are each a sweep from an ogrid source (ruling D5) with a
+/// The through pin's stored plan: the cylinder and the moderator are each a sweep from a pave source with a
 /// copy target; the side faces and the shared cylinder face are map (imposed by the sweeps).
 #[test]
-fn pin_through_plan_rows_are_sweeps_of_ogrid_sources_with_copy_targets() {
+fn pin_through_plan_rows_are_sweeps_of_pave_sources_with_copy_targets() {
     let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)));
     assert_eq!(i["rejections"], 0, "{i}");
     let report = query(&mut s, "mesh.plan", json!({"mesh": "Mesh#1"}));
@@ -671,13 +698,13 @@ fn pin_through_plan_rows_are_sweeps_of_ogrid_sources_with_copy_targets() {
         assert_eq!((r.kind.as_str(), r.scheme.as_str(), r.how.as_str()), ("volume", "sweep", "intent#0"), "{v}: {rows:?}");
     }
     assert_eq!(rows.iter().filter(|r| r.kind == "volume").count(), 2, "{rows:?}");
-    let ogrid = faces_by_scheme(&rows, "ogrid");
-    assert_eq!(ogrid.len(), 2, "one ogrid source per volume: {rows:?}");
-    assert!(ogrid.iter().all(|r| r.how == "intent#0"), "{ogrid:?}");
+    let pave = faces_by_scheme(&rows, "pave");
+    assert_eq!(pave.len(), 2, "one pave source per volume: {rows:?}");
+    assert!(pave.iter().all(|r| r.how == "intent#0"), "{pave:?}");
     let copies: Vec<&Row> = rows.iter().filter(|r| r.kind == "surface" && r.scheme == "copy").collect();
     assert_eq!(copies.len(), 2, "one copy target per volume: {rows:?}");
-    // Every copy target copies one of the ogrid sources, and no two copy the same one.
-    let mut sources: Vec<&str> = ogrid.iter().map(|r| r.target.as_str()).collect();
+    // Every copy target copies one of the pave sources, and no two copy the same one.
+    let mut sources: Vec<&str> = pave.iter().map(|r| r.target.as_str()).collect();
     sources.sort_unstable();
     let mut copied: Vec<&str> = Vec::new();
     for c in &copies {
@@ -687,7 +714,7 @@ fn pin_through_plan_rows_are_sweeps_of_ogrid_sources_with_copy_targets() {
         copied.push(of);
     }
     copied.sort_unstable();
-    assert_eq!(copied, sources, "each ogrid source is copied exactly once (two rows share a `copy_of` otherwise)");
+    assert_eq!(copied, sources, "each pave source is copied exactly once (two rows share a `copy_of` otherwise)");
     // The four brick sides and the cylinder face map; nothing else is a face scheme.
     let mut map: Vec<&str> = faces_by_scheme(&rows, "map").iter().map(|r| r.target.as_str()).collect();
     map.sort();
@@ -698,7 +725,7 @@ fn pin_through_plan_rows_are_sweeps_of_ogrid_sources_with_copy_targets() {
 /// 3x3 lattices by `model.copy`: 18 volumes each, through all-hex, enclosed all-tet.
 #[test]
 fn pin_lattices_through_and_enclosed() {
-    assert_pin(&format!("{}{RUN_ALL}", lattice_fixture(1.0)), 9.0 * PIN_VOLUME, json!({"Hex": 891}), 0);
+    assert_pin(&format!("{}{RUN_ALL}", lattice_fixture(1.0)), 9.0 * PIN_VOLUME, json!({"Hex": 432}), 0);
     let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", lattice_fixture(0.8)));
     assert_eq!(i["selection"].as_array().map(Vec::len), Some(18));
     assert_eq!(i["cell_shapes"], json!({"Tet": 6647}), "{i}");

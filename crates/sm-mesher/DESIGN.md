@@ -334,6 +334,15 @@ Automatic scheme choice is a **pluggable strategy that is consulted once and sto
 
 ## Known gaps
 
+* VOLFIT acceptance 3 (`drafts/hexpin.md`: the `.smrt` region volumes of a VOLFIT pin, ray-sampled
+  against OpenMC) is deferred to W4-INT; the analytic volumes (`pi r^2 h`, 1e-12) are tested here
+  and in `milestone_w4_pin`.
+* `ogrid` is in the `default` and `hex_only` surface lists, but its score follows the wanted size
+  (`crates/sm-scheme-ogrid/src/select.rs`): 70 where the predicted planar edge ratio is at most
+  1.8, the minimum scaled Jacobian at least 0.5 and the edges within 2.5 times the size; 35
+  (below pave) otherwise. So at the through pin's size 0.3 the pin keeps pave (the pre-D5 mesh)
+  and `hex_only` does too; an explicit `mesh.scheme ogrid` always applies.
+
 * No `on_succession` for the intent layer.
 * Scheme `params` that name entities (sweep `source`/`target` faces, ...) are opaque JSON owned
   by the scheme, so `IntentLayer::on_retired` does not prune them. A scheme on volume 2 whose

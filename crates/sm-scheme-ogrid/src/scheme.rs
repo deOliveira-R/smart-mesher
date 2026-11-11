@@ -4,10 +4,9 @@
 //! mesh on the face with the boundary nodes taken from the earlier waves.
 
 use crate::fit::{self, Frame, Shape};
-use crate::kernels::{
-    AnnulusQuadParams, DiskParams, PolarParams, RingParams, ogrid_annulus_quad, ogrid_disk, polar_disk, ring,
-};
+use crate::kernels::{PolarParams, polar_disk};
 use crate::mesh::{OgridError, PHASE_MAX_DEG, PlanarMesh, RATIO_MAX};
+use crate::select::{self, Fixed};
 use serde::Deserialize;
 use sm_core::{EntityId, Point3};
 use sm_scheme_api::geom;
@@ -28,9 +27,10 @@ pub struct OgridParams {
     /// `"ogrid"` (default; five-block disk) or `"polar"` (central n-gon plus rings, disk and
     /// two-circle ring only).
     pub mode: Option<String>,
-    /// Radial layers; the default follows the circle spacing.
+    /// Radial layers; the default follows the size (layers about one size thick).
     pub rings: Option<u32>,
-    /// Outermost over innermost layer thickness, within `1e-6..=1e6` (default 1).
+    /// Outermost over innermost layer thickness, within `1e-6..=1e6` (default: chosen with the
+    /// layers for the best quad quality, 1 for a polar disk).
     pub ratio: Option<f64>,
     /// Angle in degrees, in the face frame (x axis = the global x axis projected on the face
     /// plane), of the first block corner of a disk (default 45) or of circle node 0 of a polar
@@ -43,7 +43,7 @@ pub struct OgridParams {
 struct Opts {
     polar: bool,
     rings: Option<usize>,
-    ratio: f64,
+    ratio: Option<f64>,
     phase: Option<f64>,
 }
 
@@ -63,8 +63,9 @@ fn options(p: &Params) -> Result<Opts, String> {
     {
         return Err(format!("ogrid: rings {r} is outside 1..=1000"));
     }
-    let ratio = q.ratio.unwrap_or(1.0);
-    if !(ratio.is_finite() && (1.0 / RATIO_MAX..=RATIO_MAX).contains(&ratio)) {
+    if let Some(ratio) = q.ratio
+        && !(ratio.is_finite() && (1.0 / RATIO_MAX..=RATIO_MAX).contains(&ratio))
+    {
         return Err(format!("ogrid: ratio {ratio} is outside 1e-6..=1e6"));
     }
     if let Some(ph) = q.phase
@@ -72,13 +73,36 @@ fn options(p: &Params) -> Result<Opts, String> {
     {
         return Err(format!("ogrid: phase {ph} must be finite with |phase| <= {PHASE_MAX_DEG}"));
     }
-    Ok(Opts { polar, rings: q.rings.map(|r| r as usize), ratio, phase: q.phase })
+    Ok(Opts { polar, rings: q.rings.map(|r| r as usize), ratio: q.ratio, phase: q.phase })
 }
 
 /// The O-grid scheme: disks, circle-in-square annuli and two-circle rings as all-quad meshes.
 /// Score 70 where applicable.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ogrid;
+
+/// Circle count nearest `length / size`, in multiples of `step` and at least `min`.
+fn size_n(length: f64, size: Option<f64>, step: usize, min: usize) -> Option<usize> {
+    let h = size?;
+    let n = ((length / h / step as f64).round() as usize).saturating_mul(step);
+    Some(n.max(min.div_ceil(step) * step))
+}
+
+/// Predict the quality of the mesh at circle count `n` (`None`: no size, so nothing to break).
+fn predict(
+    n: Option<usize>,
+    size: Option<f64>,
+    build: impl Fn(usize, Option<f64>) -> Option<select::Quality>,
+) -> Result<(), String> {
+    let Some(n) = n else {
+        return Ok(());
+    };
+    let (n, h) = select::predict_scale(n, size);
+    match build(n, h) {
+        Some(q) => select::acceptable(&q, h),
+        None => Err("no valid O-grid at the size's circle count".into()),
+    }
+}
 
 /// Wrap an angle difference into `(-pi, pi]`.
 fn wrap(d: f64) -> f64 {
@@ -133,34 +157,82 @@ impl Scheme for Ogrid {
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, params: &Params) -> Applicability {
         let Target::Surface(f) = target else {
             return Applicability::no("ogrid meshes surfaces");
-        };
-        let o = match options(params) {
+        };        let o = match options(params) {
             Ok(o) => o,
             Err(e) => return Applicability::no(e),
         };
         if !cx.input.embedded_edges(f).is_empty() || !cx.input.embedded_vertices(f).is_empty() {
             return Applicability::no("ogrid cannot conform to embedded edges or vertices");
         }
-        match fit::analyze(cx.input.topo, f) {
-            Ok(Shape::Disk { .. }) => Applicability::yes(70, "exact disk"),
+        let shape = match fit::analyze(cx.input.topo, f) {
             Ok(Shape::SquareAnnulus { .. }) if o.polar => {
-                Applicability::no("polar mode has no circle-in-square annulus")
+                return Applicability::no("polar mode has no circle-in-square annulus");
             }
-            Ok(Shape::SquareAnnulus { .. }) => Applicability::yes(70, "circle in a square"),
-            Ok(Shape::Ring { .. }) => Applicability::yes(70, "two concentric circles"),
-            Err(e) => Applicability::no(e),
+            Ok(s) => s,
+            Err(e) => return Applicability::no(e),
+        };
+        if o.polar {
+            return Applicability::yes(70, "exact disk");
+        }
+        // Score the mesh `generate` would build at the size's circle count: 70 where it keeps the
+        // quality and the size intent, below pave (40) where it does not.
+        // Counts the user fixed are the user's resolution: nothing to predict or protect.
+        if select::has_user_counts(cx, f) {
+            return Applicability::yes(70, match shape {
+                Shape::Disk { .. } => "exact disk",
+                Shape::SquareAnnulus { .. } => "circle in a square",
+                Shape::Ring { .. } => "two concentric circles",
+            });
+        }
+        let size = select::wanted_size(cx, f);
+        let fx = Fixed { rings: o.rings, ratio: o.ratio, phase_deg: o.phase };
+        let (name, verdict) = match shape {
+            Shape::Disk { radius, .. } => (
+                "exact disk",
+                predict(
+                    size_n(2.0 * PI * radius, size, 2, 4),
+                    size,
+                    |n, h| select::disk(n, radius, h, fx).map(|b| b.2),
+                ),
+            ),
+            Shape::SquareAnnulus { radius, half, .. } => (
+                "circle in a square",
+                predict(
+                    size_n((2.0 * PI * radius * 8.0 * half).sqrt(), size, 4, 4),
+                    size,
+                    |n, h| select::annulus([n / 4; 4], radius, half, 45.0, h, fx).map(|b| b.2),
+                ),
+            ),
+            Shape::Ring { r_in, r_out, .. } => (
+                "two concentric circles",
+                predict(
+                    size_n(PI * (r_in + r_out), size, 1, 3),
+                    size,
+                    |n, h| select::ring_of(n, r_in, r_out, 0.0, h, fx).map(|b| b.2),
+                ),
+            ),
+        };
+        match verdict {
+            Ok(()) => Applicability::yes(70, name),
+            Err(why) => Applicability::yes(35, format!("{name}: {why}")),
         }
     }
 
     fn requirements(
         &self,
-        _cx: &PlanCtx<'_>,
+        cx: &PlanCtx<'_>,
         target: Target,
         _params: &Params,
         out: &mut Requirements<'_>,
     ) -> sm_scheme_api::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Free);
+            // The interval phase has no intent: hand it the wanted size, unless the user fixed
+            // counts (then the scheme steers nothing).
+            if let Some(h) = select::wanted_size(cx, f).filter(|_| !select::has_user_counts(cx, f)) {
+                // `hard`: the size may bind the counts; off when any user count exists.
+                out.set_data(Params(serde_json::json!({ "size": h, "hard": !select::any_user_counts(cx) })));
+            }
         }
         Ok(())
     }
@@ -180,6 +252,8 @@ impl Scheme for Ogrid {
         let topo = cx.input.topo;
         let shape = fit::analyze(topo, f).map_err(SchemeError::Input)?;
         let loops = geom::face_loops(topo, f);
+        let size = cx.data(target).and_then(|d| d.0.get("size")).and_then(serde_json::Value::as_f64);
+        let hard = cx.data(target).and_then(|d| d.0.get("hard")).and_then(serde_json::Value::as_bool) == Some(true);
         match shape {
             Shape::Disk { .. } => {
                 let mut t = BTreeMap::new();
@@ -193,12 +267,45 @@ impl Scheme for Ogrid {
                     out.linear(&t, Rel::Ge, 4);
                 }
             }
-            Shape::SquareAnnulus { .. } => {
+            Shape::SquareAnnulus { radius, half, .. } => {
+                // The circle count at which the circle spacing and the square's spacing have the
+                // wanted size as geometric mean: the sum of the sides is tied to the circle, so
+                // sizing the two separately would pull the count between 8 and 16 and leave the
+                // fuel disk over-resolved.
+                if let Some(h) = size {
+                    let n = (TAU * radius * 8.0 * half).sqrt() / h;
+                    let side_edges: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
+                    let per = (n / side_edges.len() as f64).max(1.0);
+                    // The hard rows only when the whole group of annuli that share side edges
+                    // agrees on a count (else the interval solve is infeasible).
+                    let steer = hard && steer_agrees(cx, f);
+                    for e in &side_edges {
+                        out.prefer(*e, per);
+                        // The preference alone is averaged away by the neighbours' goals; the hard
+                        // range only when no user count exists anywhere.
+                        if steer {
+                            let (lo, hi) = side_range(per);
+                            out.range(*e, lo, Some(hi));
+                        }
+                    }
+                    for e in loops[1].iter().map(|k| k.edge) {
+                        out.prefer(e, (n / loops[1].len() as f64).max(1.0));
+                    }
+                }
                 // n = m0 + m1 + m2 + m3 (the circle's evenness follows).
                 let mut t = BTreeMap::new();
                 terms(&loops[1], 1, &mut t);
                 terms(&loops[0], -1, &mut t);
                 out.linear(&rows(t), Rel::Eq, 0);
+                // Equal sides: the radial lines then leave the square corners on the diagonals
+                // (unequal sides twist them and cost the corner quads their Jacobian). Only when the
+                // scheme steers (a size, no user counts), so a user's counts never become infeasible.
+                let sides: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
+                if size.is_some() && hard && sides.len() == 4 && steer_agrees(cx, f) {
+                    for w in sides.windows(2) {
+                        out.linear(&[(w[0], 1), (w[1], -1)], Rel::Eq, 0);
+                    }
+                }
             }
             Shape::Ring { .. } => {
                 let mut t = BTreeMap::new();
@@ -240,10 +347,14 @@ impl Scheme for Ogrid {
             let keys: Vec<NodeKey> = order.iter().map(|&i| lp.nodes[i]).collect();
             Ok::<_, GenerateFailure>((keys, ang))
         };
-        let layers = |n: usize, thickness_over_r: f64| -> usize {
-            // Layers as thick as the circle spacing 2 pi r / n.
-            o.rings.unwrap_or_else(|| ((thickness_over_r * n as f64 / TAU).round() as usize).clamp(1, 1000))
+        // Wanted size: the field at the first boundary node, else the size the circle count
+        // implies (the solver balances the circle and square spacings around it).
+        let field_size = |lp: &sm_scheme_api::BoundaryLoop| -> Option<f64> {
+            let p = lp.nodes.first().and_then(|k| cx.point(*k))?;
+            cx.size.map(|s| s.size(p)).filter(|h| h.is_finite() && *h > 0.0)
         };
+        let fx = |phase_deg: f64| Fixed { rings: o.rings, ratio: o.ratio, phase_deg: Some(phase_deg) };
+        let no_grid = |what: &str| fail(FailureKind::Quality, format!("no valid O-grid for {what}"));
         let kerr = |e: OgridError| {
             let kind =
                 if matches!(e, OgridError::Inverted(_)) { FailureKind::Quality } else { FailureKind::Constraint };
@@ -260,7 +371,7 @@ impl Scheme for Ogrid {
                     let k =
                         o.rings.unwrap_or_else(|| ((n as f64 / TAU).round() as usize).saturating_sub(1).clamp(1, 1000));
                     let mut p = PolarParams::new(n, k);
-                    p.ratio = o.ratio;
+                    p.ratio = o.ratio.unwrap_or(1.0);
                     p.radius = radius;
                     p.phase_deg = ang[s].to_degrees();
                     let m = polar_disk(&p).map_err(kerr)?;
@@ -274,11 +385,8 @@ impl Scheme for Ogrid {
                         ));
                     }
                     let s = nearest(&ang, o.phase.unwrap_or(45.0).to_radians());
-                    let mut p = DiskParams::balanced(n, layers(n, 0.5));
-                    p.ratio = o.ratio;
-                    p.radius = radius;
-                    p.phase_deg = ang[s].to_degrees();
-                    let m = ogrid_disk(&p).map_err(kerr)?;
+                    let h = field_size(&loops[0]).or(Some(TAU * radius / n as f64));
+                    let (_, m, _) = select::disk(n, radius, h, fx(ang[s].to_degrees())).ok_or_else(|| no_grid("the disk"))?;
                     let b = (0..n).map(|j| (j as u32, keys[(s + j) % n])).collect();
                     (m, frame, 0.0, b)
                 }
@@ -296,16 +404,10 @@ impl Scheme for Ogrid {
                 }
                 let s = nearest(&ang, psi);
                 let skew = wrap(ang[s] - psi);
-                let t_in = ((half - radius) / half * n as f64 / 8.0).round() as usize;
-                let p = AnnulusQuadParams {
-                    m: [m[0], m[1], m[2], m[3]],
-                    k: o.rings.unwrap_or(t_in.clamp(1, 1000)),
-                    ratio: o.ratio,
-                    phase_deg: (FRAC_PI_4 + skew).to_degrees(),
-                    radius,
-                    side: 2.0 * half,
-                };
-                let mesh = ogrid_annulus_quad(&p).map_err(kerr)?;
+                let h = field_size(outer).or(Some((TAU * radius * 8.0 * half).sqrt() / n as f64));
+                let phase = (FRAC_PI_4 + skew).to_degrees();
+                let (_, mesh, _) = select::annulus([m[0], m[1], m[2], m[3]], radius, half, phase, h, fx(phase))
+                    .ok_or_else(|| no_grid("the circle-in-square annulus"))?;
                 let mut b: Vec<(u32, NodeKey)> = (0..n).map(|j| (j as u32, keys[(s + j) % n])).collect();
                 b.extend((0..n).map(|i| ((n + i) as u32, outer.nodes[i])));
                 (mesh, frame, psi - FRAC_PI_4, b)
@@ -321,11 +423,10 @@ impl Scheme for Ogrid {
                     ));
                 }
                 let so = nearest(&aout, ain[0]);
-                let k = o
-                    .rings
-                    .unwrap_or_else(|| ((((r_out - r_in) / r_out) * n as f64 / TAU).round() as usize).clamp(1, 1000));
-                let p = RingParams { n, k, r_in, r_out, ratio: o.ratio, phase_deg: ain[0].to_degrees() };
-                let mesh = ring(&p).map_err(kerr)?;
+                let h = field_size(&loops[0]).or(Some(PI * (r_in + r_out) / n as f64));
+                let (p, mesh, _) = select::ring_of(n, r_in, r_out, ain[0].to_degrees(), h, fx(ain[0].to_degrees()))
+                    .ok_or_else(|| no_grid("the ring"))?;
+                let k = p.k;
                 let mut b: Vec<(u32, NodeKey)> = (0..n).map(|j| (j as u32, kin[j])).collect();
                 b.extend((0..n).map(|j| ((k * n + j) as u32, kout[(so + j) % n])));
                 (mesh, frame, 0.0, b)
@@ -377,4 +478,48 @@ impl Scheme for Ogrid {
         }
         Ok(pb.finish())
     }
+}
+
+/// The hard side-count range around the per-side preference `per`.
+fn side_range(per: f64) -> (u32, u32) {
+    (per.floor() as u32, per.ceil() as u32 + u32::from(per.fract() == 0.0))
+}
+
+/// Per-side preference of square annulus `g` from its stored size, if it steers.
+fn side_pref(cx: &IntervalCtx<'_>, g: EntityId) -> Option<f64> {
+    let d = cx.data(Target::Surface(g))?;
+    let h = d.0.get("size").and_then(serde_json::Value::as_f64)?;
+    if d.0.get("hard").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let Ok(Shape::SquareAnnulus { radius, half, .. }) = fit::analyze(cx.input.topo, g) else {
+        return None;
+    };
+    let sides = geom::face_loops(cx.input.topo, g).first().map_or(0, Vec::len);
+    (sides > 0).then(|| ((TAU * radius * 8.0 * half).sqrt() / h / sides as f64).max(1.0))
+}
+
+/// Whether the hard side rows of `f` and of every steering square annulus reachable from it
+/// through shared side edges have a common count (the equal-sides rows tie them together).
+fn steer_agrees(cx: &IntervalCtx<'_>, f: EntityId) -> bool {
+    let topo = cx.input.topo;
+    let mut seen = vec![f];
+    let mut todo = vec![f];
+    let (mut lo, mut hi) = (0u32, u32::MAX);
+    while let Some(g) = todo.pop() {
+        let Some(per) = side_pref(cx, g) else { continue };
+        let (l, h) = side_range(per);
+        lo = lo.max(l);
+        hi = hi.min(h);
+        for k in &geom::face_loops(topo, g)[0] {
+            for inc in topo.coboundary(k.edge) {
+                let o = inc.cell;
+                if topo.dim_of(o) == Some(sm_topo_api::Dim::Face) && !seen.contains(&o) {
+                    seen.push(o);
+                    todo.push(o);
+                }
+            }
+        }
+    }
+    lo <= hi
 }

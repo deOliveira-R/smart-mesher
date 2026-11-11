@@ -143,8 +143,8 @@ fn enclosed_pin_becomes_six_all_hex_volumes() {
         "6",
         "three square-annulus slabs, two caps, the fuel"
     );
-    assert_eq!(print_of(&o.out, "shapes"), "{Hex: 240}");
-    assert_eq!(print_of(&o.out, "cells"), "240");
+    assert_eq!(print_of(&o.out, "shapes"), "{Hex: 80}");
+    assert_eq!(print_of(&o.out, "cells"), "80");
     assert_eq!(print_of(&o.out, "violations"), "0");
     // Volume is preserved across the cuts, and the mesh fills the brick.
     assert!(

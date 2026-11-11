@@ -49,7 +49,7 @@ let h_auto = session.hash()
 print "h_auto", h_auto
 let m = mesh.run(targets: all volumes)
 let mi = mesh.info(mesh: m.mesh[0])
-assert mi.cells == 891, "891 hexes"
+assert mi.cells == 432, "432 hexes"
 print "cells", mi.cells
 print "shapes", mi.cell_shapes
 print "mesh_volume", mi.volume
