@@ -4,7 +4,7 @@
 # note: golden-reviewed rows for sm-protocol rejected.json and requests.json refreshed at a9d86ca after W4-0.5 (ACR-DAGMC-SRC, additive golden insertions)
 # note: golden-reviewed rows refreshed at the W4a-a1 part-2 combine (bdeea2a): sm-mcp tools.standard.txt (+mesh__volume_check, +model__subdivide_pin; OR-e), session.out.jsonl and session.out.respell.jsonl (session_export `source` property; OR-b), new sm-diag mesh.volume_check.* goldens (W4-POLY-VOLDIAG)
 # note: golden-reviewed row refreshed at the W4a-a2 combine (6123200): sm-mcp tools.standard.txt (+mesh__decompose_plan W4-HEX-QUERY, +model__import_openmc W4-CSG-CORE, +model__lattice_define, +model__lattice_tag, +model__region_clear, +model__region_tags W4-REGIONS-SPLIT; OR-e)
-# note: D5 move (rulings D5, OR-f) refreshed at the W4a-a3 combine: W4-MESHER-LISTS 5a0d3ea (ogrid enters default/hex_only) and 3128fa0, merged via W4-HEX-PIN-INT e83545b; rows old -> new: platform w3c_pin.branch.main, .mem.state, .print.h_mesh, .state 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> 1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e; w3c_pin.layer.intent 931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd -> 9bee9cf0e703b7912c4843ef112b417e627499c7ae5686e12944d300b0a418e1; w3c_pin.layer.meshes 469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683 -> 81ec9c490b5b5604279e860793cfc059e68379001a63c751622731dd516426aa; w3c_pin.print.cells 432 -> 891; w3c_pin.print.h_auto 1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1 -> dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab; platform expected.txt.sha256 e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247 -> 24a1cf0cbd5d7923a3f68db74ad4592be6f548dce5550974072f7e2f04a214ab; w3c_pin leftout.print.h_mesh, leftout.state 87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256 -> c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59; w3c_pin pin.hexes 432 -> 891. Unchanged: w3c_pin.h_model, w3c_pin.layer.model, W2, W3a, W3b and the enclosed pin rows
+# note: D5 move (rulings D5, OR-f) re-blessed at the W4a-a3 part-3 combine: D5 lands with the size-aware ogrid, W4-OGRID-SIZE a044e23 (re-bless) at 7892916 (ogrid's score follows the size, so the through pin, its lattice and the leftout fixture keep pave at size 0.3 and return to the pre-D5 212689e values); rows old -> new: platform w3c_pin.branch.main, .mem.state, .print.h_mesh, .state 1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e -> 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6; w3c_pin.layer.intent 9bee9cf0e703b7912c4843ef112b417e627499c7ae5686e12944d300b0a418e1 -> 931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd; w3c_pin.layer.meshes 81ec9c490b5b5604279e860793cfc059e68379001a63c751622731dd516426aa -> 469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683; w3c_pin.print.cells 891 -> 432; w3c_pin.print.h_auto dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab -> 1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1; platform expected.txt.sha256 24a1cf0cbd5d7923a3f68db74ad4592be6f548dce5550974072f7e2f04a214ab -> e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247; w3c_pin leftout.print.h_mesh, leftout.state c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59 -> 87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256; w3c_pin pin.hexes 891 -> 432. Unchanged: w3c_pin.h_model, w3c_pin.layer.model, W2, W3a, W3b and the enclosed pin rows
 # note: new rows at the W4a-a3 combine for the 10 new OpenMC fixtures of W4-CSG-ORACLE d32864e (disconnected, placed_z, quadric_cyl, ref_assembly17, ref_assembly17_h2, ref_beavrs_assembly, ref_mini3x3, ref_mini3x3_h2, ref_pin, ref_pin_h2): csgio oracle.<name>.sha256 (any) and content_hash.<name> (macos-aarch64)
 # note: golden-reviewed row refreshed at the W4a-a3 combine (7acd147): sm-mcp tools.standard.txt (+mesh__preserve_volume W4-MESHER-LISTS; OR-e) 1941f43752ce706ef52745b6900d94bd5340b1644773455d152bd02fa323d265 -> 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9
 # uname: Darwin arm64
@@ -336,7 +336,7 @@ platform_linux|test.each_format_is_byte_identical_in_process_cli_and_mcp|linux-x
 platform_linux|test.flat_inputs_keep_their_w3a_hashes|linux-x86_64|ok
 platform_linux|test.identity_hashes_match_expected_on_every_platform|linux-x86_64|ok
 platform_linux|test.milestone_w3c_pin|linux-x86_64|ok
-platform|expected.txt.sha256|any|24a1cf0cbd5d7923a3f68db74ad4592be6f548dce5550974072f7e2f04a214ab
+platform|expected.txt.sha256|any|e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247
 platform|w2_fork.branch.alt|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
 platform|w2_fork.branch.coarse|any|f5f2866af4e7f14369b8f9367c06d1dc52ce9b20e764bf81c690073452050164
 platform|w2_fork.branch.main|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
@@ -389,16 +389,16 @@ platform|w3b_submap_graded.print.cells|any|36
 platform|w3b_submap_graded.print.geometry_hash|any|43ecc0a4b59b3715
 platform|w3b_submap_graded.print.topology_hash|any|c99bcaa8d93e9a5e
 platform|w3b_submap_graded.state|any|7b71fd6dd5c3dd7136a6a1b78a40c8fa3f851877e9f069a73f164f731b0c0b1f
-platform|w3c_pin.branch.main|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
-platform|w3c_pin.layer.intent|any|9bee9cf0e703b7912c4843ef112b417e627499c7ae5686e12944d300b0a418e1
-platform|w3c_pin.layer.meshes|any|81ec9c490b5b5604279e860793cfc059e68379001a63c751622731dd516426aa
+platform|w3c_pin.branch.main|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.layer.intent|any|931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd
+platform|w3c_pin.layer.meshes|any|469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683
 platform|w3c_pin.layer.model|any|a2c1c6aa45de6bf4c96c3ae21a4aaca9ba2b58b6134e1f5dd2fe905b569971ba
-platform|w3c_pin.mem.state|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
-platform|w3c_pin.print.cells|any|891
-platform|w3c_pin.print.h_auto|any|dd137b3884def2b091c048546f211b16b3f6de487170cdd3142eee8a5ca0f1ab
-platform|w3c_pin.print.h_mesh|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
+platform|w3c_pin.mem.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.print.cells|any|432
+platform|w3c_pin.print.h_auto|any|1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1
+platform|w3c_pin.print.h_mesh|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
 platform|w3c_pin.print.h_model|any|f238f0340fc123ef799f241e7f9ff99e3d5d7ef848113f9a6c20f768d47b4e9d
-platform|w3c_pin.state|any|1ebc52b0d9ed2c4b6ead82ef0df689a9cec2dd4a5861c85b2e6ef61a73d09d3e
+platform|w3c_pin.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
 poly|acc7.tet_block.keep.geometry_hash|macos-aarch64|dd13302baaae7a87
 poly|acc7.tet_block.keep.topology_hash|any|66fe41de52386ec9
 poly|acc7.tet_block.planar.geometry_hash|macos-aarch64|ad8dcab2f3fe1e87
@@ -501,10 +501,10 @@ w3c_pin|enclosed.print.h_model|any|8cdcb65bfef688ff4804606968a1be43f8261b7b5bd9a
 w3c_pin|enclosed.print.head|any|main
 w3c_pin|enclosed.print.mesh_volume|macos-aarch64|1.5875999999999972
 w3c_pin|enclosed.state|any|0804bbbffc493a1a399145c657edbb7554381df129af432830f312a4a72204b2
-w3c_pin|leftout.print.h_mesh|any|c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59
+w3c_pin|leftout.print.h_mesh|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
 w3c_pin|leftout.print.mesh|any|Mesh#1
-w3c_pin|leftout.state|any|c1e098cfefa5cdd92d06e3545d81e498e49f6eb7e0f318578cac19448e5eab59
-w3c_pin|pin.hexes|any|891
+w3c_pin|leftout.state|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
+w3c_pin|pin.hexes|any|432
 w3c_pin|warped.print.h_mesh|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8
 w3c_pin|warped.print.mesh|any|Mesh#1
 w3c_pin|warped.state|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8
