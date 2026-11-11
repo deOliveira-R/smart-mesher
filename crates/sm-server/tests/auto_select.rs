@@ -311,6 +311,33 @@ fn b5_plate_with_a_hole_meshes_all_hex() {
     assert!(i["rejections"].as_u64().is_some_and(|r| r <= 2), "{i}");
 }
 
+/// Two plate cells side by side with holes of different radius share a wall edge: the ogrid side rows
+/// of the two faces must not make the interval solve infeasible (a3 review, `mesh.auto failed: infeasible`).
+#[test]
+fn two_plate_cells_with_different_holes_mesh_under_default() {
+    for r2 in ["0.6", "0.25", "0.8"] {
+        let mut s = server();
+        let text = format!(
+            "let a = model.create_brick(x: 4.0, y: 4.0, z: 1.0)\n\
+             let t = model.create_cylinder(height: 3.0, radius: 1.0)\n\
+             let r1 = model.subtract(targets: a.body, tools: t.body)\n\
+             let b = model.create_brick(x: 4.0, y: 4.0, z: 1.0, center: [4.0, 0.0, 0.0])\n\
+             let u = model.create_cylinder(height: 3.0, radius: {r2}, center: [4.0, 0.0, 0.0])\n\
+             let r2 = model.subtract(targets: b.body, tools: u.body)\n\
+             model.imprint(bodies: all bodies)\nmodel.merge()\n\
+             mesh.size(targets: all volumes, size: 0.3)\nmesh.auto(strategy: \"default\")\n\
+             let m = mesh.run(targets: all volumes)\n"
+        );
+        ok(&mut s, &text);
+        let i = info(&mut s);
+        assert!(i["cells"].as_u64().is_some_and(|c| c > 0), "r2 = {r2}: {i}");
+        assert!(valid(&mut s), "r2 = {r2}");
+        let want = 32.0 - std::f64::consts::PI * (1.0 + r2.parse::<f64>().expect("radius").powi(2));
+        let got = i["volume"].as_f64().expect("volume");
+        assert!((got - want).abs() / want < 0.05, "r2 = {r2}: volume {got} vs {want}");
+    }
+}
+
 // ---- B6: auto next to a hard neighbour (pinned) --------------------------------------------------
 
 /// `mesh.auto` next to a hard `tetmesh` neighbour (W3c-MESHER-REPLAN, ruling C2). The right volume's `map`

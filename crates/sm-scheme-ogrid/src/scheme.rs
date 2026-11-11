@@ -276,12 +276,16 @@ impl Scheme for Ogrid {
                     let n = (TAU * radius * 8.0 * half).sqrt() / h;
                     let side_edges: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
                     let per = (n / side_edges.len() as f64).max(1.0);
+                    // The hard rows only when the whole group of annuli that share side edges
+                    // agrees on a count (else the interval solve is infeasible).
+                    let steer = hard && steer_agrees(cx, f);
                     for e in &side_edges {
                         out.prefer(*e, per);
                         // The preference alone is averaged away by the neighbours' goals; the hard
                         // range only when no user count exists anywhere.
-                        if hard {
-                            out.range(*e, per.floor() as u32, Some(per.ceil() as u32 + u32::from(per.fract() == 0.0)));
+                        if steer {
+                            let (lo, hi) = side_range(per);
+                            out.range(*e, lo, Some(hi));
                         }
                     }
                     for e in loops[1].iter().map(|k| k.edge) {
@@ -297,7 +301,7 @@ impl Scheme for Ogrid {
                 // (unequal sides twist them and cost the corner quads their Jacobian). Only when the
                 // scheme steers (a size, no user counts), so a user's counts never become infeasible.
                 let sides: Vec<EntityId> = loops[0].iter().map(|k| k.edge).collect();
-                if size.is_some() && hard && sides.len() == 4 {
+                if size.is_some() && hard && sides.len() == 4 && steer_agrees(cx, f) {
                     for w in sides.windows(2) {
                         out.linear(&[(w[0], 1), (w[1], -1)], Rel::Eq, 0);
                     }
@@ -474,4 +478,48 @@ impl Scheme for Ogrid {
         }
         Ok(pb.finish())
     }
+}
+
+/// The hard side-count range around the per-side preference `per`.
+fn side_range(per: f64) -> (u32, u32) {
+    (per.floor() as u32, per.ceil() as u32 + u32::from(per.fract() == 0.0))
+}
+
+/// Per-side preference of square annulus `g` from its stored size, if it steers.
+fn side_pref(cx: &IntervalCtx<'_>, g: EntityId) -> Option<f64> {
+    let d = cx.data(Target::Surface(g))?;
+    let h = d.0.get("size").and_then(serde_json::Value::as_f64)?;
+    if d.0.get("hard").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let Ok(Shape::SquareAnnulus { radius, half, .. }) = fit::analyze(cx.input.topo, g) else {
+        return None;
+    };
+    let sides = geom::face_loops(cx.input.topo, g).first().map_or(0, Vec::len);
+    (sides > 0).then(|| ((TAU * radius * 8.0 * half).sqrt() / h / sides as f64).max(1.0))
+}
+
+/// Whether the hard side rows of `f` and of every steering square annulus reachable from it
+/// through shared side edges have a common count (the equal-sides rows tie them together).
+fn steer_agrees(cx: &IntervalCtx<'_>, f: EntityId) -> bool {
+    let topo = cx.input.topo;
+    let mut seen = vec![f];
+    let mut todo = vec![f];
+    let (mut lo, mut hi) = (0u32, u32::MAX);
+    while let Some(g) = todo.pop() {
+        let Some(per) = side_pref(cx, g) else { continue };
+        let (l, h) = side_range(per);
+        lo = lo.max(l);
+        hi = hi.min(h);
+        for k in &geom::face_loops(topo, g)[0] {
+            for inc in topo.coboundary(k.edge) {
+                let o = inc.cell;
+                if topo.dim_of(o) == Some(sm_topo_api::Dim::Face) && !seen.contains(&o) {
+                    seen.push(o);
+                    todo.push(o);
+                }
+            }
+        }
+    }
+    lo <= hi
 }
