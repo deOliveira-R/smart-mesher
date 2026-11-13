@@ -270,7 +270,7 @@ impl AnalyticTracker {
         self.enter_impl(o, d, max_t, true, sc)
     }
 
-    /// [`Self::enter_from_outside`] by the tile walk of the cell index (`indexed`, when the leaf
+    /// The first entry of a ray into a cell of the leaf from outside it by the tile walk of the cell index (`indexed`, when the leaf
     /// has one) or by testing every surface (the oracle): the same answer. `(t, surface)`.
     pub fn entry_from_outside(&self, o: Point3, d: Vector3, max_t: f64, indexed: bool, scratch: &mut Scratch) -> Option<(f64, SurfaceId)> {
         self.enter_impl(a3(o), av(d), max_t, indexed, scratch).map(|(t, s)| (t, SurfaceId::new(s as usize)))

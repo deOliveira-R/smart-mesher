@@ -18,6 +18,9 @@ use sm_rt_api::{
     StepEnd, TraceEnd, TraceOptions, Tracker, WorldSpec,
 };
 
+/// `(cell, chord length)` of a segment.
+type Seg = (u32, f64);
+
 const P: f64 = 1.5;
 const RF: f64 = 0.4;
 const ZH: f64 = 2.0;
@@ -207,7 +210,7 @@ fn chords_along_the_three_lattice_directions_are_the_analytic_ones() {
             let (got, end) = trace(&w, c0, d).unwrap();
             assert_eq!(end, "boundary", "{o:?} ({dq},{dr})");
             assert_eq!(got.len(), 2 + 3 * 4 + 1 - 1, "{o:?} ({dq},{dr}): {got:?}");
-            let (fuel, md): (Vec<&(u32, f64)>, Vec<&(u32, f64)>) = got.iter().partition(|g| g.0 % 2 == 0);
+            let (fuel, md): (Vec<&Seg>, Vec<&Seg>) = got.iter().partition(|g| g.0 % 2 == 0);
             assert_eq!(fuel.len(), 5);
             // 5 elements, centre of the first to the flat of the last: 4.5 pitches.
             let total: f64 = got.iter().map(|g| g.1).sum();
@@ -352,7 +355,7 @@ fn fit_oversize_fills_are_refused_and_exact_prisms_accepted() {
         // A prism of pitch 1.05 P in lattice pitch P pokes through the flats: the box test passes
         // for one axis but the probe outside the flats finds cells (CSG fill).
         let spec = lattice_spec(o, 2, 1, ORIGIN());
-        let e = build(&spec, &[&hex_pin(o, 1.05 * P, "")]).err().expect("oversize refused");
+        let e = build(&spec, &[&hex_pin(o, 1.05 * P, "")]).expect_err("oversize refused");
         match e {
             RtError::Build(v) => assert!(v.iter().any(|i| i.code == "world.lattice_fit"), "{v:?}"),
             other => panic!("{other:?}"),
