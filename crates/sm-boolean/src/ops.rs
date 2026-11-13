@@ -421,7 +421,7 @@ impl TypedOp for Regularize {
 /// hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for
 /// short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates.
 /// Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used
-/// are returned with the findings. See [`crate::heal_check`] for the rules.
+/// are returned with the findings. See [`mod@crate::heal_check`] for the rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HealCheck {

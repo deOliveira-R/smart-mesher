@@ -84,3 +84,32 @@ fn cold_replay_from_the_root_does_not_diverge() {
         assert_eq!(cold.layer_hashes(), r.s.state().layer_hashes());
     }
 }
+
+/// `model.regularize` and `model.heal_check`: the state hash and the report are bit-identical
+/// across runs and thread counts.
+#[test]
+fn regularize_and_heal_check_are_deterministic() {
+    use sm_boolean::ops::Regularize;
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        pool.install(|| {
+            let mut r = Rig::cc();
+            let c = r.cylinder(2.0, 0.75, [0.0; 3]);
+            let plane = PlaneSpec::Axis(AxisPlane { axis: PlaneAxis::X, offset: 0.0 });
+            let d = r.run(&WebcutPlane { targets: vec![c.body], plane, keep: None, merge: None, imprint: None }).unwrap();
+            let bodies: Vec<_> = d.outputs["positive"].iter().chain(&d.outputs["negative"]).copied().collect();
+            let u = r.run(&Unite { bodies, keep: None, regularize: Some(false), tol: None }).unwrap();
+            r.run(&Regularize { volumes: u.outputs["volumes"].clone() }).unwrap();
+            r.brick([1.0; 3], [5.5, 0.5, 0.5]);
+            r.brick([1.0; 3], [6.5 + 1e-5, 0.5, 0.5]);
+            let rep = r.query("model.heal_check", serde_json::json!({})).unwrap();
+            (r.hash(), rep.to_string())
+        })
+    };
+    let base = run(1);
+    for threads in [1, 4] {
+        for _ in 0..2 {
+            assert_eq!(run(threads), base, "{threads} threads");
+        }
+    }
+}

@@ -253,7 +253,7 @@ fn faces_around(view: &dyn TopologyView, cell: EntityId) -> BTreeSet<EntityId> {
 fn planar_shape(view: &dyn TopologyView, f: EntityId) -> Option<(f64, f64)> {
     let (n, _) = view.face_plane(f, view.tolerance().linear).ok()??;
     let c = view.face_central(f).ok()?;
-    if !(c.area > 0.0) {
+    if c.area.is_nan() || c.area <= 0.0 {
         return None;
     }
     let n = geo::unit(n)?;
@@ -274,7 +274,7 @@ fn planar_shape(view: &dyn TopologyView, f: EntityId) -> Option<(f64, f64)> {
     let mean = 0.5 * (suu + svv);
     let disc = (0.25 * (suu - svv).powi(2) + suv * suv).sqrt();
     let (l1, l2) = (mean + disc, mean - disc);
-    if !(l2 > 0.0) {
+    if l2.is_nan() || l2 <= 0.0 {
         return None;
     }
     // A rectangle l x w has variances l^2/12 and w^2/12.

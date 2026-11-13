@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use common::rig::*;
-use common::*;
 use serde_json::json;
 use sm_boolean::ops::{Subtract, Unite};
 use sm_boolean::{HealCode, HealOptions, HealReport, heal_check, regularize_volumes};
