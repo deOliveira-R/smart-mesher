@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{Frame, SurfaceDef};
-use sm_layer_api::{LayerResultExt, MeshLayer, ModelLayer, commit_topology, model_txn, topo_txn};
+use sm_layer_api::{LayerResultExt, ModelLayer, commit_topology, model_txn, topo_txn};
 use sm_model_api::SubIndex;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_topo_api::{Dim, TopologyView};
@@ -23,9 +23,12 @@ use crate::webcut::{CutTool, WebcutOptions, webcut};
 
 /// Azimuth (radians) of the seam of the cutting cylinders relative to the frame x axis.
 ///
-/// Workaround for a kernel finding: with the default tool frame, webcut_cylinder/subtract fail
-/// validation ("result volume invalid") for a 0.475-radius cylinder cut at r=0.418 and r=0.476.
-/// Cuts at 0.3, 0.41, 0.42, 0.45 and 0.418 in a 0.48 cylinder pass. Cause unknown (W4-CSG-PROBE).
+/// The W4-REGIONS-CUT finding (a 0.475 cylinder cut at 0.418 failed with the default frame) was
+/// not a seam coincidence: `faceclass::interior_point` could return a point on the wrong side of
+/// an inscribed boundary polygon (fixed in W4-BOOL-TOOLS; see `tests/bool_tools.rs`). The turn is
+/// kept because it moves the seam off the sector cuts (a seam vertex inside a sector arc would
+/// force a non-uniform node spacing, see `sm-server/tests/regions_split.rs`) and because changing
+/// it moves the hashes of every subdivided pin.
 const SEAM_TURN: f64 = 1.0;
 
 /// Largest ring or sector count per pin.
@@ -196,32 +199,6 @@ fn ring_radii(spec: &RingSpec, r_in: f64, r_out: f64, tol: f64, v: EntityId) -> 
     Ok(radii)
 }
 
-/// Same guards as the other boolean ops (a copy of `ops::guard_volumes`, which is private to
-/// `ops.rs`): no mesh, no decomposition, no instancing.
-fn guard(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
-    let layer = ctx.layer::<ModelLayer>()?;
-    let topo = layer.topo();
-    let model = layer.model();
-    let decomposed = model.decomposition().decomposed_volumes();
-    let mesh = ctx.state().layer::<MeshLayer>();
-    for &v in volumes {
-        if decomposed.contains(&v) {
-            return Err(OpError::Unsupported(format!("{v} is decomposed: undo the decomposition first")));
-        }
-        if model.instancing().prototypes.values().any(|p| p.volumes.contains(&v)) {
-            return Err(OpError::Unsupported(format!("{v} is a prototype volume of an instance: instanced volumes cannot be edited")));
-        }
-        if let Some(m) = mesh {
-            let mut cells = vec![v];
-            cells.extend(topo.volume_faces(v).iter().copied());
-            if let Some(mid) = cells.iter().find_map(|c| m.mesh_of(*c)) {
-                return Err(OpError::Invalid(format!("{v} has a mesh ({mid}): mesh.delete first")));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// A piece: its volume, ring and sector.
 type Piece = (EntityId, Option<SubIndex>, Option<SubIndex>);
 
@@ -341,7 +318,7 @@ impl TypedOp for SubdividePin {
                 vols.push(v);
             }
         }
-        guard(ctx, &vols)?;
+        crate::ops::guard_volumes(ctx, &vols)?;
         // Validate every pin and fix its cut radii before anything is edited.
         let mut plan: Vec<(EntityId, Vec<f64>)> = Vec::new();
         {

@@ -38,7 +38,7 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
 ];
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
-fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
+pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
     let topo = model_layer.topo();
     let model = model_layer.model();
