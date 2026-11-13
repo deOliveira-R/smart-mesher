@@ -453,6 +453,41 @@ class Session:
             b64 = base64.b64encode(f.read()).decode("ascii")
         return self.apply("model.import_step", source={"inline": b64}, **kw)
 
+    def import_openmc(
+        self,
+        geometry: str | os.PathLike[str],
+        materials: str | os.PathLike[str] | None = None,
+        *,
+        overlap: Literal["error", "first_wins", "report"] | None = None,
+        max_cells: int | None = None,
+        reuse_lattices: bool | None = None,
+        bounds: Sequence[float] | None = None,
+        material_names: Mapping[int, str] | None = None,
+    ) -> ApplyResult:
+        """Stage an OpenMC `geometry.xml` (and `materials.xml`), then apply `model.import_openmc`.
+
+        The deck becomes B-rep volumes in one history node. The result's `diagnostics` carry
+        `import.gap`, `import.overlap` and `import.partition`; an overlap raises
+        `ApplicationError` (`csg.overlap`) unless `overlap` is `"report"` or `"first_wins"`.
+        """
+        params: dict[str, Any] = {"geometry": {"sha256": self.stage_file(geometry).sha256}}
+        if materials is not None:
+            params["materials"] = {"sha256": self.stage_file(materials).sha256}
+        opts: dict[str, Any] = {}
+        if overlap is not None:
+            opts["overlap"] = overlap
+        if max_cells is not None:
+            opts["max_cells"] = max_cells
+        if reuse_lattices is not None:
+            opts["reuse_lattices"] = reuse_lattices
+        if bounds is not None:
+            opts["bounds"] = [float(b) for b in bounds]
+        if material_names is not None:
+            opts["material_names"] = {str(k): v for k, v in material_names.items()}
+        if opts:
+            params["options"] = opts
+        return self.apply("model.import_openmc", **params)
+
     def export(
         self,
         path: str | os.PathLike[str] | None = None,
@@ -467,6 +502,7 @@ class Session:
         polyhedra: Literal["error", "decompose", "drop"] | None = None,
         chord_tol: float | None = None,
         source: Literal["mesh", "model"] | None = None,
+        regions: Sequence[Literal["lattice", "ring", "sector"]] | None = None,
         split_small_determinant: bool | None = None,
         split_warped_faces: bool = False,
         empty_patches: Sequence[str] = (),
@@ -482,10 +518,13 @@ class Session:
         per-format options and rejects options the format does not take (`SmartMeshError`).
         `source="model"` (DAGMC only) faces the `.h5m` straight from the B-rep at `chord_tol`: no
         mesh is needed and `mesh` must not be given; the default `"mesh"` exports a volume mesh.
+        `regions` (`.smsh` and `.smrt`) splits lattice elements into one region per listed part
+        (`"lattice"`, `"ring"`, `"sector"`): sugar for `options={"regions": {"split": [...]}}`.
         Every note with severity `warning` is also raised as an `ExportWarning`.
         """
         merged: dict[str, Any] = dict(options) if options is not None else {}
-        for key, val in (("graveyard", graveyard), ("binary", binary), ("polyhedra", polyhedra), ("chord_tol", chord_tol)):
+        regions_opt = {"split": list(regions)} if regions is not None else None
+        for key, val in (("graveyard", graveyard), ("binary", binary), ("polyhedra", polyhedra), ("chord_tol", chord_tol), ("regions", regions_opt)):
             if val is None:
                 continue
             if key in merged:
