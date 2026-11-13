@@ -373,6 +373,12 @@ pub(crate) fn store_scheme(
 /// choice defaults to `hard`: the user named it, so a conflicting imposition is an error rather
 /// than a silent override. `fallbacks` are tried in order, as `soft` choices without parameters,
 /// when the scheme fails to apply or to generate.
+///
+/// `polyhedron` (volumes, needs `tetmesh`) is reserved: `mesh.run` then makes tets and dualizes
+/// them in one step, giving one polyhedral mesh equal to `tetmesh` followed by
+/// `mesh.to_poly(keep_source: false)`. Its param `dual` is `"barycentric"` (default) or
+/// `"circumcentric"` (strict); other params go to `tetmesh`. It cannot be a fallback, and the
+/// volumes of one run must all use it with the same `dual`, or none.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MeshScheme {
@@ -400,8 +406,22 @@ impl TypedOp for MeshScheme {
         let targets = live_targets(ctx, &self.targets, &SIZE_KINDS)?;
         let cfg = ctx.service::<MesherConfig>()?.clone();
         let known = |dim: SchemeDim, name: &str| {
-            name == sm_scheme_api::SchemeName::COPY || cfg.registry().get(dim, name).is_some()
+            name == sm_scheme_api::SchemeName::COPY
+                || cfg.registry().get(dim, name).is_some()
+                || (name == crate::polyscheme::POLYHEDRON
+                    && dim == SchemeDim::Volume
+                    && cfg.registry().get(dim, crate::polyscheme::TET).is_some())
         };
+        if self.fallbacks.iter().any(|f| f == crate::polyscheme::POLYHEDRON) {
+            return Err(OpError::Invalid(
+                " cannot be a fallback; it changes the cell type".into(),
+            ));
+        }
+        if self.scheme == crate::polyscheme::POLYHEDRON
+            && let Some(p) = &self.params
+        {
+            crate::polyscheme::split_params(p)?;
+        }
         for &t in &targets {
             let dim = dim_of(t.kind());
             for name in std::iter::once(&self.scheme).chain(&self.fallbacks) {

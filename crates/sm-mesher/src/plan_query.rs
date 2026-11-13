@@ -810,6 +810,13 @@ impl TypedQuery for MeshPlanQuery {
                     .layer::<IntentLayer>()
                     .ok_or_else(|| OpError::MissingLayer("intent".into()))?
                     .intent();
+                // `polyhedron` plans as the `tetmesh` it runs.
+                let lowered = if faces {
+                    None
+                } else {
+                    crate::polyscheme::lower(intent, &targets)?.map(|(i, _)| i)
+                };
+                let intent = lowered.as_ref().unwrap_or(intent);
                 let field = size_field(cfg, intent)?;
                 let driver = make_driver(cfg, field.as_deref(), faces, targets.len());
                 let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);

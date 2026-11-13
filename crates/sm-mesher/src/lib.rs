@@ -27,6 +27,7 @@ mod intent_layer;
 mod intent_ops;
 mod mesh_ops;
 mod plan_query;
+mod polyscheme;
 mod volfit;
 
 pub use auto::{
@@ -38,6 +39,7 @@ pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
+pub use polyscheme::POLYHEDRON;
 pub use volfit::MeshPreserveVolume;
 pub use info::{MeshInfo, MeshInfoQuery};
 pub use intent_layer::IntentLayer;
