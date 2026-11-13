@@ -9,6 +9,7 @@ use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
 use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
 use sm_meshio::report::LossReport;
+use sm_meshio::select::{Dimension, Pick, Select};
 use sm_model_api::BoundaryKind;
 use sm_op_api::State;
 use sm_protocol::{ExportFormat, ExportNote};
@@ -31,8 +32,15 @@ pub(crate) struct Written {
     pub notes: Vec<ExportNote>,
 }
 
+/// The note of one `code: detail xcount` line. The `export.*` codes (what a selection or a
+/// passthrough could not do) are warnings: the export worked but not as asked in full.
+pub(crate) fn note_of(line: &str) -> ExportNote {
+    let n = ExportNote::parse(line);
+    if n.code.starts_with("export.") { ExportNote::warning(n.code, n.count, n.detail) } else { n }
+}
+
 pub(crate) fn notes_of(loss: &LossReport) -> Vec<ExportNote> {
-    loss.items.iter().map(|i| ExportNote::parse(&format!("{}: {} x{}", i.code, i.detail, i.count))).collect()
+    loss.items.iter().map(|i| note_of(&format!("{}: {} x{}", i.code, i.detail, i.count))).collect()
 }
 
 /// The options object of `format`: absent or `null` is empty; anything else must be an object
@@ -59,6 +67,83 @@ fn bool_option(name: &str, m: Option<&Map<String, Value>>, key: &str) -> Result<
     }
 }
 
+/// The parsed `select` option (`overwrite` is checked for shape here and read by
+/// [`overwrite_option`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SelectOpt {
+    pub select: Select,
+}
+
+fn pick_option(name: &str, key: &str, v: Option<&Value>) -> Result<Pick, SessionError> {
+    let bad = |what: String| SessionError::bad_request(format!("`{name}` option `select.{key}` {what} (expected \"all\" or a list of set names)"));
+    match v {
+        None | Some(Value::Null) => Ok(Pick::All),
+        Some(Value::String(s)) if s == "all" => Ok(Pick::All),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|x| x.as_str().map(str::to_owned).ok_or_else(|| bad(format!("holds {x}, not a set name"))))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Pick::Names),
+        Some(other) => Err(bad(format!("is {other}"))),
+    }
+}
+
+/// The `select` option of an exporter: `{"blocks", "sidesets", "nodesets": "all" | [names],
+/// "dimension": "auto" | 2 | 3, "overwrite": bool}`. Absent or `null` is no selection. Only the
+/// shape is checked here; set names are checked against the lowered mesh at export.
+pub(crate) fn select_option(name: &str, m: Option<&Map<String, Value>>) -> Result<Option<SelectOpt>, SessionError> {
+    let Some(v) = m.and_then(|m| m.get("select")).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let bad = |what: String| SessionError::bad_request(format!("`{name}` option `select` {what} (keys: blocks, sidesets, nodesets, dimension, overwrite)"));
+    let Value::Object(o) = v else { return Err(bad(format!("must be an object, found {v}"))) };
+    if let Some(k) = o.keys().find(|k| !["blocks", "sidesets", "nodesets", "dimension", "overwrite"].contains(&k.as_str())) {
+        return Err(bad(format!("has an unknown key `{k}`")));
+    }
+    let dimension = match o.get("dimension") {
+        None | Some(Value::Null) => Dimension::Auto,
+        Some(Value::String(s)) if s == "auto" => Dimension::Auto,
+        Some(Value::String(s)) if s == "2" => Dimension::Two,
+        Some(Value::String(s)) if s == "3" => Dimension::Three,
+        Some(Value::Number(n)) if n.as_u64() == Some(2) => Dimension::Two,
+        Some(Value::Number(n)) if n.as_u64() == Some(3) => Dimension::Three,
+        Some(other) => return Err(bad(format!("`dimension` must be \"auto\", 2 or 3, found {other}"))),
+    };
+    match o.get("overwrite") {
+        None | Some(Value::Null | Value::Bool(_)) => {}
+        Some(other) => return Err(bad(format!("`overwrite` must be a boolean, found {other}"))),
+    }
+    let select = Select {
+        blocks: pick_option(name, "blocks", o.get("blocks"))?,
+        sidesets: pick_option(name, "sidesets", o.get("sidesets"))?,
+        nodesets: pick_option(name, "nodesets", o.get("nodesets"))?,
+        dimension,
+    };
+    Ok(Some(SelectOpt { select }))
+}
+
+/// The `select` option of `vtu` and `exodus`, whose only option it is.
+pub(crate) fn select_only(name: &str, options: Option<&Value>) -> Result<Option<SelectOpt>, SessionError> {
+    let m = options_map(name, options, &["select"])?;
+    select_option(name, m)
+}
+
+/// The `select` of `smsh` (checked alongside `regions`).
+pub(crate) fn smsh_select(options: Option<&Value>) -> Result<Option<SelectOpt>, SessionError> {
+    let m = options_map("smsh", options, &["regions", "select"])?;
+    select_option("smsh", m)
+}
+
+/// `select.overwrite` of any exporter's options (`true` when absent): whether an existing output
+/// file may be replaced. A malformed `select` is left to the exporter's own check.
+pub(crate) fn overwrite_option(options: Option<&Value>) -> bool {
+    options
+        .and_then(|o| o.get("select"))
+        .and_then(|s| s.get("overwrite"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 /// The `regions` option of `smsh` and `smrt`: `{"split": ["lattice", "ring", "sector"]}` (any
 /// subset; absent, `null` or an empty list is no split). Region sets of the same name rules go to
 /// `.smsh` as `region/<name>` cell sets and to `.smrt` as tagged regions.
@@ -81,7 +166,7 @@ fn regions_option(name: &str, m: Option<&Map<String, Value>>) -> Result<RegionSp
 
 /// The region split asked of an `smsh` export (`options` is checked: only `regions` is allowed).
 pub(crate) fn smsh_split(options: Option<&Value>) -> Result<RegionSplit, SessionError> {
-    let m = options_map("smsh", options, &["regions"])?;
+    let m = options_map("smsh", options, &["regions", "select"])?;
     regions_option("smsh", m)
 }
 
@@ -96,23 +181,40 @@ fn split_error(e: SplitError) -> SessionError {
 /// The `.smsh` of the selected mesh with the region split lowered to `region/<name>` cell sets
 /// (the same bytes as `sm_fem::export` plus those sets). `provenance` is the timeline hash to
 /// record, as `session.export {provenance: true}` passes it.
-pub(crate) fn write_smsh_split(state: &State, named: Option<EntityId>, provenance: Option<String>, split: &RegionSplit) -> Result<Written, SessionError> {
+pub(crate) fn write_smsh_split(
+    state: &State,
+    named: Option<EntityId>,
+    provenance: Option<String>,
+    split: &RegionSplit,
+    sel: Option<&Select>,
+) -> Result<Written, SessionError> {
     let entry = select(state, named).map_err(|e| export_error(&e, state, named))?;
     let model = state.layer::<ModelLayer>().ok_or_else(|| SessionError::new("no-model", "a region split needs the model layer (region tags come from the model)"))?;
     let none = FemLayer::default();
     let fem = state.layer::<FemLayer>().unwrap_or(&none);
     let alloc = state.layer::<MeshLayer>().map(MeshLayer::alloc).ok_or_else(|| SessionError::internal("mesh layer vanished"))?;
     let lowered = lower_split(model, entry, fem, alloc, split).map_err(split_error)?;
+    // A selection composes with the split: the region sets (cell sets named `region/<name>`) of
+    // the kept cells stay, whole and under the same names, and the others are dropped.
+    let (lowered, mut notes) = match sel {
+        Some(s) => sm_fem::select_lowered(lowered, s).map_err(|e| SessionError::from(&e))?,
+        None => (lowered, Vec::new()),
+    };
+    let cut = sel.is_some_and(|s| !s.is_all());
     let id = entry.mesh().mesh_id();
-    let maps = sm_fem::level_maps_of(state, id);
+    let mut maps = sm_fem::level_maps_of(state, id);
+    if cut && !maps.is_empty() {
+        notes.push(format!("export.select_levelmap_dropped: level maps of the whole mesh do not apply to the selected one x{}", maps.len()));
+        maps.clear();
+    }
     let writer = sm_fem::smsh_writer(&lowered, provenance.as_deref(), &maps);
     let mut bytes = Vec::new();
     writer.write_to(&mut bytes).map_err(|e| SessionError::new("io", format!("writing the .smsh: {e}")))?;
-    Ok(Written { bytes, notes: Vec::new() })
+    Ok(Written { bytes, notes: notes.iter().map(|l| note_of(l)).collect() })
 }
 
 fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
-    let m = options_map("gmsh", options, &["binary", "polyhedra"])?;
+    let m = options_map("gmsh", options, &["binary", "polyhedra", "select"])?;
     let mut o = GmshOptions::default();
     if let Some(b) = bool_option("gmsh", m, "binary")? {
         o = o.with_binary(b);
@@ -128,7 +230,10 @@ fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
 /// The `dagmc` options. `chord_tol` (a positive finite number) only applies to `source: model`
 /// (`model` true); with a mesh it is refused rather than ignored.
 pub(crate) fn dagmc_options(options: Option<&Value>, model: bool) -> Result<(DagmcOptions, Option<f64>), SessionError> {
-    let m = options_map("dagmc", options, &["graveyard", "chord_tol"])?;
+    if model && options.and_then(|o| o.get("select")).is_some_and(|v| !v.is_null()) {
+        return Err(SessionError::bad_request("`dagmc` option `select` does not apply to `source: model` (no volume mesh is used)"));
+    }
+    let m = options_map("dagmc", options, &["graveyard", "chord_tol", "select"])?;
     let mut o = DagmcOptions::default();
     match m.and_then(|m| m.get("graveyard")) {
         None | Some(Value::Null | Value::Bool(false)) => {}
@@ -185,21 +290,38 @@ pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>
     match format {
         ExportFormat::Dagmc => {
             let (o, _) = dagmc_options(options, false)?;
-            let lowered = lowered(state, named)?;
+            let sel = select_option("dagmc", options_map("dagmc", options, &["graveyard", "chord_tol", "select"])?)?;
+            let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
             let mut bytes = Vec::new();
             let rep = export_h5m((*lowered.mesh).as_read(), &o, &mut bytes).map_err(dagmc_error)?;
-            Ok(Written { bytes, notes: notes_of(&rep.loss) })
+            notes.extend(notes_of(&rep.loss));
+            Ok(Written { bytes, notes })
         }
         ExportFormat::Gmsh => {
             let o = gmsh_options(options)?;
-            let lowered = lowered(state, named)?;
+            let sel = select_option("gmsh", options_map("gmsh", options, &["binary", "polyhedra", "select"])?)?;
+            let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
             let mut bytes = Vec::new();
             let rep = write_msh4((*lowered.mesh).as_read(), &o, &mut bytes).map_err(gmsh_error)?;
-            Ok(Written { bytes, notes: notes_of(&rep.loss) })
+            notes.extend(notes_of(&rep.loss));
+            Ok(Written { bytes, notes })
         }
         _ => {
             let m = options_map("smrt", options, &["regions"])?;
             smrt(state, named, &regions_option("smrt", m)?)
+        }
+    }
+}
+
+/// [`lowered`], then the selection (with its notes). The names of the selection are checked here,
+/// against the lowered sets, so a bad one lists the names there are.
+fn lowered_selected(state: &State, named: Option<EntityId>, sel: Option<&SelectOpt>) -> Result<(Lowered, Vec<ExportNote>), SessionError> {
+    let low = lowered(state, named)?;
+    match sel {
+        None => Ok((low, Vec::new())),
+        Some(s) => {
+            let (low, notes) = sm_fem::select_lowered(low, &s.select).map_err(|e| SessionError::from(&e))?;
+            Ok((low, notes.iter().map(|l| note_of(l)).collect()))
         }
     }
 }

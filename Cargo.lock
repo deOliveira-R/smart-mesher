@@ -2101,6 +2101,7 @@ dependencies = [
  "sm-csgbrep",
  "sm-diag",
  "sm-engine",
+ "sm-exodus",
  "sm-fem",
  "sm-geom-api",
  "sm-lang",

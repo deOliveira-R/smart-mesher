@@ -58,6 +58,7 @@ tungstenite = { version = "0.30", optional = true }
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
 sm-mesh-api = { path = "../sm-mesh-api" }
+sm-exodus = { path = "../sm-exodus" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
