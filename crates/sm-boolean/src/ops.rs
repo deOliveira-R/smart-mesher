@@ -381,6 +381,42 @@ impl TypedQuery for MergeCheck {
     }
 }
 
+/// `model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes
+/// within the model tolerance, moving nothing beyond it (an exact host join: no virtual
+/// topology). A pair on the same geometry that the topology refuses is left as it is.
+/// Outputs: the surviving joined `faces` and `edges`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Regularize {
+    /// The volumes to regularize.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    pub volumes: Vec<EntityId>,
+}
+
+impl TypedOp for Regularize {
+    const NAME: &'static str = "model.regularize";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The surviving faces of joined pairs."),
+        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The surviving edges of joined pairs."),
+    ];
+    const POSITIONAL: Option<&'static str> = Some("volumes");
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        if self.volumes.is_empty() {
+            return Err(OpError::Invalid("`volumes` must not be empty".into()));
+        }
+        resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
+        guard_volumes(ctx, &self.volumes)?;
+        let (rep, txn) = topo_txn(ctx, |topo, _model| crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from))?;
+        let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
+            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).collect();
+            s.into_iter().collect()
+        };
+        let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
+        commit_topology(ctx, &txn, &[("faces", &f), ("edges", &e)])
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Webcut
 // ---------------------------------------------------------------------------------------------

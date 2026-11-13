@@ -28,7 +28,7 @@ pub mod ops;
 mod pcurves;
 mod pieces;
 mod poly2;
-mod regularize;
+pub mod regularize;
 mod registry;
 pub mod subdivide;
 pub mod webcut;
@@ -38,6 +38,7 @@ pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
 pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 pub use bvh::CandidateStats;
+pub use regularize::{JoinedPair, RefusedJoin, RegularizeReport, regularize_volumes};
 pub use locate::{PointLocation, locate_point};
 pub use pieces::candidate_pair_stats;
 pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
@@ -63,6 +64,7 @@ impl Plugin for BooleanPlugin {
         registry.register::<ops::WebcutPlane>()?;
         registry.register::<ops::WebcutSurface>()?;
         registry.register::<ops::WebcutCylinder>()?;
+        registry.register::<ops::Regularize>()?;
         registry.register::<subdivide::SubdividePin>()?;
         registry.register_query::<ops::MergeCheck>()?;
         Ok(())

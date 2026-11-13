@@ -9,12 +9,45 @@
 
 use std::collections::BTreeSet;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Interval, SurfaceDef};
-use sm_topo_api::{Carrier, CurveCarrier, Dim, FaceSides, Sense, SurfaceCarrier, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CurveCarrier, Dim, FaceSides, Sense, SurfaceCarrier, TopoError, TopologyEdit, TopologyView, TopologyViewExt};
 
 use crate::error::BooleanError;
 use crate::geo;
+
+/// One pair of cells the regularization looked at.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JoinedPair {
+    /// The surviving cell.
+    pub keep: EntityId,
+    /// The absorbed cell (retired).
+    pub drop: EntityId,
+}
+
+/// A pair on the same geometry that could not be joined.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RefusedJoin {
+    /// The lower id of the pair.
+    pub a: EntityId,
+    /// The higher id of the pair.
+    pub b: EntityId,
+    /// Why the join was refused.
+    pub reason: String,
+}
+
+/// What a regularization joined and what it left alone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RegularizeReport {
+    /// Face pairs joined, in the order they were joined.
+    pub joined_faces: Vec<JoinedPair>,
+    /// Edge pairs joined (the degree-2 vertex between them dissolved), in order.
+    pub joined_edges: Vec<JoinedPair>,
+    /// Pairs on the same surface or curve that the topology refused.
+    pub refused: Vec<RefusedJoin>,
+}
 
 /// True if the two surface definitions describe the same surface within `tol` (orientation is
 /// not compared).
@@ -110,7 +143,7 @@ fn surface_normal<V: TopologyView + ?Sized>(view: &V, s: EntityId, p: Point3) ->
 }
 
 /// Merge fragments of the same surface that meet along edges nothing else uses.
-fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>) -> Result<bool, BooleanError> {
+fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>, rep: &mut RegularizeReport) -> Result<bool, BooleanError> {
     let tol = *topo.tolerance();
     for &v in volumes {
         if !topo.is_alive(v) {
@@ -141,10 +174,17 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             if !same_surface(sf, sg, tol.linear, tol.angular) {
                 continue;
             }
-            let Some(undo) = unify_surface(topo, f, g)? else { continue };
+            let Some(undo) = unify_surface(topo, f, g)? else {
+                rep.refused.push(RefusedJoin { a: f, b: g, reason: "same surface but the face normals disagree".to_owned() });
+                continue;
+            };
             // `join_faces` is atomic; if it refuses, put the surface and pcurves back.
-            if topo.join_faces(f, g).is_ok() {
-                return Ok(true);
+            match topo.join_faces(f, g) {
+                Ok(_) => {
+                    rep.joined_faces.push(JoinedPair { keep: f, drop: g });
+                    return Ok(true);
+                }
+                Err(e) => rep.refused.push(RefusedJoin { a: f, b: g, reason: e.to_string() }),
             }
             if let Some(r) = undo {
                 restore(topo, r)?;
@@ -186,7 +226,29 @@ fn repoint_range<E: TopologyEdit + ?Sized>(topo: &E, edge: EntityId, target_curv
     }
 }
 
-fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>) -> Result<bool, BooleanError> {
+/// `join_edges`, retried with the second edge's range moved by one period when the kernel finds
+/// the ranges not adjacent: the two arcs that close a full circle meet at `0` and `2 pi`, which
+/// the kernel does not take for the same parameter. A refused retry puts the carrier back.
+fn join_edges_periodic<E: TopologyEdit + ?Sized>(topo: &mut E, e1: EntityId, e2: EntityId, periodic: bool) -> Result<Result<EntityId, TopoError>, BooleanError> {
+    let first = topo.join_edges(e1, e2);
+    if !periodic || !matches!(&first, Err(TopoError::NotCoincident(m)) if m.contains("not adjacent")) {
+        return Ok(first);
+    }
+    let Carrier::Curve(cur) = topo.carrier(e2).clone() else { return Ok(first) };
+    let Some(period) = topo.shapes().curve(cur.curve).and_then(|c| c.domain().period) else { return Ok(first) };
+    for k in [-1.0, 1.0] {
+        let range = Interval::new(cur.range.lo + k * period, cur.range.hi + k * period);
+        topo.set_carrier(e2, Carrier::Curve(CurveCarrier { range, ..cur }))?;
+        let r = topo.join_edges(e1, e2);
+        if r.is_ok() {
+            return Ok(r);
+        }
+    }
+    topo.set_carrier(e2, Carrier::Curve(cur))?;
+    Ok(first)
+}
+
+fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>, rep: &mut RegularizeReport, periodic: bool) -> Result<bool, BooleanError> {
     let tol = *topo.tolerance();
     let mut verts: BTreeSet<EntityId> = BTreeSet::new();
     for &v in volumes {
@@ -219,19 +281,43 @@ fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             let Some(new) = repoint_range(&*topo, e2, c1.curve) else { continue };
             topo.set_carrier(e2, Carrier::Curve(new))?;
         }
-        if topo.join_edges(e1, e2).is_ok() {
-            return Ok(true);
+        match join_edges_periodic(topo, e1, e2, periodic)? {
+            Ok(_) => {
+                rep.joined_edges.push(JoinedPair { keep: e1, drop: e2 });
+                return Ok(true);
+            }
+            Err(e) => rep.refused.push(RefusedJoin { a: e1, b: e2, reason: e.to_string() }),
         }
     }
     Ok(false)
 }
 
 /// Regularize `volumes`: join fragments, then dissolve the vertices that no longer separate
-/// anything. Pairs the topology refuses are skipped.
-pub(crate) fn regularize<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId]) -> Result<(), BooleanError> {
+/// anything. Pairs the topology refuses are skipped and listed in the report.
+pub(crate) fn regularize<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], periodic: bool) -> Result<RegularizeReport, BooleanError> {
+    let mut rep = RegularizeReport::default();
     let mut tried_f: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
-    while join_faces_pass(topo, volumes, &mut tried_f)? {}
+    while join_faces_pass(topo, volumes, &mut tried_f, &mut rep)? {}
     let mut tried_e: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
-    while join_edges_pass(topo, volumes, &mut tried_e)? {}
-    Ok(())
+    while join_edges_pass(topo, volumes, &mut tried_e, &mut rep, periodic)? {}
+    Ok(rep)
+}
+
+/// Regularize `volumes` as a standalone step: join co-surface faces and degree-2 edges within
+/// the model tolerance (nothing moves beyond it), then rebuild the pcurves of the joined faces.
+/// Runs inside an open operation like the other library functions.
+///
+/// # Errors
+/// A topology or geometry failure; the caller aborts the operation.
+pub fn regularize_volumes<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId]) -> Result<RegularizeReport, BooleanError> {
+    let rep = regularize(topo, volumes, true)?;
+    let mut faces: BTreeSet<EntityId> = BTreeSet::new();
+    for &v in volumes {
+        if topo.is_alive(v) {
+            faces.extend(topo.volume_faces(v).iter().copied());
+        }
+    }
+    let faces: Vec<EntityId> = faces.into_iter().collect();
+    crate::pcurves::fix_faces(topo, &faces)?;
+    Ok(rep)
 }
