@@ -113,11 +113,9 @@ pub(crate) fn candidates(o: Orient, p: f64, u: [f64; 2], dir: [f64; 2], tol: f64
             let c = center(o, p, q, r);
             (sh[0] - c[0]).powi(2) + (sh[1] - c[1]).powi(2)
         };
-        let eps = 1e-12 * p * p;
-        out.sort_by(|a, b| {
-            let (ka, kb) = (key(a), key(b));
-            if (ka - kb).abs() <= eps { (b.1, b.0).cmp(&(a.1, a.0)) } else { ka.total_cmp(&kb) }
-        });
+        // Quantised distances make "equal within 1e-12 p^2" a total order.
+        let q = |e: &(i32, i32)| (key(e) / (1e-12 * p * p)).round() as i64;
+        out.sort_by(|a, b| q(a).cmp(&q(b)).then((b.1, b.0).cmp(&(a.1, a.0))));
     }
     out
 }

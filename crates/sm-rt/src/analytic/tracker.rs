@@ -296,10 +296,11 @@ impl AnalyticTracker {
                 }
             }
         };
-        match self.leaf.index.as_ref().filter(|_| indexed) {
+        match self.leaf.index.as_ref().filter(|ix| indexed && !ix.has_unbounded()) {
             // A crossing that leads into a cell happens inside that cell's tile, whose surface
             // list holds the surface: walk the tiles front to back and stop once an event lies
-            // strictly before the tile exit (every later tile starts at or after it).
+            // strictly before the tile exit (every later tile starts at or after it). The walk is
+            // clipped to the root box, so a leaf with an unbounded cell takes the all-surfaces path.
             Some(ix) => ix.walk(o, d, max_t, |tile, t_exit| {
                 for &s in ix.tile_surfs(tile) {
                     one(s, &mut best, sc);

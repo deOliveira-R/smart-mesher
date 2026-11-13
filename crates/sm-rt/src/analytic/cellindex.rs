@@ -89,6 +89,11 @@ impl CellIndex {
         b.ix
     }
 
+    /// Does a cell have an infinite box side (so a ray can enter it outside the root box)?
+    pub(crate) fn has_unbounded(&self) -> bool {
+        !self.outside.is_empty()
+    }
+
     /// Number of tiles.
     pub(crate) fn n_tiles(&self) -> usize {
         self.cell_off.len() - 1

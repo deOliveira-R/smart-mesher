@@ -447,13 +447,17 @@ tiles, index build about 3 ms) 24.7 against 10406.8 (re-measured 25.3 against 10
 event sequences.
 
 `locate_candidates` per segment (W4-RT-HEX, `tests/cellindex.rs::p2_candidates_per_segment_stay_small` and
-its ignored full-scale twin; seeded rays from a box around the assembly, over all steps, release): P2 reduced
-(n=3) 108.63 before, 2.99 after; P2 full (n=17) 1176.39 before, 2.83 after, over 2800 segments, with the surface
-evaluations per complement step unchanged (21.8 and 25.3) and every event sequence equal to the oracle's. The
-cause was not the shared z-planes (the flattened P2 has per-pin planes, longest `surface -> cells` list 2) but
-(1) the concentric path, enabled by one pin's two radii and listing every other cell in each shell (160 candidates
-per locate), and (2) starts outside the root box falling back to a full scan (`slow_locates`). The long-list case
-of shared planes is fixed too and tested on the shared-plane `g^3` model.
+its ignored full-scale twin; seeded rays from a box around the assembly, all steps, release), before and after,
+by where the ray starts. P2 full (n=17): start in a cell 99.88 to 3.00 (1447 segments), start in the complement
+127.51 to 2.97 (1209), start with no cell (outside the leaf bounds) 20800 to 0 (144), all 1176.39 to 2.83 (2800
+segments). P2 reduced (n=3): 16.49 to 3.62, 17.30 to 3.37, 640 to 0, all 108.63 to 2.99. The surface evaluations
+per complement step are unchanged (21.8 and 25.3) and every event sequence equals the oracle's. The cause was not
+the shared z-planes (the flattened P2 has per-pin planes, longest `surface -> cells` list 2) but (1) the concentric
+path, enabled by one pin's two radii and listing every other cell in each shell (about 160 candidates per locate),
+and (2) a start outside the root box falling back to a full scan (`slow_locates`, four full scans per ray). The
+long-list case of shared planes is fixed too and tested on the shared-plane `g^3` model. The `slow_locates` figure
+above (0.22 to 0.26 for the oracle) is the no-index oracle's and is unchanged; the oracle also no longer takes the
+concentric path on P2.
 
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
