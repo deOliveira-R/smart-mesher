@@ -177,7 +177,7 @@ fn collapse_merges_the_vertices_with_a_recorded_gap_and_blended_samplers() {
     assert_eq!(orig, s.e34);
     // The op records the allocated ids and the gap; created() lists the copies.
     let VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed } = &ov.ops()[0] else { panic!("op") };
-    assert_eq!((*edge, *into_vertex, repointed.as_slice()), (s.e23, s.v[2], &[copy][..]));
+    assert_eq!((*edge, *into_vertex, repointed.as_slice()), (s.e23, s.v[2], &[(s.e34, copy)][..]));
     assert!((gap - SHORT).abs() < 1e-12);
     assert_eq!(ov.ops()[0].created().as_slice(), &[copy]);
     // View: the short edge and the dropped vertex are gone, the copy runs v2 -> v4.
@@ -282,9 +282,10 @@ fn write_canonical_separates_every_op_field_and_survives_replay() {
     ov.collapse_edge(s.e23, s.v[2]).unwrap();
     ov.partition_edge(s.e45, 0.25).unwrap();
     let q = ov.tolerance().quantum();
+    let tol = *ov.tolerance();
     let bytes = |d: &OverlayData| {
         let mut out = Vec::new();
-        d.write_canonical(&mut out, q);
+        d.write_canonical(&mut out, &tol);
         out
     };
     let data = ov.data();
@@ -305,16 +306,20 @@ fn write_canonical_separates_every_op_field_and_survives_replay() {
             VirtualOp::PartitionFace { face: id(2, 3), cut: VirtualCut { from: id(0, 1), to: id(0, 2), curve: line(p), range: Interval::new(0.0, p) }, chord: id(4, 3), halves: [id(5, 2), id(5, 3)] },
             VirtualOp::PartitionVolume { volume: id(6, 1), cut: VolumeCut { edges: vec![id(1, 4), id(1, 5)], surface: plane(p), seed: id(2, 9) }, face: id(5, 4), children: [id(7, 1), id(7, 2)] },
             VirtualOp::CompositeEdges { edges: vec![id(1, 7), id(1, 8)], id: id(4, 9) },
-            VirtualOp::CollapseEdge { edge: id(1, 10), into_vertex: id(0, 3), gap: p, repointed: vec![id(4, 10)] },
+            VirtualOp::CollapseEdge { edge: id(1, 10), into_vertex: id(0, 3), gap: p, repointed: vec![(id(1, 11), id(4, 10))] },
         ]
     };
     let mk = |ops: Vec<VirtualOp>| OverlayData::new(OpId(3), ops, [4, 5, 6]);
     let reference = bytes(&mk(all(0.5)));
     assert_eq!(bytes(&mk(all(0.5))), reference);
     let n = all(0.5).len();
-    // A change inside the quantum is invisible, a change beyond it is not.
-    assert_eq!(bytes(&mk(all(0.5 + 0.1 * q))), reference);
-    assert_ne!(bytes(&mk(all(0.5 + 8.0 * q))), reference);
+    // Lengths (the gap) and the shape definitions go by the length quantum; edge parameters and
+    // cut ranges by the (finer) parameter quantum, like the geometry digests.
+    let pq = tol.param_quantum();
+    assert!(pq < q);
+    assert_eq!(bytes(&mk(all(0.5 + 0.1 * pq))), reference);
+    assert_ne!(bytes(&mk(all(0.5 + 8.0 * pq))), reference);
+    assert_ne!(bytes(&mk(all(0.5 + 3e-10))), reference, "3e-10 is well above the parameter quantum");
     // Mutating any single field of any op changes the bytes.
     let mut seen = vec![reference.clone()];
     let mut check = |what: String, d: OverlayData| {
@@ -373,10 +378,12 @@ fn write_canonical_separates_every_op_field_and_survives_replay() {
                 check("ce.id".into(), tweak(&|o| if let VirtualOp::CompositeEdges { id, .. } = o { *id = bump(*id) }));
             }
             _ => {
+                check("collapse.repointed.original".into(), tweak(&|o| if let VirtualOp::CollapseEdge { repointed, .. } = o { repointed[0].0 = bump(repointed[0].0) }));
+                check("collapse.repointed.copy".into(), tweak(&|o| if let VirtualOp::CollapseEdge { repointed, .. } = o { repointed[0].1 = bump(repointed[0].1) }));
                 check("collapse.edge".into(), tweak(&|o| if let VirtualOp::CollapseEdge { edge, .. } = o { *edge = bump(*edge) }));
                 check("collapse.into".into(), tweak(&|o| if let VirtualOp::CollapseEdge { into_vertex, .. } = o { *into_vertex = bump(*into_vertex) }));
                 check("collapse.gap".into(), tweak(&|o| if let VirtualOp::CollapseEdge { gap, .. } = o { *gap = 0.9 }));
-                check("collapse.repointed".into(), tweak(&|o| if let VirtualOp::CollapseEdge { repointed, .. } = o { repointed.push(id(4, 11)) }));
+                check("collapse.repointed".into(), tweak(&|o| if let VirtualOp::CollapseEdge { repointed, .. } = o { repointed.push((id(1, 12), id(4, 11))) }));
             }
         }
     }
@@ -397,7 +404,7 @@ fn building_twice_gives_the_same_bytes() {
         ov.composite_edges(&[s.e12, s.e23]).unwrap();
         ov.collapse_edge(s.e34, s.v[4]).ok();
         let mut out = Vec::new();
-        ov.data().write_canonical(&mut out, ov.tolerance().quantum());
+        ov.data().write_canonical(&mut out, ov.tolerance());
         (out, ov.canonical_hash())
     };
     assert_eq!(run(), run());
@@ -420,4 +427,56 @@ fn existing_overlay_data_serialises_as_before() {
     let j2 = serde_json::to_string(&ov2.data()).unwrap();
     assert!(j2.contains(r#""CompositeEdges":{"edges":"#), "{j2}");
     assert_eq!(serde_json::from_str::<OverlayData>(&j2).unwrap(), ov2.data());
+}
+
+#[test]
+fn the_hook_reaches_the_blend_through_a_dyn_view() {
+    let s = strip();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let copy = ov.collapse_edge(s.e23, s.v[2]).unwrap().repointed[0].1;
+    let view: &dyn TopologyView = &ov;
+    let [o0, o1] = view.edge_end_offsets(copy).expect("a collapse copy has end offsets");
+    // Raw curve ends are (1, 0.5 + SHORT) and (1, 1); the vertices are (1, 0.5) and (1, 1).
+    assert!(near(pt(0.0, 0.0) + o0, pt(0.0, -SHORT), 1e-12), "{o0:?}");
+    assert!(near(pt(0.0, 0.0) + o1, pt(0.0, 0.0), 1e-12), "{o1:?}");
+    // Applying the hook to the carrier's raw ends gives the reference sampler's ends.
+    let smp = ov.edge_sampler(copy).unwrap();
+    assert!(near(smp.eval(0.0), pt(1.0, 0.5 + SHORT) + o0, 1e-12));
+    assert!(near(smp.eval(1.0), pt(1.0, 1.0) + o1, 1e-12));
+    // Plain host edges and the host view itself report none.
+    assert!(view.edge_end_offsets(s.e45).is_none());
+    assert!(s.host.edge_end_offsets(s.e45).is_none());
+}
+
+#[test]
+fn a_chained_collapse_keeps_the_dependency_on_the_copy_it_re_points() {
+    let s = strip();
+    let h0 = s.host.canonical_hash();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let (p, halves) = ov.partition_edge(s.e12, 0.4999).unwrap();
+    let c1 = ov.collapse_edge(s.e23, s.v[2]).unwrap();
+    let copy3 = c1.repointed[0].1;
+    assert_eq!(c1.repointed[0].0, s.e34);
+    let c2 = ov.collapse_edge(halves[1], p).unwrap();
+    assert_eq!(c2.repointed.iter().filter(|(o, _)| *o == copy3).count(), 1, "{:?}", c2.repointed);
+    let VirtualOp::CollapseEdge { repointed, .. } = &ov.ops()[2] else { panic!("op") };
+    assert!(repointed.iter().any(|(o, _)| *o == copy3));
+    // The first collapse's copy is an input of the second: it cannot be removed under it.
+    assert!(matches!(ov.clone().remove(copy3), Err(TopoError::StillReferenced(_))));
+    assert!(matches!(ov.clone().remove(s.e23), Err(TopoError::StillReferenced(_))));
+    // Replay is faithful and validates.
+    let back = Overlay::from_data(host_dyn(&s), ov.data()).unwrap();
+    assert_eq!(back.ops(), ov.ops());
+    assert!(validate(&back).is_empty());
+    // Replay refuses a record whose originals differ, even with the same count.
+    let mut bad = ov.data();
+    if let VirtualOp::CollapseEdge { repointed, .. } = &mut bad.ops[2] {
+        repointed[0].0 = s.e45;
+    }
+    assert!(Overlay::from_data(host_dyn(&s), bad).is_err());
+    // Removing in reverse order works and restores the host view.
+    ov.remove(c2.repointed[0].1).unwrap();
+    ov.remove(s.e23).unwrap();
+    ov.remove(p).unwrap();
+    assert_eq!(ov.canonical_hash(), h0);
 }

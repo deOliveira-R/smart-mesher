@@ -46,7 +46,7 @@ use crate::types::{Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, EntityState
 use crate::derived::TopologyViewExt;
 use crate::view::{EdgeUse, NO_CARRIER, TopologyView};
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
-use sm_geom_api::{ShapeValue, CurveDef, Frame, GeomError, GeomAppend, GeomStore, ImplicitSurface, Interval, Line, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, Plane, SurfaceDef, Uv};
+use sm_geom_api::{CurveDef, Frame, GeomError, GeomAppend, GeomStore, ImplicitSurface, Interval, Line, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, Plane, SurfaceDef, Uv};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -233,9 +233,10 @@ pub enum VirtualOp {
         /// moved (at least the distance between the two end vertices). Replay recomputes it and
         /// refuses a mismatch; [`Overlay::rebase`] refreshes it.
         gap: f64,
-        /// Virtual stand-ins (ids minted by the overlay) for the other edges that ended at the
-        /// dropped vertex, ascending by the id of the edge each replaces.
-        repointed: Vec<EntityId>,
+        /// `(original, copy)` pairs: the other edges that ended at the dropped vertex and the
+        /// virtual stand-ins (ids minted by the overlay) that replace them, ascending by
+        /// original. The originals are inputs of the op (see [`Overlay::remove`]).
+        repointed: Vec<(EntityId, EntityId)>,
     },
 }
 
@@ -251,7 +252,7 @@ impl VirtualOp {
             VirtualOp::PartitionFace { chord, halves, .. } => SmallVec::from_slice(&[*chord, halves[0], halves[1]]),
             VirtualOp::PartitionVolume { face, children, .. } => SmallVec::from_slice(&[*face, children[0], children[1]]),
             VirtualOp::CompositeEdges { id, .. } => SmallVec::from_slice(&[*id]),
-            VirtualOp::CollapseEdge { repointed, .. } => repointed.iter().copied().collect(),
+            VirtualOp::CollapseEdge { repointed, .. } => repointed.iter().map(|&(_, new)| new).collect(),
         }
     }
 
@@ -262,12 +263,14 @@ impl VirtualOp {
             VirtualOp::PartitionFace { face, cut, .. } => SmallVec::from_slice(&[*face, cut.from, cut.to]),
             VirtualOp::PartitionVolume { volume, cut, .. } => std::iter::once(*volume).chain(cut.edges.iter().copied()).chain(std::iter::once(cut.seed)).collect(),
             VirtualOp::CompositeEdges { edges, .. } => edges.iter().copied().collect(),
-            VirtualOp::CollapseEdge { edge, into_vertex, .. } => SmallVec::from_slice(&[*edge, *into_vertex]),
+            VirtualOp::CollapseEdge { edge, into_vertex, repointed, .. } => {
+                [*edge, *into_vertex].into_iter().chain(repointed.iter().map(|&(orig, _)| orig)).collect()
+            }
         }
     }
 
     /// Append the canonical bytes of this op (exhaustive: a new variant fails to compile here).
-    fn write_canonical(&self, out: &mut Vec<u8>, q: f64) {
+    fn write_canonical(&self, out: &mut Vec<u8>, tol: &ModelTolerance) {
         let id = |out: &mut Vec<u8>, e: &EntityId| out.extend_from_slice(&e.to_raw().to_le_bytes());
         let ids = |out: &mut Vec<u8>, v: &[EntityId]| {
             out.extend_from_slice(&(v.len() as u64).to_le_bytes());
@@ -282,7 +285,7 @@ impl VirtualOp {
             VirtualOp::PartitionEdge { edge, param, vertex, halves } => {
                 put_u64(out, 2);
                 id(out, edge);
-                put_f64(out, *param, q);
+                put_i64(out, tol.quantize_param(*param));
                 id(out, vertex);
                 ids(out, halves);
             }
@@ -291,9 +294,9 @@ impl VirtualOp {
                 id(out, face);
                 id(out, &cut.from);
                 id(out, &cut.to);
-                put_shape(out, |g| cut.curve.for_each_value(g), q);
-                put_f64(out, cut.range.lo, q);
-                put_f64(out, cut.range.hi, q);
+                put_codes(out, |f| cut.curve.quantized_values(tol, f));
+                put_i64(out, tol.quantize_param(cut.range.lo));
+                put_i64(out, tol.quantize_param(cut.range.hi));
                 id(out, chord);
                 ids(out, halves);
             }
@@ -301,7 +304,7 @@ impl VirtualOp {
                 put_u64(out, 4);
                 id(out, volume);
                 ids(out, &cut.edges);
-                put_shape(out, |g| cut.surface.for_each_value(g), q);
+                put_codes(out, |f| cut.surface.quantized_values(tol, f));
                 id(out, &cut.seed);
                 id(out, face);
                 ids(out, children);
@@ -315,8 +318,12 @@ impl VirtualOp {
                 put_u64(out, 6);
                 id(out, edge);
                 id(out, into_vertex);
-                put_f64(out, *gap, q);
-                ids(out, repointed);
+                put_i64(out, tol.quantize(*gap));
+                out.extend_from_slice(&(repointed.len() as u64).to_le_bytes());
+                for (orig, new) in repointed {
+                    id(out, orig);
+                    id(out, new);
+                }
             }
         }
     }
@@ -326,20 +333,16 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-fn put_f64(out: &mut Vec<u8>, x: f64, q: f64) {
-    out.extend_from_slice(&ModelTolerance::quantize_with(x, q).to_le_bytes());
+fn put_i64(out: &mut Vec<u8>, v: i64) {
+    out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// A shape definition, length-prefixed: integers as is, every float quantized by `q`.
-fn put_shape(out: &mut Vec<u8>, visit: impl Fn(&mut dyn FnMut(ShapeValue)), q: f64) {
-    let mut buf = Vec::new();
-    visit(&mut |v| match v {
-        ShapeValue::Int(n) => put_u64(&mut buf, n),
-        ShapeValue::Length(x) | ShapeValue::Angle(x) | ShapeValue::Unitless(x) | ShapeValue::Param(x) => put_f64(&mut buf, x, q),
-        other => buf.extend_from_slice(format!("{other:?}").as_bytes()),
-    });
-    put_u64(out, buf.len() as u64);
-    out.extend_from_slice(&buf);
+/// A definition's quantized codes (`quantized_values`), prefixed by their count.
+fn put_codes(out: &mut Vec<u8>, visit: impl Fn(&mut dyn FnMut(i64))) {
+    let mut codes = Vec::new();
+    visit(&mut |c| codes.push(c));
+    put_u64(out, codes.len() as u64);
+    codes.into_iter().for_each(|c| put_i64(out, c));
 }
 
 /// The persisted form of an overlay: the host revision, the operation history and the id
@@ -368,17 +371,18 @@ impl OverlayData {
     /// skipped silently by a downstream wildcard arm.
     ///
     /// Covered, in order: the host revision, the number of ops, each op (a variant tag, then
-    /// every field in declaration order; ids by their raw value, id lists with their count),
-    /// and the three `next_serial` counters. Every float (curve parameters, curve and surface
-    /// definitions, the collapse gap) is emitted as its code quantized by `length_quantum`
-    /// (`ModelTolerance::quantize_with`; pass `tolerance.quantum()`), so equal overlays give
-    /// equal bytes on every platform. `length_quantum` itself is not written; fold it into the
-    /// digest separately if it can vary.
-    pub fn write_canonical(&self, out: &mut Vec<u8>, length_quantum: f64) {
+    /// every field in declaration order; ids by their raw value, id lists and `(original, copy)`
+    /// pairs with their count), and the three `next_serial` counters. Floats are quantized the
+    /// way the geometry digests do it, with `tol` ([`ModelTolerance`]): edge parameters and cut
+    /// ranges by `quantize_param`, cut curve and surface definitions by `CurveDef` /
+    /// `SurfaceDef::quantized_values` (scale-free per class), the collapse gap by `quantize`
+    /// (length). Equal overlays give equal bytes on every platform. `tol` itself is not
+    /// written; fold it into the digest separately if it can vary.
+    pub fn write_canonical(&self, out: &mut Vec<u8>, tol: &ModelTolerance) {
         put_u64(out, self.host_revision.0);
         put_u64(out, self.ops.len() as u64);
         for op in &self.ops {
-            op.write_canonical(out, length_quantum);
+            op.write_canonical(out, tol);
         }
         for n in self.next_serial {
             put_u64(out, n);
@@ -1044,12 +1048,15 @@ impl Overlay {
         let gap = self.collapse_gap(&plan, into_vertex)?;
         self.check_gap(gap)?;
         let n = plan.originals.len();
-        let repointed: Vec<EntityId> = (0..n as u64).map(|i| self.peek(Dim::Edge, i)).collect::<Result<_, _>>()?;
+        let mut repointed: Vec<(EntityId, EntityId)> = Vec::with_capacity(n);
+        for (i, &orig) in plan.originals.iter().enumerate() {
+            repointed.push((orig, self.peek(Dim::Edge, i as u64)?));
+        }
         let op = VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed: repointed.clone() };
         let done = self.atomic(op, [0, n as u64, 0])?;
         self.ops.push(done);
         self.rebuild_live();
-        Ok(Collapsed { dropped_vertex: plan.dropped, gap, repointed: plan.originals.into_iter().zip(repointed).collect() })
+        Ok(Collapsed { dropped_vertex: plan.dropped, gap, repointed })
     }
 
     /// A sampler for the curve of live edge `edge`: `None` for a dead edge or one without a
@@ -1200,10 +1207,10 @@ impl Overlay {
         }
     }
 
-    fn apply_collapse(&mut self, edge: EntityId, into: EntityId, recorded_gap: f64, repointed: &[EntityId]) -> Result<(), TopoError> {
+    fn apply_collapse(&mut self, edge: EntityId, into: EntityId, recorded_gap: f64, repointed: &[(EntityId, EntityId)]) -> Result<(), TopoError> {
         let plan = self.collapse_plan(edge, into)?;
-        if plan.originals.len() != repointed.len() {
-            return Err(TopoError::InvalidParameter("collapse replay: the number of re-pointed edges differs"));
+        if plan.originals.len() != repointed.len() || plan.originals.iter().zip(repointed).any(|(o, r)| *o != r.0) {
+            return Err(TopoError::InvalidParameter("collapse replay: the re-pointed edges differ from the recorded ones"));
         }
         let gap = self.collapse_gap(&plan, into)?;
         self.check_gap(gap)?;
@@ -1214,7 +1221,7 @@ impl Overlay {
         let into_pt = self.point_of(into)?;
         let mut touched: BTreeSet<EntityId> = BTreeSet::new();
         let mut copies: Vec<(EntityId, EntityId, f64)> = Vec::new();
-        for (&orig, &new) in plan.originals.iter().zip(repointed) {
+        for &(orig, new) in repointed {
             let (s, t) = self.edge_ends_of(orig).ok_or(TopoError::WrongDim { id: orig, expected: Dim::Edge })?;
             let (s2, t2) = (if s == dropped { into } else { s }, if t == dropped { into } else { t });
             let down = if s2 == t2 { vec![Incidence::new(s2, Side::Both, 0)] } else { vec![Incidence::new(s2, Side::Left, 0), Incidence::new(t2, Side::Right, 0)] };
@@ -1887,6 +1894,10 @@ impl TopologyView for Overlay {
 
     fn flags(&self, id: EntityId) -> CellFlags {
         if self.layer.cells.get(&id).is_some_and(|c| c.is_virtual) { CellFlags::NONE } else { self.host.flags(id) }
+    }
+
+    fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
+        self.layer.offsets.get(&edge).copied()
     }
 
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve> {

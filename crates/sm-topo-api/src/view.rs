@@ -76,6 +76,17 @@ pub trait TopologyView: Send + Sync {
     /// edge's curve (valid over the edge's carrier range).
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve>;
 
+    /// End offsets of an edge whose sampled ends are displaced from its carrier curve: the
+    /// vectors added to the point sampled at the edge's start and end, blended linearly in the
+    /// normalized position along the edge, so the sampled ends land on the edge's vertices
+    /// (an edge re-pointed by a virtual collapse). `None` (the default) means no offset: sample
+    /// the carrier as is. Mesher-side samplers over `&dyn TopologyView` apply this;
+    /// `Overlay::edge_sampler` is the reference implementation.
+    fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
+        let _ = edge;
+        None
+    }
+
     /// Kind of shell `ring` of `volume`.
     fn shell_kind(&self, volume: EntityId, ring: u16) -> Option<ShellKind>;
 
