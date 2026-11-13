@@ -106,9 +106,14 @@ fn composite_of_two_collinear_edges_hides_the_inner_vertex_and_replays_equal() {
     // The sampler walks both members: ends on the tips, the middle on the hidden vertex.
     let sm = ov.edge_sampler(id).unwrap();
     assert!(near(sm.eval(0.0), pt(1.0, 0.0), 1e-12));
-    assert!(near(sm.eval(0.5), pt(1.0, 0.5), 1e-12));
+    // Shares of [0, 1] follow each member's parameter span (here its length), not an even split.
+    let (l12, l23) = ((vertex_point(&*s.host, s.v[2]) - vertex_point(&ov, s.v[1])).norm(), (vertex_point(&ov, s.v[3]) - vertex_point(&*s.host, s.v[2])).norm());
+    let s_inner = l12 / (l12 + l23);
+    assert!(s_inner > 0.99, "inner vertex sits near the far end, s = {s_inner}");
+    assert!(near(sm.eval(s_inner), vertex_point(&*s.host, s.v[2]), 1e-9));
     assert!(near(sm.eval(1.0), vertex_point(&ov, s.v[3]), 1e-12));
-    assert!(near(sm.eval(0.25), pt(1.0, 0.25), 1e-12));
+    assert!(near(sm.eval(0.25), pt(1.0, 0.25 * (l12 + l23)), 1e-9));
+    assert!(sm.eval(0.5).y < 0.5, "midpoint of s is inside e12, not on the sliver");
     // Replay through from_data reproduces ids, ops and the view.
     let data = ov.data();
     let back = Overlay::from_data(host_dyn(&s), data.clone()).unwrap();

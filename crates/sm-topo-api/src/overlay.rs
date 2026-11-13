@@ -142,10 +142,14 @@ struct Piece<'a> {
 /// edge (start vertex to end vertex). A plain edge samples its curve linearly in its parameter.
 /// An edge re-pointed by a collapse adds the offset between its vertices and the raw curve ends,
 /// blended linearly in `s`, so `eval(0)` and `eval(1)` land on the edge's vertices. A composite
-/// edge splits `[0, 1]` evenly over its members (in chain order, each linear in its parameter).
+/// edge splits `[0, 1]` over its members (in chain order) in proportion to each member's
+/// parameter span `|t1 - t0|` (each member linear in its parameter), so a plain member keeps its
+/// own linear behaviour and a short sliver gets a short share of `s`.
 #[derive(Clone)]
 pub struct EdgeSampler<'a> {
     pieces: Vec<Piece<'a>>,
+    /// Cumulative end of each piece's share of `s`, normalized so the last is exactly 1.
+    cum: Vec<f64>,
 }
 
 impl std::fmt::Debug for EdgeSampler<'_> {
@@ -159,9 +163,9 @@ impl EdgeSampler<'_> {
     pub fn eval(&self, s: f64) -> Point3 {
         let s = s.clamp(0.0, 1.0);
         let k = self.pieces.len();
-        let x = s * k as f64;
-        let i = (x.floor() as usize).min(k.saturating_sub(1));
-        let u = x - i as f64;
+        let i = if s >= 1.0 { k - 1 } else { self.cum.iter().position(|&c| s < c).unwrap_or(k - 1) };
+        let lo = if i == 0 { 0.0 } else { self.cum[i - 1] };
+        let u = if s >= 1.0 { 1.0 } else { ((s - lo) / (self.cum[i] - lo)).clamp(0.0, 1.0) };
         let p = &self.pieces[i];
         let base = p.curve.eval(p.t0 + u * (p.t1 - p.t0));
         base + p.off[0] * (1.0 - u) + p.off[1] * u
@@ -1088,7 +1092,18 @@ impl Overlay {
             }
             _ => return None,
         }
-        Some(EdgeSampler { pieces })
+        let w: Vec<f64> = pieces.iter().map(|p| (p.t1 - p.t0).abs()).collect();
+        let total: f64 = w.iter().sum();
+        let mut acc = 0.0;
+        let mut cum: Vec<f64> = if total > 0.0 && total.is_finite() {
+            w.iter().map(|x| { acc += x / total; acc }).collect()
+        } else {
+            (1..=pieces.len()).map(|i| i as f64 / pieces.len() as f64).collect()
+        };
+        if let Some(l) = cum.last_mut() {
+            *l = 1.0;
+        }
+        Some(EdgeSampler { pieces, cum })
     }
 
     fn check_gap(&self, gap: f64) -> Result<(), TopoError> {
