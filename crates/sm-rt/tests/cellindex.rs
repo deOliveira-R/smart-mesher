@@ -363,3 +363,48 @@ proptest! {
         check_rays(&ix, &or, 19.0, 20, &format!("cellindex-prop-rays-{seed}"));
     }
 }
+
+/// Candidate cells tested per segment on `pin_assembly(n)` (all steps, interior and complement).
+/// Returns `(candidates, segments)` of the indexed tracker.
+fn p2_candidates(n: usize, rays: usize) -> (u64, u64) {
+    let fix = pin_assembly(n, 1.26, 0.4096, 0.475, 100.0).unwrap();
+    let w = csg_world(&fix.model, &fix.complex, &CsgWorldOptions { complement: Some("out".into()), ..CsgWorldOptions::default() }).unwrap();
+    let ix = w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
+    let mut r = rng("cellindex-candidates");
+    let half = 1.26 * n as f64 / 2.0 + 1.0;
+    let (mut cand, mut segs) = (0u64, 0u64);
+    for _ in 0..rays {
+        let o = p3(half * (2.0 * u01(&mut r) - 1.0), half * (2.0 * u01(&mut r) - 1.0), 40.0 + 20.0 * u01(&mut r));
+        let d = random_dir(&mut r);
+        let mut sc = Scratch::new();
+        let Ok(mut st) = ix.init_state(o, d, None, &mut sc) else { continue };
+        for _ in 0..400 {
+            let Ok(s) = ix.step(&mut st, 1e9, &mut sc) else { break };
+            segs += 1;
+            if matches!(s.end, StepEnd::Boundary { .. } | StepEnd::Lost(_)) {
+                break;
+            }
+        }
+        cand += sc.counters.locate_candidates;
+    }
+    (cand, segs)
+}
+
+/// Reduced P2: the shared top and bottom z-planes must not list every cell as a candidate.
+#[test]
+fn p2_candidates_per_segment_stay_small() {
+    let (c, s) = p2_candidates(3, 300);
+    let per = c as f64 / s as f64;
+    eprintln!("P2 reduced (n=3): {per:.2} locate candidates per segment over {s} segments");
+    assert!(per < 25.0, "{per}");
+}
+
+/// Full-scale P2: was about 977 candidates per segment (shared z-planes list every cell).
+#[test]
+#[ignore = "full-scale P2: cargo test --release -p sm-rt --test cellindex -- --ignored"]
+fn p2_full_candidates_per_segment_stay_small() {
+    let (c, s) = p2_candidates(17, 200);
+    let per = c as f64 / s as f64;
+    eprintln!("P2 full (n=17): {per:.2} locate candidates per segment over {s} segments");
+    assert!(per < 25.0, "{per}");
+}

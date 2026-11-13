@@ -1,7 +1,7 @@
 //! [`WorldTracker`]: the hierarchical walker over prototype trackers (`BuildInput::Hier`).
 //!
 //! A world is a DAG of components (`WorldSpec`): leaves (a prototype [`MeshTracker`] built from a
-//! mesh or a facet soup), unions of rigidly placed children and rectangular lattices. Instances
+//! mesh or a facet soup), unions of rigidly placed children and lattices (rectangular, and hexagonal in both orientations). Instances
 //! share their prototype: regions, surfaces and faces are numbered per prototype
 //! (prefix offsets over prototypes), cells per instance (prefix sums over instances, no table for
 //! a lattice with a uniform fill). A particle's place is `TrackState::levels`: one entry per
@@ -22,6 +22,7 @@
 use crate::bvh::{Box6, EMPTY_BOX, box_dist2, union};
 use crate::builder::build_proto;
 use crate::delta::flight::{box_exit, end_face};
+use crate::hexlat::{self, Orient};
 use crate::analytic::AnalyticTracker;
 use crate::tracker::MeshTracker;
 use crate::vec3::{dot, finite3, madd, norm, scale, sub};
@@ -297,8 +298,18 @@ struct Place {
     bbox: Box6,
 }
 
+/// Element layout of a lattice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Rect,
+    Hex(Orient),
+}
+
 struct Lat {
+    shape: Shape,
+    /// Rect: lower corner. Hex: centre of element `(0, 0, 0)`.
     origin: [f64; 3],
+    /// Rect: pitch per axis. Hex: `[p, p, z_pitch]` (`z_pitch` is `0` for a single layer).
     pitch: [f64; 3],
     dims: [u32; 3],
     fill: Vec<u32>,
@@ -310,11 +321,17 @@ struct Lat {
 
 impl Lat {
     fn center(&self, idx: [i32; 3]) -> [f64; 3] {
-        [
-            self.origin[0] + (f64::from(idx[0]) + 0.5) * self.pitch[0],
-            self.origin[1] + (f64::from(idx[1]) + 0.5) * self.pitch[1],
-            self.origin[2] + (f64::from(idx[2]) + 0.5) * self.pitch[2],
-        ]
+        match self.shape {
+            Shape::Rect => [
+                self.origin[0] + (f64::from(idx[0]) + 0.5) * self.pitch[0],
+                self.origin[1] + (f64::from(idx[1]) + 0.5) * self.pitch[1],
+                self.origin[2] + (f64::from(idx[2]) + 0.5) * self.pitch[2],
+            ],
+            Shape::Hex(o) => {
+                let c = hexlat::center(o, self.pitch[0], idx[0], idx[1]);
+                [self.origin[0] + c[0], self.origin[1] + c[1], self.origin[2] + f64::from(idx[2]) * self.pitch[2]]
+            }
+        }
     }
     fn lin(&self, idx: [i32; 3]) -> usize {
         idx[0] as usize + self.dims[0] as usize * (idx[1] as usize + self.dims[1] as usize * idx[2] as usize)
@@ -331,12 +348,14 @@ impl Lat {
     }
     /// Candidate indices along axis `a` for coordinate `p`: the containing slab, or both slabs
     /// of a wall within `tol`, the one the direction enters first. Axis z of a single-layer
-    /// lattice is unconstrained (index 0).
+    /// lattice is unconstrained (index 0). A hex z layer is centred on its index, so its walls
+    /// are at half-integers (`shift` 0.5).
     fn axis_cands(&self, a: usize, p: f64, dir: f64, tol: f64) -> ([i32; 2], usize) {
         if a == 2 && self.dims[2] == 1 {
             return ([0, 0], 1);
         }
-        let x = (p - self.origin[a]) / self.pitch[a];
+        let shift = if a == 2 && matches!(self.shape, Shape::Hex(_)) { 0.5 } else { 0.0 };
+        let x = (p - self.origin[a]) / self.pitch[a] + shift;
         let r = x.round();
         if (x - r).abs() * self.pitch[a] <= tol {
             let (lo, hi) = (r as i32 - 1, r as i32);
@@ -344,6 +363,37 @@ impl Lat {
         } else {
             ([x.floor() as i32, 0], 1)
         }
+    }
+
+    /// Element indices to try for the point `p` (lattice frame) moving along `dir`, in order:
+    /// z layers outermost, then the planar candidates (see [`hexlat::candidates`] for the hex
+    /// vertex-tie rule). Indices may be out of range.
+    fn cands(&self, p: [f64; 3], dir: [f64; 3], tol: f64) -> SmallVec<[[i32; 3]; 8]> {
+        let (cz, nz) = self.axis_cands(2, p[2], dir[2], tol);
+        let mut out: SmallVec<[[i32; 3]; 8]> = SmallVec::new();
+        match self.shape {
+            Shape::Rect => {
+                let (cx, nx) = self.axis_cands(0, p[0], dir[0], tol);
+                let (cy, ny) = self.axis_cands(1, p[1], dir[1], tol);
+                for &kz in &cz[..nz] {
+                    for &ky in &cy[..ny] {
+                        for &kx in &cx[..nx] {
+                            out.push([kx, ky, kz]);
+                        }
+                    }
+                }
+            }
+            Shape::Hex(o) => {
+                let u = [p[0] - self.origin[0], p[1] - self.origin[1]];
+                let xy = hexlat::candidates(o, self.pitch[0], u, [dir[0], dir[1]], tol);
+                for &kz in &cz[..nz] {
+                    for &(q, r) in &xy {
+                        out.push([q, r, kz]);
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -410,7 +460,7 @@ enum Loc {
 ///   (`dims[2] == 1`) have no z walls.
 /// * The leaf's own boundary conditions and complement policy do not apply in a world; the
 ///   world's `BoundarySpec::default` applies where a ray leaves the last instance. Per-surface
-///   rules, periodic boundaries, hex lattices and lattice `outer` fills are
+///   rules, periodic boundaries and lattice `outer` fills are
 ///   `RtError::Unsupported`. A CSG leaf is hosted as an [`AnalyticTracker`] prototype (no complement
 ///   region, vacuum boundaries; `partition.enabled` is refused for it).
 /// * Region and surface tables hold each prototype once (regions are prototypes); a surface or
@@ -642,6 +692,10 @@ impl WorldTracker {
                 Kind::Lattice(l) => {
                     h.write_u64(3);
                     l.origin.iter().chain(l.pitch.iter()).for_each(|&x| h.write_f64(x));
+                    // Rect worlds keep their byte stream; a hex lattice adds its orientation.
+                    if let Shape::Hex(o) = l.shape {
+                        h.write_u64(if o == Orient::XRows { 2 } else { 3 });
+                    }
                     l.dims.iter().for_each(|&d| h.write_u64(u64::from(d)));
                     h.write_u64(l.fill.len() as u64);
                     l.fill.iter().for_each(|&f| h.write_u64(u64::from(f)));
@@ -664,45 +718,7 @@ impl WorldTracker {
 
     /// Vertices of the outer boundary of component `c`, in its own frame.
     fn boundary_vertices(&self, c: usize, out: &mut Vec<[f64; 3]>) {
-        match &self.comps[c].kind {
-            // A CSG leaf has no vertices: overlaps with it are found by `probe_partners` and
-            // `rt.check_overlaps`.
-            Kind::Leaf(p) => {
-                let Some(core) = self.protos[*p].tracker.mesh().map(|m| &m.core) else { return };
-                let mut vs: BTreeSet<u32> = BTreeSet::new();
-                for f in 0..core.n_faces() {
-                    if core.f_right[f] == crate::core::NONE {
-                        vs.extend(core.face_verts(f).iter().copied());
-                    }
-                }
-                out.extend(vs.into_iter().map(|v| core.pos[v as usize]));
-            }
-            Kind::Union { places, .. } => {
-                let mut tmp = Vec::new();
-                for p in places {
-                    tmp.clear();
-                    self.boundary_vertices(p.child, &mut tmp);
-                    out.extend(tmp.iter().map(|&v| p.fwd.pt(v)));
-                }
-            }
-            Kind::Lattice(l) => {
-                let mut cache: Vec<(u32, Vec<[f64; 3]>)> = Vec::new();
-                for e in 0..l.n() {
-                    let child = l.fill[e];
-                    let at = match cache.iter().position(|(c, _)| *c == child) {
-                        Some(at) => at,
-                        None => {
-                            let mut v = Vec::new();
-                            self.boundary_vertices(child as usize, &mut v);
-                            cache.push((child, v));
-                            cache.len() - 1
-                        }
-                    };
-                    let ce = l.center(l.idx_of(e));
-                    out.extend(cache[at].1.iter().map(|v| [v[0] + ce[0], v[1] + ce[1], v[2] + ce[2]]));
-                }
-            }
-        }
+        boundary_vertices_of(&|i| Some(&self.comps[i]), &self.protos, c, out);
     }
 
     /// Exact narrow phase over placement pairs whose boxes overlap: a boundary vertex of one
@@ -925,29 +941,21 @@ impl WorldTracker {
                 }
             }
             Kind::Lattice(l) => {
-                let (cx, nx) = l.axis_cands(0, p[0], dir[0], self.tol);
-                let (cy, ny) = l.axis_cands(1, p[1], dir[1], self.tol);
-                let (cz, nz) = l.axis_cands(2, p[2], dir[2], self.tol);
-                for &kz in &cz[..nz] {
-                    for &ky in &cy[..ny] {
-                        for &kx in &cx[..nx] {
-                            let idx = [kx, ky, kz];
-                            if !l.in_range(idx) {
-                                continue;
-                            }
-                            let lin = l.lin(idx);
-                            let ce = l.center(idx);
-                            let q = sub(p, ce);
-                            let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
-                            match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl) {
-                                Loc::Miss => {}
-                                Loc::Overlap => return Loc::Overlap,
-                                Loc::Hit(mut h) => {
-                                    h.base += self.cell_off_in_lattice(l, lin);
-                                    h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
-                                    return Loc::Hit(h);
-                                }
-                            }
+                for idx in l.cands(p, dir, self.tol) {
+                    if !l.in_range(idx) {
+                        continue;
+                    }
+                    let lin = l.lin(idx);
+                    let ce = l.center(idx);
+                    let q = sub(p, ce);
+                    let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
+                    match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl) {
+                        Loc::Miss => {}
+                        Loc::Overlap => return Loc::Overlap,
+                        Loc::Hit(mut h) => {
+                            h.base += self.cell_off_in_lattice(l, lin);
+                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
+                            return Loc::Hit(h);
                         }
                     }
                 }
@@ -1013,6 +1021,51 @@ impl WorldTracker {
 
     fn lost_step(&self, st: &TrackState, cause: LostCause) -> Step {
         Step::new(0.0, st.cell, st.region, StepEnd::Lost(lost(st, cause)))
+    }
+}
+
+/// Vertices of the outer boundary of component `c`, in its own frame (`comps` looks a compiled
+/// component up, so the build can call it before the tracker exists).
+fn boundary_vertices_of<'a>(comps: &dyn Fn(usize) -> Option<&'a Comp>, protos: &[Proto], c: usize, out: &mut Vec<[f64; 3]>) {
+    let Some(comp) = comps(c) else { return };
+match &comp.kind {
+        // A CSG leaf has no vertices: overlaps with it are found by `probe_partners` and
+        // `rt.check_overlaps`.
+        Kind::Leaf(p) => {
+            let Some(core) = protos[*p].tracker.mesh().map(|m| &m.core) else { return };
+            let mut vs: BTreeSet<u32> = BTreeSet::new();
+            for f in 0..core.n_faces() {
+                if core.f_right[f] == crate::core::NONE {
+                    vs.extend(core.face_verts(f).iter().copied());
+                }
+            }
+            out.extend(vs.into_iter().map(|v| core.pos[v as usize]));
+        }
+        Kind::Union { places, .. } => {
+            let mut tmp = Vec::new();
+            for p in places {
+                tmp.clear();
+                boundary_vertices_of(comps, protos, p.child, &mut tmp);
+                out.extend(tmp.iter().map(|&v| p.fwd.pt(v)));
+            }
+        }
+        Kind::Lattice(l) => {
+            let mut cache: Vec<(u32, Vec<[f64; 3]>)> = Vec::new();
+            for e in 0..l.n() {
+                let child = l.fill[e];
+                let at = match cache.iter().position(|(c, _)| *c == child) {
+                    Some(at) => at,
+                    None => {
+                        let mut v = Vec::new();
+                        boundary_vertices_of(comps, protos, child as usize, &mut v);
+                        cache.push((child, v));
+                        cache.len() - 1
+                    }
+                };
+                let ce = l.center(l.idx_of(e));
+                out.extend(cache[at].1.iter().map(|v| [v[0] + ce[0], v[1] + ce[1], v[2] + ce[2]]));
+            }
+        }
     }
 }
 
@@ -1108,30 +1161,39 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
             Ok(Comp { kind: Kind::Union { places, off, partners }, bounds, cells, inst })
         }
         Some(ComponentKind::Lattice(l)) => {
-            let LatticeKind::Rect { pitch } = l.kind else { return Err(RtError::Unsupported("hex lattice")) };
+            let (shape, pitch) = match l.kind {
+                LatticeKind::Rect { pitch } => (Shape::Rect, pitch),
+                LatticeKind::Hex { pitch, z_pitch } => (Shape::Hex(Orient::XRows), [pitch, pitch, if l.dims[2] > 1 { z_pitch } else { 0.0 }]),
+                LatticeKind::HexYRows { pitch, z_pitch } => (Shape::Hex(Orient::YRows), [pitch, pitch, if l.dims[2] > 1 { z_pitch } else { 0.0 }]),
+                _ => return Err(RtError::Unsupported("lattice kind")),
+            };
             if l.outer.is_some() {
                 return Err(RtError::Unsupported("lattice outer fill"));
             }
-            let lat0 = Lat { origin: a3(l.origin), pitch, dims: l.dims, fill: l.fill.iter().map(|c| c.0).collect(), uniform: None, off: Vec::new() };
+            let lat0 = Lat { shape, origin: a3(l.origin), pitch, dims: l.dims, fill: l.fill.iter().map(|c| c.0).collect(), uniform: None, off: Vec::new() };
             let uniform = lat0.fill.first().copied().filter(|f| lat0.fill.iter().all(|x| x == f));
             // Fit: each distinct fill lies inside its element (x, y; z with more than one layer).
             let mut distinct: Vec<u32> = lat0.fill.clone();
             distinct.sort_unstable();
             distinct.dedup();
             for &f in &distinct {
-                let b = child(f as usize)?.bounds;
+                let fc = child(f as usize)?;
+                let b = fc.bounds;
                 if box_empty(&b) {
                     continue;
                 }
-                let axes = if l.dims[2] > 1 { 3 } else { 2 };
-                for a in 0..axes {
-                    let h = 0.5 * pitch[a];
-                    if b[a] < -h - tol || b[3 + a] > h + tol {
-                        return Err(issue(
-                            "world.lattice_fit",
-                            format!("component {ci}: fill component {f} extends beyond its lattice element along axis {a} ([{:e}, {:e}] vs half pitch {h:e})", b[a], b[3 + a]),
-                        ));
+                let fit = |what: String| issue("world.lattice_fit", format!("component {ci}: fill component {f} extends beyond its lattice element {what}"));
+                match shape {
+                    Shape::Rect => {
+                        let axes = if l.dims[2] > 1 { 3 } else { 2 };
+                        for a in 0..axes {
+                            let h = 0.5 * pitch[a];
+                            if b[a] < -h - tol || b[3 + a] > h + tol {
+                                return Err(fit(format!("along axis {a} ([{:e}, {:e}] vs half pitch {h:e})", b[a], b[3 + a])));
+                            }
+                        }
                     }
+                    Shape::Hex(o) => hex_fit(o, pitch, l.dims[2] > 1, &b, fc, f as usize, protos, done, tol).map_err(fit)?,
                 }
             }
             let mut lat = lat0;
@@ -1163,6 +1225,52 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
         }
         _ => Err(issue("world.component", format!("component {ci} is missing or of an unsupported kind"))),
     }
+}
+
+/// The fit of a fill (bounds `b`, in the element frame) inside its hexagonal prism; `Err` names
+/// the violation. Three tests of growing strength, all within `tol`: the box lies in the box
+/// circumscribing the hexagon (and in half a z pitch for a stack); every boundary vertex of a
+/// mesh fill lies in the hexagon; a leaf fill has no cell just outside the six flats or the six
+/// corners (a probe, so a CSG fill that pokes out by less than the probe offset elsewhere is not
+/// seen: documented in DESIGN.md).
+#[allow(clippy::too_many_arguments)]
+fn hex_fit(o: Orient, pitch: [f64; 3], stacked: bool, b: &Box6, fill: &Comp, f: usize, protos: &[Proto], done: &[Option<Comp>], tol: f64) -> core::result::Result<(), String> {
+    let hb = hexlat::half_box(o, pitch[0]);
+    for a in 0..2 {
+        if b[a] < -hb[a] - tol || b[3 + a] > hb[a] + tol {
+            return Err(format!("along axis {a} ([{:e}, {:e}] vs hexagon half extent {:e})", b[a], b[3 + a], hb[a]));
+        }
+    }
+    if stacked {
+        let h = 0.5 * pitch[2];
+        if b[2] < -h - tol || b[5] > h + tol {
+            return Err(format!("along axis 2 ([{:e}, {:e}] vs half z pitch {h:e})", b[2], b[5]));
+        }
+    }
+    let mut vs = Vec::new();
+    boundary_vertices_of(&|i| done[i].as_ref(), protos, f, &mut vs);
+    if let Some(v) = vs.iter().find(|v| hexlat::sd(o, pitch[0], [v[0], v[1]]) > tol) {
+        return Err(format!("(boundary vertex ({:e}, {:e}) is outside the hexagon of pitch {:e})", v[0], v[1], pitch[0]));
+    }
+    if let Kind::Leaf(pi) = &fill.kind {
+        use core::f64::consts::{FRAC_PI_3, FRAC_PI_6};
+        let z = 0.5 * (b[2] + b[5]);
+        let (apothem, circum) = (0.5 * pitch[0], pitch[0] / 3.0_f64.sqrt());
+        let out = 16.0 * tol;
+        // Flat normals sit at the base angle plus k 60 degrees, corners half a step between.
+        let base = if o == Orient::XRows { 0.0 } else { FRAC_PI_6 };
+        let mut sc = Scratch::new();
+        for k in 0..6 {
+            for (rad, ang) in [(apothem + out, base + k as f64 * FRAC_PI_3), (circum + out, base + (k as f64 + 0.5) * FRAC_PI_3)] {
+                let pt = [rad * ang.cos(), rad * ang.sin(), z];
+                let (loc, overlap) = protos[*pi].tracker.locate(pt, hashed_dir_arr(pt), None, &mut sc);
+                if overlap || (!loc.cell.is_none() && loc.cell != CellId::COMPLEMENT) {
+                    return Err(format!("(the fill has a cell outside the hexagon of pitch {:e}, at ({:e}, {:e}))", pitch[0], pt[0], pt[1]));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- Tracker ---------------------------------------------------------------------------
@@ -1530,21 +1638,13 @@ impl WorldTracker {
             }
             Kind::Union { places, .. } => places.iter().filter(|pl| inside_box(&pl.bbox, p, pad)).find_map(|pl| self.find_instance_with_face(pl.child, pl.inv.pt(p), &g2l.then(&pl.inv), target, f)),
             Kind::Lattice(l) => {
-                let (cx, nx) = l.axis_cands(0, p[0], 0.0, pad);
-                let (cy, ny) = l.axis_cands(1, p[1], 0.0, pad);
-                let (cz, nz) = l.axis_cands(2, p[2], 0.0, pad);
-                for &kz in &cz[..nz] {
-                    for &ky in &cy[..ny] {
-                        for &kx in &cx[..nx] {
-                            let idx = [kx, ky, kz];
-                            if !l.in_range(idx) {
-                                continue;
-                            }
-                            let ce = l.center(idx);
-                            if let Some(a) = self.find_instance_with_face(l.fill[l.lin(idx)] as usize, sub(p, ce), &g2l.then(&Aff::shift_by(ce)), target, f) {
-                                return Some(a);
-                            }
-                        }
+                for idx in l.cands(p, [0.0; 3], pad) {
+                    if !l.in_range(idx) {
+                        continue;
+                    }
+                    let ce = l.center(idx);
+                    if let Some(a) = self.find_instance_with_face(l.fill[l.lin(idx)] as usize, sub(p, ce), &g2l.then(&Aff::shift_by(ce)), target, f) {
+                        return Some(a);
                     }
                 }
                 None
