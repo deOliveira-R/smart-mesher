@@ -267,9 +267,19 @@ impl AnalyticTracker {
     /// `(t, surface)` of the earliest crossing of a surface that leads into a cell, ties by surface
     /// id. `None` if the ray never enters within `max_t`.
     pub(crate) fn enter_from_outside(&self, o: V3, d: V3, max_t: f64, sc: &mut Scratch) -> Option<(f64, u32)> {
+        self.enter_impl(o, d, max_t, true, sc)
+    }
+
+    /// [`Self::enter_from_outside`] by the tile walk of the cell index (`indexed`, when the leaf
+    /// has one) or by testing every surface (the oracle): the same answer. `(t, surface)`.
+    pub fn entry_from_outside(&self, o: Point3, d: Vector3, max_t: f64, indexed: bool, scratch: &mut Scratch) -> Option<(f64, SurfaceId)> {
+        self.enter_impl(a3(o), av(d), max_t, indexed, scratch).map(|(t, s)| (t, SurfaceId::new(s as usize)))
+    }
+
+    fn enter_impl(&self, o: V3, d: V3, max_t: f64, indexed: bool, sc: &mut Scratch) -> Option<(f64, u32)> {
         let mut best: Option<(f64, u32)> = None;
         let mut buf = [0.0f64; 4];
-        for s in 0..self.n_surfs() as u32 {
+        let mut one = |s: u32, best: &mut Option<(f64, u32)>, sc: &mut Scratch| {
             let k = self.leaf.surfs[s as usize].hits(o, d, max_t, &mut buf);
             for &t in &buf[..k] {
                 if best.is_some_and(|b| (t, s) >= (b.0, b.1)) {
@@ -282,9 +292,21 @@ impl AnalyticTracker {
                 }
                 let sense: i8 = if dn > 0.0 { 1 } else { -1 };
                 if matches!(self.leaf.across(None, s, sense, p, d, &mut sc.counters), Next::Cell(_)) {
-                    best = Some((t, s));
+                    *best = Some((t, s));
                 }
             }
+        };
+        match self.leaf.index.as_ref().filter(|_| indexed) {
+            // A crossing that leads into a cell happens inside that cell's tile, whose surface
+            // list holds the surface: walk the tiles front to back and stop once an event lies
+            // strictly before the tile exit (every later tile starts at or after it).
+            Some(ix) => ix.walk(o, d, max_t, |tile, t_exit| {
+                for &s in ix.tile_surfs(tile) {
+                    one(s, &mut best, sc);
+                }
+                best.is_some_and(|b| b.0 < t_exit)
+            }),
+            None => (0..self.n_surfs() as u32).for_each(|s| one(s, &mut best, sc)),
         }
         best
     }

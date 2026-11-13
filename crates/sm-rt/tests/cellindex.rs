@@ -408,3 +408,32 @@ fn p2_full_candidates_per_segment_stay_small() {
     eprintln!("P2 full (n=17): {per:.2} locate candidates per segment over {s} segments");
     assert!(per < 25.0, "{per}");
 }
+
+/// Shared planes (the `g^3` grid): a surface lists far more than 32 cells, so `across` takes the
+/// tile list. Events, the entry from outside and the candidate count against the oracle.
+#[test]
+fn shared_planes_and_entries_from_outside_agree_with_the_oracle() {
+    let fx = random_model("cellindex-shared", 5, 0);
+    let (ix, or) = pair(&fx);
+    let mut r = rng("cellindex-shared-rays");
+    let (mut sc_i, mut sc_o) = (Scratch::new(), Scratch::new());
+    let (mut entered, mut cand_i, mut cand_o) = (0, 0u64, 0u64);
+    for k in 0..400 {
+        // From outside the grid box, toward it.
+        let o = p3(30.0 * r.unit(), 30.0 * r.unit(), 30.0 * r.unit());
+        let d = random_dir(&mut r);
+        let (a, b) = (ix.entry_from_outside(o, d, 200.0, true, &mut sc_i), ix.entry_from_outside(o, d, 200.0, false, &mut sc_o));
+        assert_eq!(a, b, "entry {k}");
+        entered += usize::from(a.is_some());
+        // Events from inside.
+        let q = p3(14.0 * r.unit(), 14.0 * r.unit(), 14.0 * r.unit());
+        assert_eq!(run(&ix, q, d, &mut Scratch::new()), run(&or, q, d, &mut Scratch::new()), "events {k}");
+        for (t, c) in [(&ix, &mut cand_i), (&or, &mut cand_o)] {
+            let mut sc = Scratch::new();
+            run(t, q, d, &mut sc);
+            *c += sc.counters.locate_candidates;
+        }
+    }
+    assert!(entered > 100, "{entered} entries");
+    assert!(cand_i < cand_o, "candidates: index {cand_i}, oracle {cand_o}");
+}
