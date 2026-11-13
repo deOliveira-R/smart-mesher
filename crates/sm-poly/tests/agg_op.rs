@@ -89,6 +89,12 @@ impl TypedOp for Insert {
                 let m = pin_lattice(&mut alloc);
                 MeshEntry::new(Box::new(m), vols(2 * (PINS * PINS) as u64), None, quanta)
             }
+            other if other.starts_with("hex:") => {
+                let n: Vec<usize> = other[4..].split(':').map(|x| x.parse().expect("n")).collect();
+                alloc = SerialAlloc::new();
+                let m = hex_lattice(n[0], n[1], n[2], |_, _| 1, &mut alloc);
+                MeshEntry::new(Box::new(m), vols(1), None, quanta)
+            }
             other => panic!("unknown kind {other}"),
         };
         if self.kind == "pins" {
@@ -426,4 +432,31 @@ fn determinism_one_thread_vs_default() {
     assert_eq!(a, run_once(1));
     assert_eq!(a, run_once(4));
     assert!(a.3 >= 100);
+}
+
+proptest::proptest! {
+    #![proptest_config(sm_testkit::strategies::config(24))]
+
+    /// Random hex lattices and block sizes: the coarse mesh is valid, convex, conserves volume
+    /// and carries a map that restricts volumes exactly.
+    #[test]
+    fn prop_blocks_conserve_volume_and_link_exactly(
+        n in proptest::array::uniform3(2usize..=5),
+        size in proptest::array::uniform3(2usize..=4),
+        shift in proptest::array::uniform3(0usize..2),
+    ) {
+        let mut s = session_with(&format!("hex:{}:{}:{}", n[0], n[1], n[2]));
+        let sz = size.map(|x| x as f64);
+        let origin = shift.map(|x| x as f64);
+        run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"blocks": {"size": sz, "origin": origin}}})).expect("agglomerate");
+        let coarse = mesh_of(&s, m2());
+        let c = coarse.as_read();
+        proptest::prop_assert!(c.cell_count() < n[0] * n[1] * n[2]);
+        proptest::prop_assert!(rel(vol(c), (n[0] * n[1] * n[2]) as f64) < 1e-12);
+        proptest::prop_assert!(validate(c).is_empty() && validate_geometry(c, &GeomTol::default()).is_empty());
+        for i in 0..c.cell_count() {
+            proptest::prop_assert!(sm_quality::cell_convexity(c, CellIx::new(i), sm_quality::RT_PLANARITY_TOL).convex);
+        }
+        check_link(&s, m1(), m2());
+    }
 }

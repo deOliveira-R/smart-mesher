@@ -59,7 +59,7 @@ pub(crate) fn union_convex(src: &dyn MeshRead, cells: &[CellIx], inside: &dyn Fn
     let mut spans: SmallVec<[(usize, usize, f64); 16]> = SmallVec::new();
     for &c in cells {
         for sf in src.cell_faces(c) {
-            if src.across(*sf).is_some_and(&inside) {
+            if src.across(*sf).is_some_and(inside) {
                 continue;
             }
             let l = src.face_vertices(sf.face());
@@ -148,7 +148,7 @@ pub(crate) fn group_blocks(src: &dyn MeshRead, region: &[u32], size: [f64; 3], o
     let nc = src.count(MeshEntityKind::Cell);
     let mut ids: BTreeMap<(u32, [i64; 3]), u64> = BTreeMap::new();
     let mut label = Vec::with_capacity(nc);
-    for c in 0..nc {
+    for (c, &reg) in region.iter().enumerate().take(nc) {
         let g = cell_volume_centroid(src, CellIx::new(c)).1;
         let bin = [
             ((g.x - origin[0]) / size[0]).floor() as i64,
@@ -156,7 +156,7 @@ pub(crate) fn group_blocks(src: &dyn MeshRead, region: &[u32], size: [f64; 3], o
             ((g.z - origin[2]) / size[2]).floor() as i64,
         ];
         let n = ids.len() as u64;
-        label.push(*ids.entry((region[c], bin)).or_insert(n));
+        label.push(*ids.entry((reg, bin)).or_insert(n));
     }
     components(src, &label)
 }
@@ -508,8 +508,8 @@ pub(crate) fn build_coarse<B: MeshBuild>(
         }
     }
     b.reserve(n_pts as usize, n_groups);
-    for v in 0..nv {
-        if vnew[v] != u32::MAX {
+    for (v, &nvx) in vnew.iter().enumerate() {
+        if nvx != u32::MAX {
             let p = src.point(v);
             let h = b.add_vertex(p).map_err(|e| bad(e.to_string()))?;
             b.set_class(MeshEntityRef::Vertex(h), src.vertex_class(VertexIx::new(v))).map_err(|e| bad(e.to_string()))?;
