@@ -5,6 +5,9 @@
 //! Registered so far: `mesh.refine` (MOD-REFINE-U). Every op is a pure read-source, build-new-mesh pass that keeps
 //! classification, sets and tags, and links the result to its source with a `LevelMap` where it is a hierarchy.
 
+// The passes index several parallel arrays by cell, face or node id; iterator forms would obscure them.
+#![allow(clippy::needless_range_loop)]
+
 mod ops;
 mod project;
 mod refine;
