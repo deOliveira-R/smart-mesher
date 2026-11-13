@@ -106,7 +106,7 @@ fn composite_of_two_collinear_edges_hides_the_inner_vertex_and_replays_equal() {
     // The sampler walks both members: ends on the tips, the middle on the hidden vertex.
     let sm = ov.edge_sampler(id).unwrap();
     assert!(near(sm.eval(0.0), pt(1.0, 0.0), 1e-12));
-    // Shares of [0, 1] follow each member's parameter span (here its length), not an even split.
+    // Shares of [0, 1] follow each member's arc length (here equal to its parameter span), not an even split.
     let (l12, l23) = ((vertex_point(&*s.host, s.v[2]) - vertex_point(&ov, s.v[1])).norm(), (vertex_point(&ov, s.v[3]) - vertex_point(&*s.host, s.v[2])).norm());
     let s_inner = l12 / (l12 + l23);
     assert!(s_inner > 0.99, "inner vertex sits near the far end, s = {s_inner}");
@@ -510,4 +510,73 @@ fn a_chained_collapse_keeps_the_dependency_on_the_copy_it_re_points() {
     ov.remove(s.e23).unwrap();
     ov.remove(p).unwrap();
     assert_eq!(ov.canonical_hash(), h0);
+}
+
+/// Quarter arc (R = 10, angle parameter) then a unit line traversed against its own direction.
+fn arc_line() -> (Arc<CellComplex>, [EntityId; 3], [EntityId; 2]) {
+    let mut t = CellComplex::new();
+    let (v, e) = with_op(&mut t, OpId(1), |t| {
+        let p = [pt(10.0, 0.0), pt(0.0, 10.0), pt(0.0, 11.0)];
+        let v: Vec<EntityId> = p.iter().map(|q| t.make_vertex(*q).unwrap()).collect();
+        let frame = Frame::from_z(pt(0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let arc = t.shapes_mut().unwrap().add_curve(CurveDef::Circle(sm_geom_api::Circle::new(frame, 10.0).unwrap())).unwrap();
+        let ea = t.make_edge(v[0], v[1], Some(CurveCarrier { curve: arc, range: Interval::new(0.0, std::f64::consts::FRAC_PI_2), sense: Sense::Forward })).unwrap();
+        // Edge runs v2 -> v1 along the line from (0, 11) down to (0, 10); the chain walks it v1 -> v2.
+        let el = line_edge(t, v[2], v[1], p[2], p[1]);
+        Ok((v, [ea, el]))
+    })
+    .unwrap();
+    (Arc::new(t), [v[0], v[1], v[2]], e)
+}
+
+#[test]
+fn composite_sampler_weights_members_by_arc_length_not_parameter_span() {
+    let (host, v, [ea, el]) = arc_line();
+    let mut ov = Overlay::new(host as Arc<dyn TopologyView>);
+    let id = ov.composite_edges(&[el, ea]).unwrap();
+    let ends: Vec<EntityId> = ov.boundary(id).iter().map(|e| e.cell).collect();
+    assert_eq!(ends, vec![v[0], v[2]]);
+    let l_arc = 10.0 * std::f64::consts::FRAC_PI_2;
+    let l_line = 1.0;
+    let s_in = l_arc / (l_arc + l_line);
+    let sm = ov.edge_sampler(id).unwrap();
+    assert!(near(sm.eval(0.0), pt(10.0, 0.0), 1e-12));
+    assert!(near(sm.eval(1.0), pt(0.0, 11.0), 1e-12));
+    assert!(near(sm.eval(s_in), pt(0.0, 10.0), 1e-9), "{:?}", sm.eval(s_in));
+    // Halfway through the line member (the backward member): the point (0, 10.5).
+    assert!(near(sm.eval(s_in + 0.5 * (1.0 - s_in)), pt(0.0, 10.5), 1e-9));
+    // Halfway through the arc: angle pi/4.
+    let q = 10.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!(near(sm.eval(0.5 * s_in), pt(q, q), 1e-9));
+}
+
+#[test]
+fn edge_sampler_is_reachable_through_a_dyn_view() {
+    // Composite through the trait object, equal to the inherent sampler.
+    let (host, _, [ea, el]) = arc_line();
+    let mut ov = Overlay::new(host as Arc<dyn TopologyView>);
+    let id = ov.composite_edges(&[ea, el]).unwrap();
+    let view: &dyn TopologyView = &ov;
+    let (d, i) = (view.edge_sampler(id).expect("dyn composite sampler"), ov.edge_sampler(id).unwrap());
+    for k in 0..=20 {
+        let s = k as f64 / 20.0;
+        assert_eq!(d.eval(s), i.eval(s));
+    }
+    assert!(view.edge_sampler(ea).is_none(), "hidden member has no sampler");
+    // Collapse copy through the trait object.
+    let s = strip();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let copy = ov.collapse_edge(s.e23, s.v[2]).unwrap().repointed[0].1;
+    let view: &dyn TopologyView = &ov;
+    let (d, i) = (view.edge_sampler(copy).unwrap(), ov.edge_sampler(copy).unwrap());
+    for k in 0..=10 {
+        assert_eq!(d.eval(k as f64 / 10.0), i.eval(k as f64 / 10.0));
+    }
+    assert!(near(d.eval(0.0), pt(1.0, 0.5), 1e-12));
+    // The default impl on the host view: plain edges only, faces and vertices none.
+    let hv: &dyn TopologyView = &*s.host;
+    let plain = hv.edge_sampler(s.e45).unwrap();
+    assert!(near(plain.eval(0.5), pt(0.5, 1.0), 1e-12));
+    assert!(hv.edge_sampler(s.faces[0]).is_none());
+    assert!(hv.edge_sampler(s.v[0]).is_none());
 }

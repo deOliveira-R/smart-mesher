@@ -4,6 +4,7 @@ use crate::derived::TopologyViewExt;
 use crate::error::QueryError;
 use crate::geometry::{self, FaceCentral, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
+use crate::overlay::EdgeSampler;
 use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind};
 use sm_core::{EntityId, EntityKind, Vector3};
 use sm_geom_api::{GeomStore, ModelTolerance, PCurve, ShapeValue, Uv};
@@ -85,6 +86,21 @@ pub trait TopologyView: Send + Sync {
     fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
         let _ = edge;
         None
+    }
+
+    /// A sampler for the curve of live edge `edge` by normalized position `s` in `[0, 1]`
+    /// (see [`EdgeSampler`]): `None` for an unknown or dead edge or one without a curve. The
+    /// default samples a `Carrier::Curve` edge with [`TopologyView::edge_end_offsets`]; an
+    /// overlay also samples its composite edges (members weighted by arc length). Use this to
+    /// sample any edge through `&dyn TopologyView`.
+    fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
+        if self.state(edge) != Some(EntityState::Live) {
+            return None;
+        }
+        let Carrier::Curve(cc) = self.carrier(edge) else { return None };
+        let (t0, t1) = if cc.sense == Sense::Forward { (cc.range.lo, cc.range.hi) } else { (cc.range.hi, cc.range.lo) };
+        let off = self.edge_end_offsets(edge).unwrap_or_default();
+        Some(EdgeSampler::single(self.shapes().curve(cc.curve)?, t0, t1, off))
     }
 
     /// Kind of shell `ring` of `volume`.

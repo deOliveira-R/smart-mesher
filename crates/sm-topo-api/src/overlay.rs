@@ -142,9 +142,10 @@ struct Piece<'a> {
 /// edge (start vertex to end vertex). A plain edge samples its curve linearly in its parameter.
 /// An edge re-pointed by a collapse adds the offset between its vertices and the raw curve ends,
 /// blended linearly in `s`, so `eval(0)` and `eval(1)` land on the edge's vertices. A composite
-/// edge splits `[0, 1]` over its members (in chain order) in proportion to each member's
-/// parameter span `|t1 - t0|` (each member linear in its parameter), so a plain member keeps its
-/// own linear behaviour and a short sliver gets a short share of `s`.
+/// edge splits `[0, 1]` over its members (in chain order) in proportion to each member's arc
+/// length (each member linear in its own parameter within its share), so `s` is a length
+/// fraction between members whatever their parametrization (circle angles, NURBS knots). If any
+/// member's length is not finite or the length query fails, the members share `s` evenly.
 #[derive(Clone)]
 pub struct EdgeSampler<'a> {
     pieces: Vec<Piece<'a>>,
@@ -158,7 +159,35 @@ impl std::fmt::Debug for EdgeSampler<'_> {
     }
 }
 
-impl EdgeSampler<'_> {
+impl<'a> EdgeSampler<'a> {
+    /// Build from pieces and their arc lengths (empty `lens` or any missing, non-finite or
+    /// negative length gives an even split).
+    fn new(pieces: Vec<Piece<'a>>, lens: &[Option<f64>]) -> Self {
+        let k = pieces.len();
+        let w: Option<Vec<f64>> = if lens.len() == k {
+            lens.iter().map(|l| l.filter(|x| x.is_finite() && *x >= 0.0)).collect()
+        } else {
+            None
+        };
+        let total = w.as_ref().map_or(0.0, |w| w.iter().sum());
+        let mut cum: Vec<f64> = match w {
+            Some(w) if total > 0.0 && total.is_finite() => {
+                let mut acc = 0.0;
+                w.iter().map(|x| { acc += x / total; acc }).collect()
+            }
+            _ => (1..=k).map(|i| i as f64 / k as f64).collect(),
+        };
+        if let Some(l) = cum.last_mut() {
+            *l = 1.0;
+        }
+        EdgeSampler { pieces, cum }
+    }
+
+    /// Sampler of one plain curve piece: parameter `t0` to `t1` with end `offsets` blended in.
+    pub(crate) fn single(curve: &'a dyn ParametricCurve, t0: f64, t1: f64, off: [Vector3; 2]) -> Self {
+        EdgeSampler { pieces: vec![Piece { curve, t0, t1, off }], cum: vec![1.0] }
+    }
+
     /// The point at normalized position `s` (clamped to `[0, 1]`).
     pub fn eval(&self, s: f64) -> Point3 {
         let s = s.clamp(0.0, 1.0);
@@ -1064,12 +1093,15 @@ impl Overlay {
     }
 
     /// A sampler for the curve of live edge `edge`: `None` for a dead edge or one without a
-    /// curve (degenerate). See [`EdgeSampler`].
+    /// curve (degenerate). See [`EdgeSampler`]. Same as [`TopologyView::edge_sampler`], which
+    /// reaches it through `&dyn TopologyView`.
     pub fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
         if self.dim_of(edge) != Some(Dim::Edge) || !self.is_live(edge) {
             return None;
         }
         let mut pieces = Vec::new();
+        let mut lens: Vec<Option<f64>> = Vec::new();
+        let lin = self.host.tolerance().linear;
         match self.carrier_of(edge) {
             Carrier::Curve(cc) => {
                 let (t0, t1) = curve_ends(cc);
@@ -1085,25 +1117,18 @@ impl Overlay {
                     };
                     let Carrier::Curve(cc) = self.host.carrier(m) else { return None };
                     let (t0, t1) = curve_ends(cc);
+                    let curve = self.layer.shapes.curve(cc.curve)?;
+                    let tol = self.host.tolerance_override(m).unwrap_or(lin).max(lin);
+                    let len = curve.length(Interval::new(t0.min(t1), t0.max(t1)), tol).ok();
+                    lens.push(len);
                     let (t0, t1) = if s == cur { (t0, t1) } else { (t1, t0) };
-                    pieces.push(Piece { curve: self.layer.shapes.curve(cc.curve)?, t0, t1, off: [Vector3::default(); 2] });
+                    pieces.push(Piece { curve, t0, t1, off: [Vector3::default(); 2] });
                     cur = if s == cur { t } else { s };
                 }
             }
             _ => return None,
         }
-        let w: Vec<f64> = pieces.iter().map(|p| (p.t1 - p.t0).abs()).collect();
-        let total: f64 = w.iter().sum();
-        let mut acc = 0.0;
-        let mut cum: Vec<f64> = if total > 0.0 && total.is_finite() {
-            w.iter().map(|x| { acc += x / total; acc }).collect()
-        } else {
-            (1..=pieces.len()).map(|i| i as f64 / pieces.len() as f64).collect()
-        };
-        if let Some(l) = cum.last_mut() {
-            *l = 1.0;
-        }
-        Some(EdgeSampler { pieces, cum })
+        Some(EdgeSampler::new(pieces, &lens))
     }
 
     fn check_gap(&self, gap: f64) -> Result<(), TopoError> {
@@ -1916,6 +1941,10 @@ impl TopologyView for Overlay {
 
     fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
         self.layer.offsets.get(&edge).copied()
+    }
+
+    fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
+        Overlay::edge_sampler(self, edge)
     }
 
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve> {
