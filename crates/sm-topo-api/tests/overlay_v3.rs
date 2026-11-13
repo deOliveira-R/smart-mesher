@@ -580,3 +580,65 @@ fn edge_sampler_is_reachable_through_a_dyn_view() {
     assert!(hv.edge_sampler(s.faces[0]).is_none());
     assert!(hv.edge_sampler(s.v[0]).is_none());
 }
+
+#[test]
+fn sampler_length_and_tangent_match_analytic_values() {
+    let (host, _, [ea, el]) = arc_line();
+    let mut ov = Overlay::new(host as Arc<dyn TopologyView>);
+    let id = ov.composite_edges(&[ea, el]).unwrap();
+    let sm = ov.edge_sampler(id).unwrap();
+    let l = 10.0 * std::f64::consts::FRAC_PI_2 + 1.0;
+    assert!((sm.length() - l).abs() < 1e-12, "{}", sm.length());
+    // Tangent against a central finite difference inside each member.
+    let s_in = 10.0 * std::f64::consts::FRAC_PI_2 / l;
+    for s in [0.2 * s_in, 0.7 * s_in, s_in + 0.3 * (1.0 - s_in)] {
+        let h = 1e-6;
+        let fd = (sm.eval(s + h) - sm.eval(s - h)) * (1.0 / (2.0 * h));
+        assert!((sm.tangent(s) - fd).norm() < 1e-5 * l, "{s}: {:?} vs {fd:?}", sm.tangent(s));
+        // Length-fraction parametrization: |d eval / d s| is the total length.
+        assert!((sm.tangent(s).norm() - l).abs() < 1e-9);
+    }
+    // Collapse copy: tangent includes the end-offset blend term.
+    let s = strip();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let copy = ov.collapse_edge(s.e23, s.v[2]).unwrap().repointed[0].1;
+    let sm = ov.edge_sampler(copy).unwrap();
+    assert!((sm.length() - (0.5 - SHORT)).abs() < 1e-12);
+    for k in 1..10 {
+        let u = k as f64 / 10.0;
+        let h = 1e-6;
+        let fd = (sm.eval(u + h) - sm.eval(u - h)) * (1.0 / (2.0 * h));
+        assert!((sm.tangent(u) - fd).norm() < 1e-8, "{u}");
+    }
+    let plain = ov.edge_sampler(s.e45).unwrap();
+    assert!((plain.length() - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn composite_faces_inherit_the_collapse_raised_tolerance() {
+    let s = strip();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let c = ov.collapse_edge(s.e23, s.v[2]).unwrap();
+    let linear = ov.tolerance().linear;
+    let vf = ov.composite_faces(&[s.faces[0], s.faces[2]]).unwrap();
+    assert!(ov.tolerance_override(vf).is_some_and(|t| t >= c.gap), "{:?}", ov.tolerance_override(vf));
+    assert!(ov.tolerance_of(vf) >= c.gap && ov.tolerance_of(vf) > linear);
+    let back = Overlay::from_data(host_dyn(&s), ov.data()).unwrap();
+    assert_eq!(back.tolerance_of(vf), ov.tolerance_of(vf));
+    // Untouched members give a plain composite (no override).
+    let s2 = strip();
+    let mut ov2 = Overlay::new(host_dyn(&s2));
+    let v2 = ov2.composite_faces(&[s2.faces[0], s2.faces[2]]).unwrap();
+    assert_eq!(ov2.tolerance_override(v2), None);
+}
+
+#[test]
+fn composite_edges_refuses_a_collapse_copy() {
+    let s = strip();
+    let mut ov = Overlay::new(host_dyn(&s));
+    let copy = ov.collapse_edge(s.e23, s.v[2]).unwrap().repointed[0].1;
+    let n = ov.ops().len();
+    let r = ov.composite_edges(&[s.e12, copy]);
+    assert!(matches!(r, Err(TopoError::WrongDim { .. } | TopoError::Dead(_))), "{r:?}");
+    assert_eq!(ov.ops().len(), n);
+}

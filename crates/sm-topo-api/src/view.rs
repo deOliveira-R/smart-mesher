@@ -100,7 +100,7 @@ pub trait TopologyView: Send + Sync {
         let Carrier::Curve(cc) = self.carrier(edge) else { return None };
         let (t0, t1) = if cc.sense == Sense::Forward { (cc.range.lo, cc.range.hi) } else { (cc.range.hi, cc.range.lo) };
         let off = self.edge_end_offsets(edge).unwrap_or_default();
-        Some(EdgeSampler::single(self.shapes().curve(cc.curve)?, t0, t1, off))
+        Some(EdgeSampler::single(self.shapes().curve(cc.curve)?, t0, t1, off, self.tolerance().linear))
     }
 
     /// Kind of shell `ring` of `volume`.

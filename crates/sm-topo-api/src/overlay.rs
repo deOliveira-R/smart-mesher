@@ -151,6 +151,8 @@ pub struct EdgeSampler<'a> {
     pieces: Vec<Piece<'a>>,
     /// Cumulative end of each piece's share of `s`, normalized so the last is exactly 1.
     cum: Vec<f64>,
+    /// Tolerance handed to the curves' arc-length queries.
+    tol: f64,
 }
 
 impl std::fmt::Debug for EdgeSampler<'_> {
@@ -162,7 +164,7 @@ impl std::fmt::Debug for EdgeSampler<'_> {
 impl<'a> EdgeSampler<'a> {
     /// Build from pieces and their arc lengths (empty `lens` or any missing, non-finite or
     /// negative length gives an even split).
-    fn new(pieces: Vec<Piece<'a>>, lens: &[Option<f64>]) -> Self {
+    fn new(pieces: Vec<Piece<'a>>, lens: &[Option<f64>], tol: f64) -> Self {
         let k = pieces.len();
         let w: Option<Vec<f64>> = if lens.len() == k {
             lens.iter().map(|l| l.filter(|x| x.is_finite() && *x >= 0.0)).collect()
@@ -180,21 +182,55 @@ impl<'a> EdgeSampler<'a> {
         if let Some(l) = cum.last_mut() {
             *l = 1.0;
         }
-        EdgeSampler { pieces, cum }
+        EdgeSampler { pieces, cum, tol }
     }
 
     /// Sampler of one plain curve piece: parameter `t0` to `t1` with end `offsets` blended in.
-    pub(crate) fn single(curve: &'a dyn ParametricCurve, t0: f64, t1: f64, off: [Vector3; 2]) -> Self {
-        EdgeSampler { pieces: vec![Piece { curve, t0, t1, off }], cum: vec![1.0] }
+    pub(crate) fn single(curve: &'a dyn ParametricCurve, t0: f64, t1: f64, off: [Vector3; 2], tol: f64) -> Self {
+        EdgeSampler { pieces: vec![Piece { curve, t0, t1, off }], cum: vec![1.0], tol }
     }
 
-    /// The point at normalized position `s` (clamped to `[0, 1]`).
-    pub fn eval(&self, s: f64) -> Point3 {
+    /// Piece index, its share of `s` (`lo`, width) and the local parameter `u` for `s`.
+    fn locate(&self, s: f64) -> (usize, f64, f64) {
         let s = s.clamp(0.0, 1.0);
         let k = self.pieces.len();
         let i = if s >= 1.0 { k - 1 } else { self.cum.iter().position(|&c| s < c).unwrap_or(k - 1) };
         let lo = if i == 0 { 0.0 } else { self.cum[i - 1] };
-        let u = if s >= 1.0 { 1.0 } else { ((s - lo) / (self.cum[i] - lo)).clamp(0.0, 1.0) };
+        let w = self.cum[i] - lo;
+        let u = if s >= 1.0 { 1.0 } else { ((s - lo) / w).clamp(0.0, 1.0) };
+        (i, w, u)
+    }
+
+    /// Arc length of the edge: the sum of the member arc lengths (for a plain edge, the length
+    /// of its curve over the edge range). A collapse offset is not counted (it is at most the
+    /// recorded gap). If a curve's length query fails, that piece is measured by a 64-segment
+    /// polyline of the raw curve.
+    pub fn length(&self) -> f64 {
+        self.pieces
+            .iter()
+            .map(|p| {
+                let r = Interval::new(p.t0.min(p.t1), p.t0.max(p.t1));
+                p.curve.length(r, self.tol).ok().filter(|l| l.is_finite()).unwrap_or_else(|| {
+                    let pt = |i: usize| p.curve.eval(p.t0 + (p.t1 - p.t0) * i as f64 / 64.0);
+                    (0..64).map(|i| (pt(i + 1) - pt(i)).norm()).sum()
+                })
+            })
+            .sum()
+    }
+
+    /// The derivative `d eval / d s` at `s` (clamped to `[0, 1]`): the member's curve tangent
+    /// scaled by its parameter span and divided by its share of `s`, plus the blended end offset
+    /// term `(off[1] - off[0])` over the share. At a member joint it is the derivative of the
+    /// member that `eval` selects (the later one, the last at `s = 1`), so it may jump there.
+    pub fn tangent(&self, s: f64) -> Vector3 {
+        let (i, w, u) = self.locate(s);
+        let p = &self.pieces[i];
+        (p.curve.d1(p.t0 + u * (p.t1 - p.t0)) * (p.t1 - p.t0) + (p.off[1] - p.off[0])) * (1.0 / w)
+    }
+
+    /// The point at normalized position `s` (clamped to `[0, 1]`).
+    pub fn eval(&self, s: f64) -> Point3 {
+        let (i, _, u) = self.locate(s);
         let p = &self.pieces[i];
         let base = p.curve.eval(p.t0 + u * (p.t1 - p.t0));
         base + p.off[0] * (1.0 - u) + p.off[1] * u
@@ -1044,7 +1080,12 @@ impl Overlay {
     /// the other; its carrier is `Carrier::Composite(members in chain order)`, sampled by
     /// [`Overlay::edge_sampler`].
     ///
-    /// Rejected: fewer than two edges, edges that are not live host edges, a closed chain or
+    /// This and [`Overlay::collapse_edge`] are exclusive at a dropped vertex, in both orders: a
+    /// collapse refuses a dropped vertex next to a composite edge, and a composite refuses a
+    /// chain containing a collapse copy.
+    ///
+    /// Rejected: fewer than two edges, edges that are not live host edges (a collapse copy is
+    /// virtual, so it is refused as `WrongDim` or `Dead`), a closed chain or
     /// closed member edge, a disconnected set, a vertex where three or more members meet, an
     /// inner vertex of degree other than 2, and chain edges whose parents differ or use them
     /// inconsistently (a seam, a gap in the run).
@@ -1072,7 +1113,12 @@ impl Overlay {
     /// ([`Overlay::edge_sampler`]) blend the end offset linearly so sampled ends land on
     /// `into_vertex`. Copies have no pcurves.
     ///
-    /// Rejected: a closed edge, `into_vertex` not an end, a dropped vertex with a non-edge parent,
+    /// This and [`Overlay::composite_edges`] are exclusive at a dropped vertex, in both orders: a
+    /// composite refuses a chain containing a collapse copy, and a collapse refuses a dropped
+    /// vertex next to a composite edge.
+    ///
+    /// Rejected: a closed edge, `into_vertex` not an end, a dropped vertex next to a composite
+    /// edge (`Unsupported("collapse next to a composite edge")`), a dropped vertex with a non-edge parent,
     /// another edge joining the same two vertices, an edge used twice by one face, a face loop that
     /// would become empty (composite or remove such a sliver face first), vertices without a point,
     /// and a gap that is not finite.
@@ -1128,7 +1174,7 @@ impl Overlay {
             }
             _ => return None,
         }
-        Some(EdgeSampler::new(pieces, &lens))
+        Some(EdgeSampler::new(pieces, &lens, lin))
     }
 
     fn check_gap(&self, gap: f64) -> Result<(), TopoError> {
@@ -1608,6 +1654,13 @@ impl Overlay {
             }
         }
         let carrier = Carrier::Composite(members.iter().copied().collect());
+        // A composite inherits the largest tolerance override among its members (a collapse
+        // raises its touched faces above the linear tolerance).
+        let linear = self.host.tolerance().linear;
+        let inherited = members.iter().filter_map(|&f| self.tolerance_override(f)).fold(linear, f64::max);
+        if inherited > linear {
+            self.layer.tol.insert(vf, inherited);
+        }
         self.add_virtual(vf, Dim::Face, down, carrier, members.to_vec());
         for p in parents {
             let mut row = self.down_of(p.cell).to_vec();
