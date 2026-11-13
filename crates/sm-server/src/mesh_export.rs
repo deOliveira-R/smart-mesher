@@ -8,7 +8,6 @@ use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, SplitError, lower, lower_sp
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
 use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
-use sm_meshio::SmshWriter;
 use sm_meshio::report::LossReport;
 use sm_model_api::BoundaryKind;
 use sm_op_api::State;
@@ -104,16 +103,9 @@ pub(crate) fn write_smsh_split(state: &State, named: Option<EntityId>, provenanc
     let fem = state.layer::<FemLayer>().unwrap_or(&none);
     let alloc = state.layer::<MeshLayer>().map(MeshLayer::alloc).ok_or_else(|| SessionError::internal("mesh layer vanished"))?;
     let lowered = lower_split(model, entry, fem, alloc, split).map_err(split_error)?;
-    let mut writer = SmshWriter::new((*lowered.mesh).as_read());
-    if let Some(p) = provenance {
-        writer = writer.provenance(p);
-    }
-    for d in &lowered.decks {
-        writer = writer.deck(d.clone());
-    }
-    for (set, ty) in &lowered.block_types {
-        writer = writer.element_type(set.clone(), ty.name());
-    }
+    let id = entry.mesh().mesh_id();
+    let maps = sm_fem::level_maps_of(state, id);
+    let writer = sm_fem::smsh_writer(&lowered, provenance.as_deref(), &maps);
     let mut bytes = Vec::new();
     writer.write_to(&mut bytes).map_err(|e| SessionError::new("io", format!("writing the .smsh: {e}")))?;
     Ok(Written { bytes, notes: Vec::new() })

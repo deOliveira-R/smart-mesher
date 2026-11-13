@@ -5,6 +5,7 @@ use std::io::Write;
 use sm_core::EntityId;
 use sm_exodus::{ExodusOptions, write_exodus};
 use sm_layer_api::{MeshLayer, ModelLayer};
+use sm_mesh_api::{LevelMap, MeshCatalog};
 use sm_meshio::foam::{FoamOptions, FoamPatchType, build_polymesh};
 use sm_meshio::{LossReport, SmshWriter, VtuOptions, vtu_loss_report, write_vtu};
 use sm_op_api::State;
@@ -217,28 +218,54 @@ fn prepare(state: &State, req: &ExportRequest) -> Result<(EntityId, Lowered), Fe
     Ok((id, lowered))
 }
 
+/// The level maps of the mesh layer that name mesh `id` (as fine mesh first, then as coarse
+/// mesh), in ascending order of the other mesh. A `.smsh` of that mesh carries them, so the
+/// hierarchy reaches disk.
+pub fn level_maps_of(state: &State, id: EntityId) -> Vec<&LevelMap> {
+    let Some(layer) = state.layer::<MeshLayer>() else {
+        return Vec::new();
+    };
+    let mut maps: Vec<&LevelMap> = layer.maps_from(id).into_iter().map(|(_, m)| m).collect();
+    maps.extend(layer.maps_to(id).into_iter().map(|(_, m)| m));
+    maps
+}
+
+/// The `.smsh` writer of a lowered mesh: provenance, deck records, declared element types and
+/// the level maps `maps` (see [`level_maps_of`]; every map must be current for the mesh).
+pub fn smsh_writer<'a>(
+    lowered: &'a Lowered,
+    provenance: Option<&str>,
+    maps: &[&'a LevelMap],
+) -> SmshWriter<'a> {
+    let mut writer = SmshWriter::new((*lowered.mesh).as_read());
+    if let Some(p) = provenance {
+        writer = writer.provenance(p);
+    }
+    for d in &lowered.decks {
+        writer = writer.deck(d.clone());
+    }
+    for (set, ty) in &lowered.block_types {
+        writer = writer.element_type(set.clone(), ty.name());
+    }
+    for m in maps {
+        writer = writer.level_map(m);
+    }
+    writer
+}
+
 /// Write `lowered` in a single-stream format; returns the loss notes.
 fn write_stream<W: Write>(
     format: ExportFormat,
     provenance: Option<&String>,
     lowered: &Lowered,
+    maps: &[&LevelMap],
     out: &mut W,
 ) -> Result<Vec<String>, FemError> {
     let mesh = (*lowered.mesh).as_read();
     let mut notes = Vec::new();
     match format {
         ExportFormat::Smsh => {
-            let mut writer = SmshWriter::new(mesh);
-            if let Some(p) = provenance {
-                writer = writer.provenance(p.clone());
-            }
-            for d in &lowered.decks {
-                writer = writer.deck(d.clone());
-            }
-            for (set, ty) in &lowered.block_types {
-                writer = writer.element_type(set.clone(), ty.name());
-            }
-            writer.write_to(out)?;
+            smsh_writer(lowered, provenance.map(String::as_str), maps).write_to(out)?;
         }
         ExportFormat::Vtu => {
             let opts = VtuOptions::default();
@@ -289,7 +316,8 @@ pub fn export(
     }
     let (id, lowered) = prepare(state, req)?;
     let mut out = Counting { inner: w, n: 0 };
-    let notes = write_stream(req.format, req.provenance.as_ref(), &lowered, &mut out)?;
+    let maps = level_maps_of(state, id);
+    let notes = write_stream(req.format, req.provenance.as_ref(), &lowered, &maps, &mut out)?;
     out.flush()?;
     Ok(ExportReport {
         format: req.format,
@@ -337,7 +365,8 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
         }
         f => {
             let mut bytes = Vec::new();
-            let notes = write_stream(f, req.provenance.as_ref(), &lowered, &mut bytes)?;
+            let maps = level_maps_of(state, id);
+            let notes = write_stream(f, req.provenance.as_ref(), &lowered, &maps, &mut bytes)?;
             let name = match f {
                 ExportFormat::Smsh => "mesh.smsh",
                 ExportFormat::Vtu => "mesh.vtu",
