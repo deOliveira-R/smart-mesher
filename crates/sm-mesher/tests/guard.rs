@@ -90,7 +90,10 @@ fn the_refusal_names_the_derived_mesh_and_its_source() {
     run(&mut s, &AddSecondMesh { derived: true }).expect("derived entry");
     let layer = s.state().layer::<MeshLayer>().expect("layer");
     let m1 = id(EntityKind::Mesh, 1);
-    assert_eq!(layer.get(id(EntityKind::Mesh, 2)).expect("m2").derived_from, Some(m1));
+    assert_eq!(
+        layer.get(id(EntityKind::Mesh, 2)).expect("m2").derived_from,
+        Some(m1)
+    );
     assert_eq!(layer.get(m1).expect("m1").derived_from, None);
     let msg = match mesh_run(&mut s) {
         Ok(_) => panic!("expected an error"),
@@ -105,7 +108,10 @@ fn derived_from_is_not_hashed() {
         let mut s = session_with_second_mesh_op();
         run(&mut s, &brick_op([2.0; 3])).expect("brick");
         run(&mut s, &AddSecondMesh { derived }).expect("entry");
-        (s.state().hash(), s.state().layer_hash("meshes").expect("meshes"))
+        (
+            s.state().hash(),
+            s.state().layer_hash("meshes").expect("meshes"),
+        )
     };
     assert_eq!(hash_with(false), hash_with(true));
 }

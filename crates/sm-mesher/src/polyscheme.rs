@@ -59,7 +59,10 @@ pub(crate) fn lower(
     }
     let mut dual: Option<DualPoints> = None;
     let (mut n_poly, mut n_vol) = (0usize, 0usize);
-    for t in targets.iter().filter(|t| t.kind() == EntityKind::TopoVolume) {
+    for t in targets
+        .iter()
+        .filter(|t| t.kind() == EntityKind::TopoVolume)
+    {
         n_vol += 1;
         let Some(e) = intent.entities.get(t) else {
             continue;
@@ -68,7 +71,12 @@ pub(crate) fn lower(
             continue;
         }
         n_poly += 1;
-        let d = split_params(&e.scheme.as_ref().map_or_else(Params::empty, |c| c.params.clone()))?.0;
+        let d = split_params(
+            &e.scheme
+                .as_ref()
+                .map_or_else(Params::empty, |c| c.params.clone()),
+        )?
+        .0;
         if dual.is_some_and(|x| x != d) {
             return Err(OpError::Invalid(
                 "mesh.run: the polyhedron volumes of one run need the same `dual`; run them apart"

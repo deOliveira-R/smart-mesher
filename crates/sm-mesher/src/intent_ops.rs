@@ -7,7 +7,8 @@ use sm_core::{EntityId, EntityKind};
 use sm_layer_api::ModelLayer;
 use sm_op_api::{ApplyCtx, OpError, TypedOp};
 use sm_scheme_api::{
-    Firm, Firmness, IntervalRequest, Params, RequestCascade, SchemeChoice, SchemeDim, SizingSpec,
+    Firm, Firmness, IntervalConstraint, IntervalRequest, Params, Rel, RequestCascade, SchemeChoice,
+    SchemeDim, SizingSpec,
 };
 use sm_topo_api::{CellFlags, TopologyView};
 
@@ -344,6 +345,104 @@ impl TypedOp for MeshIntervals {
     }
 }
 
+/// Relation of a [`MeshIntervalRelation`] row (`"eq" | "le" | "ge"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationArg {
+    /// `sum(a) == ratio * sum(b)`.
+    Eq,
+    /// `sum(a) <= ratio * sum(b)`.
+    Le,
+    /// `sum(a) >= ratio * sum(b)`.
+    Ge,
+}
+
+impl From<RelationArg> for Rel {
+    fn from(r: RelationArg) -> Self {
+        match r {
+            RelationArg::Eq => Rel::Eq,
+            RelationArg::Le => Rel::Le,
+            RelationArg::Ge => Rel::Ge,
+        }
+    }
+}
+
+/// `mesh.interval_relation`: a relative interval between curves, `sum(a) rel ratio * sum(b)`.
+///
+/// Adds one linear row to the IIA system (origin `intent`), so `ratio 2` with one curve on each
+/// side gives `n_a = 2 n_b` exactly, whatever else fixes `n_b`. An edge listed on both sides
+/// cancels; repeated edges add. The row is dropped when one of its curves is retired.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MeshIntervalRelation {
+    /// Curves on the left side.
+    #[schemars(extend("x-entity-kind" = ["TopoEdge"]))]
+    pub a: Vec<EntityId>,
+    /// Curves on the right side.
+    #[schemars(extend("x-entity-kind" = ["TopoEdge"]))]
+    pub b: Vec<EntityId>,
+    /// Integer factor on the right side (default 1, >= 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratio: Option<u32>,
+    /// Relation (default `eq`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<RelationArg>,
+}
+
+impl TypedOp for MeshIntervalRelation {
+    const NAME: &'static str = "mesh.interval_relation";
+    const NO_OUTPUTS: bool = true;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let kinds = [EntityKind::TopoEdge];
+        let ratio = self.ratio.unwrap_or(1);
+        if ratio == 0 || ratio > i32::MAX as u32 {
+            return Err(OpError::Invalid("`ratio` must be in 1..=2^31-1".into()));
+        }
+        if self.a.is_empty() || self.b.is_empty() {
+            return Err(OpError::Invalid("`a` and `b` must both name curves".into()));
+        }
+        for &e in self.a.iter().chain(&self.b) {
+            ctx.require(e)?;
+            if !kinds.contains(&e.kind()) {
+                return Err(OpError::Invalid(format!("{e} is not a curve")));
+            }
+        }
+        // Coefficients add; a pair that cancels leaves no term.
+        let mut acc: std::collections::BTreeMap<EntityId, i64> = Default::default();
+        for &e in &self.a {
+            *acc.entry(e).or_insert(0) += 1;
+        }
+        for &e in &self.b {
+            *acc.entry(e).or_insert(0) -= i64::from(ratio);
+        }
+        let mut terms = Vec::new();
+        for (e, c) in acc {
+            if c == 0 {
+                continue;
+            }
+            let c =
+                i32::try_from(c).map_err(|_| OpError::Invalid("coefficient overflow".into()))?;
+            terms.push((e, c));
+        }
+        if terms.is_empty() {
+            return Err(OpError::Invalid(
+                "the relation cancels: every curve is on both sides with equal weight".into(),
+            ));
+        }
+        let row = IntervalConstraint::Linear {
+            terms,
+            rel: self.relation.map_or(Rel::Eq, Rel::from),
+            rhs: 0,
+        };
+        let layer = ctx.layer_mut::<IntentLayer>()?;
+        if !layer.intent().intervals.contains(&row) {
+            layer.intent_mut().intervals.push(row);
+        }
+        finish(layer)
+    }
+}
+
 /// Store `choice` (and `fallbacks`) on `t` unless a firmer scheme is already there. Returns
 /// whether it applied.
 pub(crate) fn store_scheme(
@@ -412,7 +511,11 @@ impl TypedOp for MeshScheme {
                     && dim == SchemeDim::Volume
                     && cfg.registry().get(dim, crate::polyscheme::TET).is_some())
         };
-        if self.fallbacks.iter().any(|f| f == crate::polyscheme::POLYHEDRON) {
+        if self
+            .fallbacks
+            .iter()
+            .any(|f| f == crate::polyscheme::POLYHEDRON)
+        {
             return Err(OpError::Invalid(
                 " cannot be a fallback; it changes the cell type".into(),
             ));
