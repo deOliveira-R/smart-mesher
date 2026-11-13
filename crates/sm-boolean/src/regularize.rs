@@ -311,13 +311,13 @@ pub(crate) fn regularize<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[Enti
 /// A topology or geometry failure; the caller aborts the operation.
 pub fn regularize_volumes<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId]) -> Result<RegularizeReport, BooleanError> {
     let rep = regularize(topo, volumes, true)?;
+    // Only the faces a join touched get new pcurves: an untouched import keeps its own.
     let mut faces: BTreeSet<EntityId> = BTreeSet::new();
-    for &v in volumes {
-        if topo.is_alive(v) {
-            faces.extend(topo.volume_faces(v).iter().copied());
-        }
+    faces.extend(rep.joined_faces.iter().map(|p| p.keep));
+    for p in &rep.joined_edges {
+        faces.extend(topo.coboundary(p.keep).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face)).map(|i| i.cell));
     }
-    let faces: Vec<EntityId> = faces.into_iter().collect();
+    let faces: Vec<EntityId> = faces.into_iter().filter(|&f| topo.is_alive(f)).collect();
     crate::pcurves::fix_faces(topo, &faces)?;
     Ok(rep)
 }

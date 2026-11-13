@@ -417,6 +417,58 @@ impl TypedOp for Regularize {
     }
 }
 
+/// `model.heal_check {entities?, small_edge?, small_face_area?, sliver_aspect?, sliver_width?,
+/// hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for
+/// short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates.
+/// Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used
+/// are returned with the findings. See [`crate::heal_check`] for the rules.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealCheck {
+    /// The cells to scan (default: everything).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    pub entities: Option<Vec<EntityId>>,
+    /// Length at or below which an edge is `small_edge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_edge: Option<f64>,
+    /// Area at or below which a face is `small_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_face_area: Option<f64>,
+    /// Aspect ratio at or above which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_aspect: Option<f64>,
+    /// Width at or below which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_width: Option<f64>,
+    /// Diameter at or below which a hole is `small_hole`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_max_diameter: Option<f64>,
+    /// Radius at or below which a tangent partial cylinder is `blend_candidate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_max_radius: Option<f64>,
+}
+
+impl TypedQuery for HealCheck {
+    const NAME: &'static str = "model.heal_check";
+    type Output = crate::heal_check::HealReport;
+
+    fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<crate::heal_check::HealReport, OpError> {
+        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
+        let scope = check_scope(layer.topo(), &self.entities)?;
+        let o = crate::heal_check::HealOptions {
+            entities: self.entities.as_ref().map(|_| scope),
+            small_edge: self.small_edge,
+            small_face_area: self.small_face_area,
+            sliver_aspect: self.sliver_aspect,
+            sliver_width: self.sliver_width,
+            hole_max_diameter: self.hole_max_diameter,
+            blend_max_radius: self.blend_max_radius,
+        };
+        crate::heal_check::heal_check(layer.topo(), &o).map_err(OpError::from)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Webcut
 // ---------------------------------------------------------------------------------------------

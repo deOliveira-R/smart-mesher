@@ -21,6 +21,7 @@ mod copy;
 pub mod error;
 mod faceclass;
 mod geo;
+pub mod heal_check;
 pub mod imprint;
 pub mod locate;
 pub mod merge;
@@ -38,6 +39,7 @@ pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
 pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 pub use bvh::CandidateStats;
+pub use heal_check::{HealCode, HealFinding, HealOptions, HealReport, HealThresholds, heal_check};
 pub use regularize::{JoinedPair, RefusedJoin, RegularizeReport, regularize_volumes};
 pub use locate::{PointLocation, locate_point};
 pub use pieces::candidate_pair_stats;
@@ -67,6 +69,7 @@ impl Plugin for BooleanPlugin {
         registry.register::<ops::Regularize>()?;
         registry.register::<subdivide::SubdividePin>()?;
         registry.register_query::<ops::MergeCheck>()?;
+        registry.register_query::<ops::HealCheck>()?;
         Ok(())
     }
 }
