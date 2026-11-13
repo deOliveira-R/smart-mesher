@@ -1146,6 +1146,9 @@ impl Overlay {
         originals.sort();
         for &e in &originals {
             let (s, t) = self.edge_ends_of(e).ok_or(TopoError::WrongDim { id: e, expected: Dim::Edge })?;
+            if matches!(self.carrier_of(e), Carrier::Composite(_)) {
+                return Err(TopoError::Unsupported("collapse next to a composite edge"));
+            }
             if s == into || t == into {
                 return Err(TopoError::Unsupported("a second edge joins the two vertices of the collapsed edge"));
             }

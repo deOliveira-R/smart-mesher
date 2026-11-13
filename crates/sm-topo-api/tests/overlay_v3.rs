@@ -80,6 +80,7 @@ fn composite_of_two_collinear_edges_hides_the_inner_vertex_and_replays_equal() {
     assert_eq!(ov.dim_of(id), Some(Dim::Edge));
     assert_eq!(ov.state(id), Some(EntityState::Live));
     assert_eq!(ov.resolve(id), &[s.e12, s.e23], "members in chain order");
+    assert!(validate_geometry(&ov).is_empty(), "{:?}", validate_geometry(&ov));
     assert_eq!(ov.virtual_of(s.e12), Some(id));
     assert_eq!(ov.virtual_of(s.e23), Some(id));
     assert_eq!(VirtualOp::CompositeEdges { edges: vec![s.e12, s.e23], id }.created().as_slice(), &[id]);
@@ -135,6 +136,7 @@ fn composite_edges_validates_and_is_atomic() {
     let h0 = ov.canonical_hash();
     let chain = ov.composite_edges(&[s.e12, s.e23, s.e34]).unwrap();
     assert!(validate(&ov).is_empty(), "{:?}", validate(&ov));
+    assert!(validate_geometry(&ov).is_empty(), "{:?}", validate_geometry(&ov));
     ov.remove(chain).unwrap();
     let mut ov = Overlay::new(host_dyn(&s));
     let serial = ov.data().next_serial;
@@ -261,6 +263,30 @@ fn collapse_other_direction_and_refusals() {
     assert!(ov.ops().is_empty());
     assert_eq!(ov.data().next_serial, serial);
     assert_eq!(ov.canonical_hash(), h0);
+}
+
+#[test]
+fn collapse_next_to_a_composite_edge_is_refused_atomically() {
+    // Wire chain far -eA- mid -eB- drop -eS(short)- into; composite [eA, eB] ends on `drop`.
+    let mut t = CellComplex::new();
+    let (v, e) = with_op(&mut t, OpId(1), |t| {
+        let p = [pt(-1.0, 0.0), pt(0.0, 0.0), pt(1.0, 0.0), pt(1.0 + SHORT, 0.0)];
+        let v: Vec<EntityId> = p.iter().map(|q| t.make_vertex(*q).unwrap()).collect();
+        let e: Vec<EntityId> = (0..3).map(|i| line_edge(t, v[i], v[i + 1], p[i], p[i + 1])).collect();
+        Ok((v, e))
+    })
+    .unwrap();
+    let mut ov = Overlay::new(Arc::new(t) as Arc<dyn TopologyView>);
+    ov.composite_edges(&[e[0], e[1]]).unwrap();
+    let h = ov.canonical_hash();
+    let (n, serial) = (ops_len(&ov), ov.data().next_serial);
+    let err = ov.collapse_edge(e[2], v[3]).unwrap_err();
+    assert!(matches!(err, TopoError::Unsupported(m) if m.contains("composite")), "{err:?}");
+    assert_eq!((ops_len(&ov), ov.data().next_serial, ov.canonical_hash()), (n, serial, h));
+}
+
+fn ops_len(ov: &Overlay) -> usize {
+    ov.ops().len()
 }
 
 #[test]
