@@ -14,13 +14,14 @@ use std::collections::BTreeMap;
 use rayon::prelude::*;
 use sm_core::Point3;
 use sm_mesh_api::{
-    CellIx, CellShape, Classification, EdgeTable, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityKind,
-    MeshEntityRef, MeshError, MeshRead, NO_CELL, Param, SerialAlloc, SetMembers, Side, SignedFace, TagValues, VertexIx,
+    CellIx, CellShape, Classification, EdgeTable, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityRef,
+    MeshError, MeshRead, NO_CELL, Param, SerialAlloc, VertexIx,
 };
 use sm_quality::{Context, Metric, eval};
 use sm_topo_api::TopologyView;
 use smallvec::SmallVec;
 
+use crate::carry::{Lineage, carry_sets_and_tags};
 use crate::project::Projector;
 use crate::template::{supported, template, tet_diagonals};
 
@@ -61,6 +62,9 @@ pub enum RefineError {
     /// The result has more than `u32::MAX` nodes or cells.
     #[error("the refined mesh would exceed 2^32 entities")]
     TooLarge,
+    /// The mesh is inconsistent (a cell edge or face missing from the face table).
+    #[error("inconsistent mesh: {0}")]
+    Inconsistent(String),
     /// A mesh-API refusal while building.
     #[error(transparent)]
     Mesh(#[from] MeshError),
@@ -119,8 +123,10 @@ fn dist2(a: V, b: V) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
 }
 
-/// Refine `src` once. `topo` is the model topology for the projection of new boundary nodes
-/// (`None`: straight midpoints). `b` must be an empty builder of the source's dimension.
+/// Refine `src` once. `topo` is the model topology: it resolves the class of edges on a model
+/// edge when the source has no edge table, and with `project` it moves new boundary nodes onto
+/// the model (`None` or `project: false`: straight midpoints). `b` must be an empty builder of
+/// the source's dimension.
 ///
 /// # Errors
 /// [`RefineError`] for a mesh without a uniform rule (polyhedra, high order, inactive or
@@ -128,6 +134,7 @@ fn dist2(a: V, b: V) -> f64 {
 pub fn refine<B: MeshBuild>(
     src: &dyn MeshRead,
     topo: Option<&dyn TopologyView>,
+    project: bool,
     mut b: B,
     alloc: &mut SerialAlloc,
 ) -> Result<Refined<B::Output>, RefineError> {
@@ -179,14 +186,15 @@ pub fn refine<B: MeshBuild>(
     } else if let Some(t) = src.edges() {
         (t.vertices.iter().map(|[a, b]| [a.0, b.0]).collect(), t.class.clone())
     } else {
-        let t = EdgeTable::derive(src, &mut SerialAlloc::new(), &fallback_edge_classes(src))
+        let t = EdgeTable::derive(src, &mut SerialAlloc::new(), &fallback_edge_classes(src, topo))
             .map_err(|e| RefineError::EdgeClass(e.to_string()))?;
         (t.vertices.iter().map(|[a, b]| [a.0, b.0]).collect(), t.class)
     };
-    let edge_id = |a: u32, b: u32| -> u32 {
+    let edge_id = |a: u32, b: u32| -> Option<u32> {
         let k = [a.min(b), a.max(b)];
-        pairs.binary_search(&k).expect("every cell edge is a face edge") as u32
+        pairs.binary_search(&k).ok().map(|i| i as u32)
     };
+    let bad = |c: usize, what: &str| RefineError::Inconsistent(format!("cell {c}: {what}"));
     let ne = pairs.len();
 
     // ---- quad faces and cell centres ---------------------------------------------------------------
@@ -274,7 +282,10 @@ pub fn refine<B: MeshBuild>(
         for set in &t.nodes {
             let id = match set.len() {
                 1 => corners[set[0] as usize],
-                2 => base_e as u32 + edge_id(corners[set[0] as usize], corners[set[1] as usize]),
+                2 => {
+                    let e = edge_id(corners[set[0] as usize], corners[set[1] as usize]).ok_or_else(|| bad(c, "an edge of the cell is not an edge of any face"))?;
+                    base_e as u32 + e
+                }
                 n if n == 8 || (dim2 && n == 4) => (base_c + crank[c] as usize) as u32,
                 _ => {
                     let j = shape
@@ -282,10 +293,17 @@ pub fn refine<B: MeshBuild>(
                         .iter()
                         .position(|lf| lf.len() == set.len() && set.iter().all(|s| lf.contains(s)))
                         .ok_or(RefineError::UnsupportedCell { cell: c as u32, shape })?;
-                    (base_q + qrank[lf2f[j] as usize] as usize) as u32
+                    let q = if lf2f[j] == NONE { NONE } else { qrank[lf2f[j] as usize] };
+                    if q == NONE {
+                        return Err(bad(c, "a quad face of the cell is not a face of the mesh"));
+                    }
+                    (base_q + q as usize) as u32
                 }
             };
             gid.push(id);
+        }
+        if lf2f.contains(&NONE) {
+            return Err(bad(c, "a face of the cell is missing from its face list"));
         }
         let variant = if shape == CellShape::Tet {
             // Octahedron diagonal: the shortest one (ties to the first), independent of vertex order.
@@ -323,7 +341,7 @@ pub fn refine<B: MeshBuild>(
 
     // ---- projection of new boundary nodes -----------------------------------------------------------
     let mut stats = RefineStats { parents: nc, children: ncl, vertices: nn, ..RefineStats::default() };
-    if let Some(topo) = topo {
+    if let (Some(topo), true) = (topo, project) {
         let pj = Projector::new(topo);
         let pnormal: Vec<Option<V>> = (0..nc)
             .map(|c| src.cell_normal(CellIx::new(c)).map(|n| [n.x, n.y, n.z]))
@@ -433,114 +451,24 @@ pub fn refine<B: MeshBuild>(
         }
     }
 
-    // ---- sets and tags -----------------------------------------------------------------------------
-    let mut notes: Vec<(&'static str, String)> = Vec::new();
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));
-    let children_of = |c: u32| child_start[c as usize]..child_start[c as usize + 1];
-    for set in src.sets() {
-        let members = match &set.members {
-            SetMembers::Cells(v) => SetMembers::Cells(
-                v.iter().flat_map(|c| children_of(c.0).map(|k| CellIx::new(k as usize))).collect(),
-            ),
-            SetMembers::Faces(v) => {
-                let mut out: Vec<FaceIx> = Vec::new();
-                for f in v {
-                    let lo = on_parent.partition_point(|(pf, _)| *pf < f.0);
-                    out.extend(on_parent[lo..].iter().take_while(|(pf, _)| *pf == f.0).map(|(_, fh)| *fh));
-                }
-                out.sort_unstable();
-                out.dedup();
-                SetMembers::Faces(out)
-            }
-            SetMembers::Sides(v) => {
-                let mut out: Vec<SignedFace> = Vec::new();
-                for sf in v {
-                    let f = sf.face();
-                    let parent = match sf.side() {
-                        Side::Left => Some(src.face_left(f)),
-                        Side::Right => src.face_right(f),
-                    };
-                    let Some(parent) = parent else { continue };
-                    let lo = on_parent.partition_point(|(pf, _)| *pf < f.0);
-                    for (_, fh) in on_parent[lo..].iter().take_while(|(pf, _)| *pf == f.0) {
-                        for side in [Side::Left, Side::Right] {
-                            if b.face_cell(*fh, side).is_some_and(|cc| c_parent[cc.get()] == parent.get() as u32) {
-                                out.push(SignedFace::new(*fh, side));
-                            }
-                        }
-                    }
-                }
-                out.sort_unstable_by_key(|s| s.to_raw());
-                out.dedup();
-                SetMembers::Sides(out)
-            }
-            SetMembers::Vertices(v) => {
-                let mut inset = vec![false; nv];
-                for x in v {
-                    inset[x.get()] = true;
-                }
-                let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
-                out.extend(pairs.iter().enumerate().filter(|(_, [a, bb])| inset[*a as usize] && inset[*bb as usize]).map(|(e, _)| VertexIx((base_e + e) as u32)));
-                out.extend(qfaces.iter().enumerate().filter(|(_, f)| src.face_vertices(FaceIx::new(**f as usize)).iter().all(|x| inset[x.get()])).map(|(r, _)| VertexIx((base_q + r) as u32)));
-                out.extend(cen_cells.iter().enumerate().filter(|(_, c)| src.cell_corners(CellIx::new(**c as usize)).unwrap_or(&[]).iter().all(|x| inset[x.get()])).map(|(r, _)| VertexIx((base_c + r) as u32)));
-                SetMembers::Vertices(out)
-            }
-            _ => {
-                notes.push(("refine.set_dropped", format!("set `{}` (shell sides or points) is not carried over", set.name)));
-                continue;
-            }
-        };
-        b.add_set(&set.name, members)?;
-        if let Some(l) = set.label {
-            b.set_label(&set.name, Some(l))?;
-        }
-    }
-    for t in src.tags() {
-        match (t.target, &t.values) {
-            (MeshEntityKind::Cell, v) => {
-                let vals = match v {
-                    TagValues::I64(x) => TagValues::I64(c_parent.iter().map(|&p| x[p as usize]).collect()),
-                    TagValues::F64(x) => TagValues::F64(c_parent.iter().map(|&p| x[p as usize]).collect()),
-                    _ => {
-                        notes.push(("refine.tag_dropped", format!("tag `{}` has an unsupported value type", t.name)));
-                        continue;
-                    }
-                };
-                b.add_tag(&t.name, MeshEntityKind::Cell, vals)?;
-            }
-            (MeshEntityKind::Vertex, v) => {
-                // Spanned vertices of every new node, in node order.
-                let span = |n: usize| -> SmallVec<[u32; 8]> {
-                    if n < nv {
-                        SmallVec::from_slice(&[n as u32])
-                    } else if n < base_q {
-                        SmallVec::from_slice(&pairs[n - base_e])
-                    } else if n < base_c {
-                        src.face_vertices(FaceIx::new(qfaces[n - base_q] as usize)).iter().map(|x| x.0).collect()
-                    } else {
-                        src.cell_corners(CellIx::new(cen_cells[n - base_c] as usize)).unwrap_or(&[]).iter().map(|x| x.0).collect()
-                    }
-                };
-                let vals = match v {
-                    TagValues::I64(x) => TagValues::I64((0..nn).map(|n| x[span(n).iter().copied().min().unwrap_or(0) as usize]).collect()),
-                    TagValues::F64(x) => TagValues::F64(
-                        (0..nn)
-                            .map(|n| {
-                                let s = span(n);
-                                s.iter().map(|&i| x[i as usize]).sum::<f64>() / s.len() as f64
-                            })
-                            .collect(),
-                    ),
-                    _ => {
-                        notes.push(("refine.tag_dropped", format!("tag `{}` has an unsupported value type", t.name)));
-                        continue;
-                    }
-                };
-                b.add_tag(&t.name, MeshEntityKind::Vertex, vals)?;
-            }
-            _ => notes.push(("refine.tag_dropped", format!("tag `{}` on {:?} is not carried over", t.name, t.target))),
-        }
-    }
+    let notes = carry_sets_and_tags(
+        src,
+        &mut b,
+        &Lineage {
+            nv,
+            nn,
+            pairs: &pairs,
+            qfaces: &qfaces,
+            cen_cells: &cen_cells,
+            base_e,
+            base_q,
+            base_c,
+            child_start: &child_start,
+            c_parent: &c_parent,
+            on_parent: &on_parent,
+        },
+    )?;
 
     let fin = b.finish(alloc)?;
     let mut face_map = vec![NO_CELL; fin.mesh.face_count()];
@@ -552,33 +480,55 @@ pub fn refine<B: MeshBuild>(
 }
 
 /// Classes for the edges of a mesh without an edge table that the face rule of
-/// [`EdgeTable::derive`] cannot decide: an edge touching two or more distinct boundary faces lies
-/// on a model edge, taken from its end vertices (one on a `TopoEdge`, the other on the same
-/// edge or on a `TopoVertex`).
-fn fallback_edge_classes(src: &dyn MeshRead) -> BTreeMap<[VertexIx; 2], Classification> {
-    let mut seen: BTreeMap<[VertexIx; 2], (sm_core::EntityId, bool)> = BTreeMap::new();
+/// [`EdgeTable::derive`] cannot decide: an edge touching two or more distinct model faces (as
+/// boundary faces or as interface faces between volumes) lies on a model edge. With the model
+/// topology it is the one edge common to all those faces that both end vertices can lie on; without
+/// it, the `TopoEdge` of an end vertex (the other end on the same edge or on a `TopoVertex`).
+fn fallback_edge_classes(src: &dyn MeshRead, topo: Option<&dyn TopologyView>) -> BTreeMap<[VertexIx; 2], Classification> {
+    use sm_core::{EntityId, EntityKind};
+    use sm_topo_api::TopologyViewExt;
+    let mut seen: BTreeMap<[VertexIx; 2], SmallVec<[EntityId; 4]>> = BTreeMap::new();
     for f in 0..src.face_count() {
         let fi = FaceIx::new(f);
-        if src.face_kind(fi) == FaceKind::Interior {
+        let ent = src.face_class(fi).entity;
+        if ent.kind() != EntityKind::TopoFace {
             continue;
         }
-        let ent = src.face_class(fi).entity;
         let l = src.face_vertices(fi);
         for i in 0..l.len() {
             let (a, bb) = (l[i], l[(i + 1) % l.len()]);
             let k = if a < bb { [a, bb] } else { [bb, a] };
-            let e = seen.entry(k).or_insert((ent, false));
-            e.1 |= e.0 != ent;
+            let faces = seen.entry(k).or_default();
+            if !faces.contains(&ent) {
+                faces.push(ent);
+            }
         }
     }
-    let on_edge = |e: sm_core::EntityId| e.kind() == sm_core::EntityKind::TopoEdge;
-    let on_vertex = |e: sm_core::EntityId| e.kind() == sm_core::EntityKind::TopoVertex;
+    let on_edge = |e: EntityId| e.kind() == EntityKind::TopoEdge;
+    let on_vertex = |e: EntityId| e.kind() == EntityKind::TopoVertex;
+    let end_fits = |topo: &dyn TopologyView, edge: EntityId, class: EntityId| match class.kind() {
+        EntityKind::TopoEdge => class == edge,
+        EntityKind::TopoVertex => topo.edge_ends(edge).is_some_and(|(p, q)| p == class || q == class),
+        _ => false,
+    };
     let mut out = BTreeMap::new();
-    for (k, (_, multi)) in seen {
-        if !multi {
+    for (k, faces) in seen {
+        if faces.len() < 2 {
             continue;
         }
         let (ea, eb) = (src.vertex_class(k[0]).entity, src.vertex_class(k[1]).entity);
+        if let Some(topo) = topo {
+            let mut cands: Vec<EntityId> = topo.face_edges(faces[0]).to_vec();
+            for f in &faces[1..] {
+                let fe = topo.face_edges(*f);
+                cands.retain(|e| fe.contains(e));
+            }
+            cands.retain(|e| end_fits(topo, *e, ea) && end_fits(topo, *e, eb));
+            if let [e] = cands[..] {
+                out.insert(k, Classification::on(e));
+                continue;
+            }
+        }
         if on_edge(ea) && (ea == eb || on_vertex(eb)) {
             out.insert(k, Classification::on(ea));
         } else if on_edge(eb) && on_vertex(ea) {

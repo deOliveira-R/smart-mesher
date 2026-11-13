@@ -8,6 +8,7 @@
 // The passes index several parallel arrays by cell, face or node id; iterator forms would obscure them.
 #![allow(clippy::needless_range_loop)]
 
+mod carry;
 mod ops;
 mod project;
 mod refine;

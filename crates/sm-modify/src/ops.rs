@@ -97,7 +97,8 @@ impl TypedOp for Refine {
             (e.mesh.clone(), e.selection.clone(), e.plan.clone(), e.quanta, e.stale)
         };
         let model = ctx.layer::<ModelLayer>()?.clone();
-        let topo = (self.project != Some(false)).then(|| model.topo());
+        let topo = Some(model.topo());
+        let project = self.project != Some(false);
         let mut prev = source;
         for level in 1..=levels {
             ctx.step(u64::from(level - 1), u64::from(levels), "refining")?;
@@ -105,7 +106,7 @@ impl TypedOp for Refine {
             let mut alloc: SerialAlloc = alloc0.clone();
             let src = cur.as_read();
             let builder = if src.dim() == MeshDim::Two { MeshBuilder::surface() } else { MeshBuilder::new() };
-            let r = refine(src, topo, builder, &mut alloc).map_err(refuse)?;
+            let r = refine(src, topo, project, builder, &mut alloc).map_err(refuse)?;
             let map = LevelMap::new(&r.finished.mesh, src, r.coarse_of, Some(r.face_map))
                 .map_err(|e| OpError::Failed(e.to_string()))?;
             let (sj0, vol0) = quality(src);
@@ -129,6 +130,18 @@ impl TypedOp for Refine {
                 "min_scaled_jacobian_parent": sj0, "min_scaled_jacobian": sj1,
             });
             ctx.info("refine.report", report.to_string(), &[new]);
+            if s.projection_failed + s.projection_rejected > 0 {
+                ctx.warn(
+                    "refine.projection",
+                    format!(
+                        "level {level}: {} new boundary node(s) kept their straight position ({} where the projection failed, {} where it would have inverted a cell)",
+                        s.projection_failed + s.projection_rejected,
+                        s.projection_failed,
+                        s.projection_rejected
+                    ),
+                    &[new],
+                );
+            }
             for (code, msg) in r.notes {
                 ctx.warn(code, msg, &[source]);
             }

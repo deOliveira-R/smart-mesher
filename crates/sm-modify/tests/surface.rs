@@ -75,7 +75,7 @@ fn area(m: &dyn MeshRead, c: usize) -> f64 {
 fn check(src: &sm_mesh::Mesh, per_parent: usize, side: usize) {
     assert_eq!(src.dim(), MeshDim::Two);
     assert!(validate(src).is_empty(), "{:?}", validate(src));
-    let r = refine(src, None, MeshBuilder::surface(), &mut SerialAlloc::new()).expect("refine");
+    let r = refine(src, None, true, MeshBuilder::surface(), &mut SerialAlloc::new()).expect("refine");
     let m = &r.finished.mesh;
     assert_eq!(m.dim(), MeshDim::Two);
     assert_eq!(m.cell_count(), per_parent * src.cell_count());
@@ -121,7 +121,7 @@ fn a_sheared_quad_mesh_keeps_the_quarters() {
         let p = m.point(i);
         m.set_point(PointIx::new(i), Point3::new(p.x + 0.5 * p.y, 1.5 * p.y, 0.0)).expect("set");
     }
-    let r = refine(&m, None, MeshBuilder::surface(), &mut SerialAlloc::new()).expect("refine");
+    let r = refine(&m, None, true, MeshBuilder::surface(), &mut SerialAlloc::new()).expect("refine");
     let total: f64 = (0..r.finished.mesh.cell_count()).map(|c| area(&r.finished.mesh, c)).sum();
     assert!((total - 4.0 * 1.5).abs() < 1e-12, "area {total}");
     for (k, p) in r.coarse_of.iter().enumerate() {

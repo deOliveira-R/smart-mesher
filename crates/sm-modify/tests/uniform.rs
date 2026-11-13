@@ -15,7 +15,7 @@ use sm_quality::{Metric, Options, compute};
 use sm_testkit::meshes::{CellSpec, build_mesh, mixed_transition, tet_block};
 
 fn run(src: &dyn MeshRead) -> Refined<sm_mesh::Mesh> {
-    refine(src, None, MeshBuilder::new(), &mut SerialAlloc::new()).expect("refine")
+    refine(src, None, true, MeshBuilder::new(), &mut SerialAlloc::new()).expect("refine")
 }
 
 fn total_volume(m: &dyn MeshRead) -> f64 {
@@ -52,6 +52,20 @@ fn assert_valid(m: &dyn MeshRead) {
     let v = validate(m);
     assert!(v.is_empty(), "validate: {v:?}");
     assert!(validate_classification(m).is_empty());
+}
+
+/// The level map with its face map is accepted for the pair, is total, and maps every child face on
+/// a parent face to it (the face map's own rules are checked by `LevelMap::new`).
+fn check_map(src: &dyn MeshRead, r: &Refined<sm_mesh::Mesh>) {
+    let m = &r.finished.mesh;
+    let map = LevelMap::new(m, src, r.coarse_of.clone(), Some(r.face_map.clone())).expect("LevelMap::new accepts the face map");
+    assert_eq!(map.fine_len(), m.cell_count());
+    assert_eq!(map.coarse_len(), src.cell_count());
+    let fm = map.face_map().expect("face map");
+    assert_eq!(fm.len(), m.face_count());
+    // Every source face is carried by at least one new face (a quad or tri splits into >= 2 children).
+    let carried: BTreeSet<u32> = fm.iter().copied().filter(|&x| x != sm_mesh_api::NO_CELL).collect();
+    assert_eq!(carried.len(), src.face_count());
 }
 
 /// Children of every parent, ascending.
@@ -136,6 +150,7 @@ fn a2_tet_corner_children_are_an_eighth_and_the_octahedron_is_half() {
     }
     assert!((total_volume(&r.finished.mesh) - fx.volume).abs() <= 1e-13);
     assert_valid(&r.finished.mesh);
+    check_map(src, &r);
     let (v, e, f) = boundary_euler(&r.finished.mesh);
     assert_eq!(v as isize - e as isize + f as isize, 2);
 }
@@ -248,6 +263,7 @@ fn refine_and_check(src: &ReferenceMesh, per_parent: usize, volume: f64) -> Refi
     assert!((total_volume(m) - volume).abs() <= 1e-12 * volume, "volume {} vs {volume}", total_volume(m));
     assert!((total_volume(src) - volume).abs() <= 1e-12 * volume);
     assert_valid(m);
+    check_map(src, &r);
     assert!((boundary_area(m) - boundary_area(src)).abs() <= 1e-12 * boundary_area(src), "boundary area is unchanged");
     let (v, e, f) = boundary_euler(m);
     assert_eq!(v as isize - e as isize + f as isize, 2);
@@ -326,6 +342,7 @@ fn a4_mixed_transition_refines_conformally() {
     assert_eq!(m.cell_count(), 8 + 8 + 10 + 8);
     assert!((total_volume(m) - fx.volume).abs() <= 1e-13);
     assert_valid(m);
+    check_map(&mesh, &r);
     assert!((boundary_area(m) - fx.area).abs() <= 1e-12);
 }
 
@@ -428,12 +445,12 @@ fn a7_the_pass_is_deterministic_for_any_thread_count() {
 #[test]
 fn polyhedra_and_high_order_are_refused_with_a_reason() {
     let fx = sm_testkit::meshes::dual_patch().expect("dual patch");
-    let Err(e) = refine(&fx.mesh, None, MeshBuilder::new(), &mut SerialAlloc::new()) else { panic!("refused") };
+    let Err(e) = refine(&fx.mesh, None, true, MeshBuilder::new(), &mut SerialAlloc::new()) else { panic!("refused") };
     assert!(e.to_string().contains("dualize again"), "{e}");
     // Atomic: the allocator is untouched on a refusal.
     let mut alloc = SerialAlloc::new();
     let before: BTreeMap<_, _> = alloc.state().collect();
-    let _ = refine(&fx.mesh, None, MeshBuilder::new(), &mut alloc);
+    let _ = refine(&fx.mesh, None, true, MeshBuilder::new(), &mut alloc);
     assert_eq!(before, alloc.state().collect());
 }
 
@@ -441,7 +458,7 @@ fn polyhedra_and_high_order_are_refused_with_a_reason() {
 fn high_order_meshes_are_refused() {
     let mut fx = sm_testkit::meshes::single_hex().expect("hex");
     fx.mesh.add_extra_node(Point3::new(0.5, 0.5, 0.5)).expect("extra node");
-    let Err(e) = refine(&fx.mesh, None, MeshBuilder::new(), &mut SerialAlloc::new()) else { panic!("refused") };
+    let Err(e) = refine(&fx.mesh, None, true, MeshBuilder::new(), &mut SerialAlloc::new()) else { panic!("refused") };
     assert!(matches!(e, sm_modify::RefineError::HighOrder), "{e}");
 }
 

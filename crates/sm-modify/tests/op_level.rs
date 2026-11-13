@@ -105,6 +105,15 @@ fn a5_cylinder_projection_is_analytic_for_two_levels() {
             }
         }
         let n = 16.0 * 2f64.powi(level as i32);
+        // The lateral boundary (faces whose nodes all lie on r = 1) is the inscribed n-gon strip:
+        // n chords of length 2 sin(pi/n) over the height 2.
+        let lateral_area: f64 = (0..m.face_count())
+            .map(FaceIx::new)
+            .filter(|&f| m.face_kind(f) == FaceKind::Boundary && m.face_vertices(f).iter().all(|v| (m.point(v.get()).x.hypot(m.point(v.get()).y) - 1.0).abs() < 1e-12))
+            .map(|f| sm_mesh_api::face_area_vector(m, f).norm())
+            .sum();
+        let want_area = n * 2.0 * (std::f64::consts::PI / n).sin() * 2.0;
+        assert!((lateral_area - want_area).abs() <= 1e-12 * want_area, "level {level}: lateral area {lateral_area} vs {want_area}");
         let want = prism(n);
         assert!((volume(m) - want).abs() <= 1e-12 * want, "level {level}: volume {} vs inscribed prism {want}", volume(m));
         assert!(validate(m).is_empty());
@@ -126,6 +135,45 @@ fn a5_cylinder_projection_is_analytic_for_two_levels() {
     script(&mut s2, "mesh.refine(mesh: Mesh#1, project: false)");
     let m = layer(&s2).get(mesh_id(2)).expect("level").mesh();
     assert!((volume(m) - prism(16.0)).abs() < 1e-12, "without projection the 16-gon prism is kept");
+}
+
+/// A cylinder meshed with a handful of intervals: the guard decides what happens to the projection
+/// of its coarse circle; whatever it decides is reported (`refine.projection` warning when a node
+/// kept its straight position), and the result validates with the exact inscribed volume of the
+/// polygon actually kept.
+#[test]
+fn coarse_cylinder_reports_what_the_projection_left_alone() {
+    let mut s = server();
+    script(
+        &mut s,
+        r#"
+let cy = model.create_cylinder(height: 2.0, radius: 1.0)
+mesh.size(targets: all volumes, size: 1.5)
+let au = mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+"#,
+    );
+    let run = script(&mut s, "mesh.refine(mesh: Mesh#1)");
+    let rep = &reports(&run)[0];
+    let m = layer(&s).get(mesh_id(2)).expect("level").mesh();
+    assert!(validate(m).is_empty());
+    eprintln!(
+        "coarse cylinder: cells {} -> {}, projected {}, failed {}, rejected {}, min SJ {} -> {}",
+        rep["parent_cells"], rep["cells"], rep["projected"], rep["projection_failed"], rep["projection_rejected"],
+        rep["min_scaled_jacobian_parent"], rep["min_scaled_jacobian"]
+    );
+    let warned = run["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|e| e["op"] == "mesh.refine")
+        .flat_map(|e| e["delta"]["diagnostics"].as_array().cloned().unwrap_or_default())
+        .any(|d| d["code"] == "refine.projection");
+    let kept = rep["projection_failed"].as_u64().unwrap() + rep["projection_rejected"].as_u64().unwrap();
+    assert_eq!(warned, kept > 0, "a node left at its straight position is reported as a warning");
+    // No refined cell is inverted whatever the guard did.
+    let sj = sm_quality::compute(m, sm_quality::Metric::ScaledJacobian, &sm_quality::Options::default()).expect("sj");
+    assert!(sj.iter().all(|x| *x > 0.0), "no inverted or collapsed cell");
 }
 
 /// One through pin cell (the `tools/w3c_pin.smesh` model for a single cell).
@@ -210,6 +258,65 @@ fn w3c_pin_volume_error_before_and_after() {
     eprintln!("w3c pin cell: min SJ of the refined mesh {sj_refined:.6}, after 20 smart-Laplacian sweeps {sj_smooth:.6}");
     assert!(sj_smooth >= sj_refined - 1e-12, "smart smoothing never worsens the minimum");
     assert!((volume(sm) - total_exact).abs() < 1e-9, "smoothing keeps the total volume");
+}
+
+/// `tools/w3c_pin.smesh` up to (not including) its exports: the 3x3 pin lattice with interface
+/// faces between merged volumes, whose edges are not decided by the boundary faces alone.
+fn lattice_script() -> String {
+    let full = include_str!("../../../tools/w3c_pin.smesh");
+    let cut = full.find("// ---------------------------------------------------------------- exports").expect("exports marker");
+    full[..cut].to_owned()
+}
+
+#[test]
+fn w3c_lattice_refines_with_interface_faces() {
+    let mut s = server();
+    script(&mut s, &lattice_script());
+    let src = layer(&s).get(mesh_id(1)).expect("mesh").mesh();
+    let n0 = src.cell_count();
+    let per_volume = |m: &dyn MeshRead| {
+        let mut out: BTreeMap<String, usize> = BTreeMap::new();
+        for c in 0..m.cell_count() {
+            *out.entry(m.cell_class(CellIx::new(c)).entity.to_string()).or_default() += 1;
+        }
+        out
+    };
+    let before = per_volume(src);
+    assert_eq!(before.len(), 18);
+    script(&mut s, "mesh.refine(mesh: Mesh#1)");
+    let m = layer(&s).get(mesh_id(2)).expect("level").mesh();
+    assert_eq!(m.cell_count(), 8 * n0);
+    for (k, v) in per_volume(m) {
+        assert_eq!(v, 8 * before[&k], "volume {k}");
+    }
+    let viol = validate(m);
+    assert!(viol.is_empty(), "{viol:?}");
+    assert!((volume(m) - 9.0 * 1.26 * 1.26).abs() < 1e-12);
+    let map = &layer(&s).maps_from(mesh_id(2))[0].1;
+    assert_eq!(map.fine_len(), 8 * n0);
+    assert!(map.face_map().is_some());
+}
+
+/// A brick meshed with one interval per side: every edge of the mesh lies on a model edge between
+/// two model vertices, so the edge classes must come from the topology.
+#[test]
+fn coarse_brick_with_one_interval_refines() {
+    let mut s = server();
+    script(
+        &mut s,
+        r#"
+let b = model.create_brick(x: 2.0, y: 3.0, z: 4.0)
+mesh.size(targets: all volumes, size: 10.0)
+let au = mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+"#,
+    );
+    let n0 = layer(&s).get(mesh_id(1)).expect("mesh").mesh().cell_count();
+    script(&mut s, "mesh.refine(mesh: Mesh#1, levels: 2)");
+    let m = layer(&s).get(mesh_id(3)).expect("level 2").mesh();
+    assert_eq!(m.cell_count(), 64 * n0);
+    assert!(validate(m).is_empty());
+    assert!((volume(m) - 24.0).abs() < 1e-12);
 }
 
 fn cold(ws: &mut Workspace) -> sm_op_api::State {
