@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::{
-    HashQuanta, MeshEntityKind, MeshRead, SerialAlloc, SetMembers, TagValues, topology_hash,
+    CatalogEdit, CellIx, HashQuanta, InstancedView, LevelMap, MeshCatalog, MeshEntityKind,
+    MeshError, MeshRead, SerialAlloc, SetMembers, TagValues, connectivity_hash, topology_hash,
 };
 use sm_op_api::{ApplyCtx, Digest, LayerType, OpError, names};
 use sm_scheme_api::{Plan, SchemeNote};
@@ -81,9 +82,29 @@ impl MeshEntry {
 /// cells, edge table) through `Digest::f64_quantized(v, quanta.param)` and every real tag value
 /// scale-free (40-bit mantissa, relative step about 1e-12). Then the allocator counters. Identity
 /// hashes are therefore platform independent; exact (cache-key) hashes are bit-for-bit.
+///
+/// # Level maps (ACR-LEVELMAP)
+/// The layer is also a [`MeshCatalog`] and [`CatalogEdit`]: [`CatalogEdit::link`] records a
+/// fine-to-coarse [`LevelMap`] between two meshes of the layer (refinement levels and
+/// agglomeration levels are stored the same way), keyed by `(fine, coarse)`. `link` refuses
+/// unknown meshes, a self link, a duplicate pair and a map that is stale for either mesh
+/// (different connectivity since the map was built). A link is dropped when either mesh is
+/// removed or retired, and when [`replace_mesh`](Self::replace_mesh) gives a mesh a different
+/// connectivity. Mutating `MeshEntry::mesh` through [`get_mut`](Self::get_mut) bypasses that
+/// last check; use `replace_mesh`. `insert_mesh`, `insert_view` and `link_extrusion` of the
+/// catalog are `Unsupported`: meshes enter through [`insert_mesh`](fn@insert_mesh).
+///
+/// **Digest, links:** after the allocator counters the digest appends a link section **only when
+/// at least one link exists**: the link count, then per link in `(fine, coarse)` order both ids,
+/// both connectivity hashes, the coarse parent of every fine cell and the face map (a presence
+/// flag, then its entries). A layer with no links digests byte-identically to version 1 without
+/// this section.
 #[derive(Clone, Default)]
 pub struct MeshLayer {
     entries: BTreeMap<EntityId, MeshEntry>,
+    /// Ascending ids of `entries`, kept for [`MeshCatalog::mesh_ids`].
+    ids: Vec<EntityId>,
+    links: BTreeMap<(EntityId, EntityId), LevelMap>,
     alloc: SerialAlloc,
 }
 
@@ -133,6 +154,8 @@ impl MeshLayer {
         alloc_after: SerialAlloc,
     ) -> Result<(), LayerError> {
         self.check_insert(id, &entry, &alloc_after)?;
+        let at = self.ids.partition_point(|x| *x < id);
+        self.ids.insert(at, id);
         self.entries.insert(id, entry);
         self.alloc = alloc_after;
         Ok(())
@@ -172,7 +195,8 @@ impl MeshLayer {
     /// Checked and atomic: the entry must exist, `host` must carry the same `Mesh` id, and
     /// `alloc_after` must not be behind the current allocator for any kind. Selection, plan,
     /// quanta and `stale` of the entry are unchanged. Ids the new host holds beyond the old
-    /// one's must be adopted by the caller (see [`add_mesh_set`]).
+    /// one's must be adopted by the caller (see [`add_mesh_set`]). Level-map links of the mesh
+    /// whose recorded connectivity no longer matches the new host are dropped.
     pub fn replace_mesh(
         &mut self,
         mesh: EntityId,
@@ -180,6 +204,12 @@ impl MeshLayer {
         alloc_after: SerialAlloc,
     ) -> Result<(), LayerError> {
         self.check_replace(mesh, &*host, &alloc_after)?;
+        if self.links.keys().any(|(f, c)| *f == mesh || *c == mesh) {
+            let h = connectivity_hash((*host).as_read());
+            self.links.retain(|(f, c), m| {
+                !((*f == mesh && m.fine_hash() != h) || (*c == mesh && m.coarse_hash() != h))
+            });
+        }
         if let Some(e) = self.entries.get_mut(&mesh) {
             e.mesh = host;
         }
@@ -212,8 +242,14 @@ impl MeshLayer {
     }
 
     /// Remove a mesh (its ids stay allocated; retire them with `ApplyCtx::retire`).
+    /// Links naming the mesh are dropped.
     pub fn remove(&mut self, mesh: EntityId) -> Option<MeshEntry> {
-        self.entries.remove(&mesh)
+        let e = self.entries.remove(&mesh);
+        if e.is_some() {
+            self.ids.retain(|x| *x != mesh);
+            self.links.retain(|(f, c), _| *f != mesh && *c != mesh);
+        }
+        e
     }
 
     /// Mutable access to an entry (mark stale, replace the mesh host).
@@ -289,6 +325,89 @@ fn digest_entry(d: &mut Digest, id: EntityId, e: &MeshEntry) {
     }
 }
 
+/// The link section of the digest (only called when `links` is not empty).
+fn digest_links(d: &mut Digest, links: &BTreeMap<(EntityId, EntityId), LevelMap>) {
+    d.u64(links.len() as u64);
+    for ((f, c), m) in links {
+        d.id(*f);
+        d.id(*c);
+        d.u64(m.fine_hash());
+        d.u64(m.coarse_hash());
+        d.u64(m.fine_len() as u64);
+        for i in 0..m.fine_len() {
+            d.u64(m.coarse_of(CellIx::new(i)).get() as u64);
+        }
+        match m.face_map() {
+            None => {
+                d.u64(0);
+            }
+            Some(fm) => {
+                d.u64(1 + fm.len() as u64);
+                for &x in fm {
+                    d.u64(u64::from(x));
+                }
+            }
+        }
+    }
+}
+
+impl MeshCatalog for MeshLayer {
+    fn mesh_ids(&self) -> &[EntityId] {
+        &self.ids
+    }
+    fn mesh(&self, id: EntityId) -> Option<&dyn MeshRead> {
+        self.entries.get(&id).map(|e| e.mesh())
+    }
+    fn maps_from(&self, fine: EntityId) -> Vec<(EntityId, &LevelMap)> {
+        self.links
+            .iter()
+            .filter(|((f, _), _)| *f == fine)
+            .map(|((_, c), m)| (*c, m))
+            .collect()
+    }
+    fn maps_to(&self, coarse: EntityId) -> Vec<(EntityId, &LevelMap)> {
+        // Keys ascend by fine id, so the result is already in ascending fine id.
+        self.links
+            .iter()
+            .filter(|((_, c), _)| *c == coarse)
+            .map(|((f, _), m)| (*f, m))
+            .collect()
+    }
+    fn views(&self) -> &[InstancedView] {
+        &[]
+    }
+}
+
+impl CatalogEdit for MeshLayer {
+    /// Meshes enter the layer through [`insert_mesh`](fn@insert_mesh) (it adopts their ids).
+    fn insert_mesh(&mut self, _mesh: Box<dyn MeshRead>) -> sm_mesh_api::Result<()> {
+        Err(MeshError::Unsupported("MeshLayer::insert_mesh".into()))
+    }
+
+    fn link(&mut self, map: LevelMap) -> sm_mesh_api::Result<()> {
+        let (f, c) = (map.fine_id(), map.coarse_id());
+        if f == c {
+            return Err(MeshError::Hierarchy(
+                "a mesh cannot be linked to itself".into(),
+            ));
+        }
+        let fm = self.entries.get(&f).ok_or(MeshError::UnknownMesh(f))?;
+        let cm = self.entries.get(&c).ok_or(MeshError::UnknownMesh(c))?;
+        map.check_meshes(fm.mesh(), cm.mesh())?;
+        if self.links.contains_key(&(f, c)) {
+            return Err(MeshError::Hierarchy(
+                "these meshes are already linked".into(),
+            ));
+        }
+        self.links.insert((f, c), map);
+        Ok(())
+    }
+
+    fn insert_view(&mut self, _view: InstancedView) -> sm_mesh_api::Result<()> {
+        Err(MeshError::Unsupported("MeshLayer::insert_view".into()))
+    }
+}
+
 impl LayerType for MeshLayer {
     const NAME: &'static str = names::MESHES;
     const DEPENDS_ON: &'static [&'static str] = &[names::MODEL];
@@ -301,6 +420,9 @@ impl LayerType for MeshLayer {
         for (kind, next) in self.alloc.state() {
             d.u64(kind as u64);
             d.u64(next);
+        }
+        if !self.links.is_empty() {
+            digest_links(d, &self.links);
         }
     }
 
@@ -319,6 +441,9 @@ impl LayerType for MeshLayer {
     fn on_retired(&mut self, ids: &[EntityId]) {
         let set = SortedIds::new(ids);
         self.entries.retain(|k, _| !set.contains(*k));
+        self.ids.retain(|k| !set.contains(*k));
+        self.links
+            .retain(|(f, c), _| !set.contains(*f) && !set.contains(*c));
         for e in self.entries.values_mut() {
             if !e.stale && e.selection.iter().any(|s| set.contains(*s)) {
                 e.stale = true;
