@@ -52,6 +52,10 @@ pub enum FemError {
     /// The format writes several files; use `export_files`.
     #[error("format '{0}' writes several files; use export_files")]
     MultiFile(&'static str),
+    /// The export selection (`select`) cannot be applied: an unknown set name, a dimension that
+    /// does not match, an empty selection or a cut that cannot be built.
+    #[error("select: {0}")]
+    Select(#[from] sm_meshio::select::SelectError),
     /// The Exodus writer failed.
     #[error("exodus writer: {0}")]
     Exodus(#[from] sm_exodus::ExodusError),
@@ -74,6 +78,13 @@ impl FemError {
             Self::Mesh(_) => "mesh",
             Self::Meshio(_) => "meshio",
             Self::MultiFile(_) => "multi-file-format",
+            Self::Select(
+                sm_meshio::select::SelectError::UnknownSet { .. }
+                | sm_meshio::select::SelectError::Dimension { .. }
+                | sm_meshio::select::SelectError::Empty,
+            ) => "bad-request",
+            Self::Select(sm_meshio::select::SelectError::Unsupported(_)) => "unsupported",
+            Self::Select(_) => "select",
             Self::Exodus(_) => "exodus",
             Self::Io(_) => "io",
         }
