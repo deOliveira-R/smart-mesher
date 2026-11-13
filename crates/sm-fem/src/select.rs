@@ -39,7 +39,7 @@ pub fn check_select(lowered: &Lowered, sel: &Select) -> Result<(), FemError> {
 /// nodesets asked for; region sets and deck face sets follow the kept cells and keep their names
 /// (a set with nothing left is dropped). Deck records whose sets are gone, declared element types
 /// of dropped blocks and regions that lost all cells are dropped with them. A selection that
-/// keeps everything ([`Select::is_all`]) is only checked and returns `lowered` unchanged.
+/// keeps every cell and set ([`Select::keeps_all_cells_and_sets`]) is only checked and returns `lowered` unchanged.
 ///
 /// Returns the new lowering and the notes of the selection (`export.empty_selection` for a named
 /// sideset or nodeset with nothing in it).
@@ -49,7 +49,8 @@ pub fn check_select(lowered: &Lowered, sel: &Select) -> Result<(), FemError> {
 /// high-order cells or a cut the classification rules refuse.
 pub fn select_lowered(lowered: Lowered, sel: &Select) -> Result<(Lowered, Vec<String>), FemError> {
     let roles = roles_of(&lowered);
-    if sel.is_all() {
+    if sel.keeps_all_cells_and_sets() {
+        check((*lowered.mesh).as_read(), sel, &roles)?;
         return Ok((lowered, Vec::new()));
     }
     let out = apply((*lowered.mesh).as_read(), sel, &roles)?;

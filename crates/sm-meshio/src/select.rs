@@ -76,6 +76,12 @@ impl Select {
     pub fn is_all(&self) -> bool {
         *self == Self::default()
     }
+
+    /// True when every block, sideset and nodeset is kept (`dimension` is only a check), so the
+    /// mesh is written as it is.
+    pub fn keeps_all_cells_and_sets(&self) -> bool {
+        self.blocks == Pick::All && self.sidesets == Pick::All && self.nodesets == Pick::All
+    }
 }
 
 /// Which sets are not blocks, sidesets or nodesets of the selection.

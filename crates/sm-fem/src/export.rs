@@ -262,7 +262,7 @@ fn prepare(state: &State, req: &ExportRequest) -> Result<Prepared, FemError> {
             req.format.name()
         )));
     }
-    let cut = !sel.is_all();
+    let cut = !sel.keeps_all_cells_and_sets();
     if !cut {
         check_select(&lowered, sel)?;
         return Ok(Prepared { id, lowered, notes: Vec::new(), cut });

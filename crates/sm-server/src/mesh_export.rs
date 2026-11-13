@@ -200,7 +200,7 @@ pub(crate) fn write_smsh_split(
         Some(s) => sm_fem::select_lowered(lowered, s).map_err(|e| SessionError::from(&e))?,
         None => (lowered, Vec::new()),
     };
-    let cut = sel.is_some_and(|s| !s.is_all());
+    let cut = sel.is_some_and(|s| !s.keeps_all_cells_and_sets());
     let id = entry.mesh().mesh_id();
     let mut maps = sm_fem::level_maps_of(state, id);
     if cut && !maps.is_empty() {

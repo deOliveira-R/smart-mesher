@@ -159,3 +159,33 @@ fn export_is_deterministic_with_a_link() {
     };
     assert_eq!(build(), build());
 }
+
+#[test]
+fn a_dimension_only_select_keeps_the_level_map_and_the_plain_bytes() {
+    use sm_meshio::select::{Dimension, Select};
+    let mut s = session();
+    run(&mut s, &Pair {});
+    run(&mut s, &Link {});
+    let sel = Select { dimension: Dimension::Three, ..Default::default() };
+    for n in [1, 2] {
+        let plain = smsh_of(&s, mesh_id(n));
+        let mut out = Vec::new();
+        export(
+            s.state(),
+            &ExportRequest::new(ExportFormat::Smsh).mesh(mesh_id(n)).select(sel.clone()),
+            &mut out,
+        )
+        .expect("export");
+        assert_eq!(out, plain);
+        let d = SmshFile::parse(&out).expect("parse").decode().expect("decode");
+        assert_eq!(d.level_maps.len(), 1);
+    }
+    // A wrong dimension is still refused: the check runs.
+    let bad = Select { dimension: Dimension::Two, ..Default::default() };
+    let r = export(
+        s.state(),
+        &ExportRequest::new(ExportFormat::Smsh).mesh(mesh_id(1)).select(bad),
+        &mut Vec::new(),
+    );
+    assert!(r.is_err());
+}
