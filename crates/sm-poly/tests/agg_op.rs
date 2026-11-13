@@ -73,11 +73,19 @@ impl TypedOp for Insert {
         let mut alloc = before.clone();
         let vols = |n: u64| (1..=n).map(|v| id(EntityKind::TopoVolume, v)).collect::<Vec<_>>();
         let entry = match self.kind.as_str() {
-            "dual6" => {
-                let f = meshes::tet_block([6, 6, 6], [1.0; 3]).expect("tet_block");
+            "dual6" | "dual4" => {
+                let n = if self.kind == "dual6" { 6 } else { 4 };
+                let f = meshes::tet_block([n, n, n], [1.0; 3]).expect("tet_block");
                 let o = PolyOptions::new().with_all_polyhedra(true).with_dual(DualPoints::Circumcentric);
                 let (fin, _) = dualize(&f.mesh, &o, &VertexClassResolver, sm_mesh::MeshBuilder::new(), &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
                 MeshEntry::new(Box::new(fin.mesh), vols(1), None, quanta)
+            }
+            "bary2" => {
+                // barycentric dual (the default `mesh.to_poly` rule) of two tet volumes, with an edge table
+                let f = meshes::tet_block_two_volumes([4, 2, 2], [1.0; 3], 2).expect("two volumes");
+                let o = PolyOptions::new().with_all_polyhedra(true).with_edges(Some(true));
+                let (fin, _) = dualize(&f.mesh, &o, &VertexClassResolver, sm_mesh::MeshBuilder::new(), &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
+                MeshEntry::new(Box::new(fin.mesh), vols(2), None, quanta)
             }
             "two" => {
                 alloc = SerialAlloc::new();
@@ -200,7 +208,7 @@ fn lattice_blocks_give_the_hand_count_and_an_exact_map() {
     let fine = mesh_of(&s, m1());
     assert_eq!(fine.as_read().cell_count(), 343);
     // Bins of width 2 from 0.5 on: per axis the dual cells {0}, {1,2}, {3,4}, {5,6} (widths 0.5, 2, 2, 1.5).
-    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"blocks": {"size": [2.0, 2.0, 2.0], "origin": [0.5, 0.5, 0.5]}}})).expect("agglomerate");
+    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": [2.0, 2.0, 2.0], "origin": [0.5, 0.5, 0.5]}})).expect("agglomerate");
     assert_eq!(d.outputs["mesh"], vec![m2()]);
     assert_eq!(d.successors[&m1()], vec![m1(), m2()]);
     let coarse = mesh_of(&s, m2());
@@ -250,7 +258,7 @@ fn per_pin_mode_gives_one_coarse_cell_per_pin() {
     let mut s = session_with("pins");
     let fine = mesh_of(&s, m1());
     assert_eq!(fine.as_read().cell_count(), 12 * 12 * 2);
-    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"per_pin": {"group": "lattice"}}})).expect("per pin");
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice"}})).expect("per pin");
     let coarse = mesh_of(&s, m2());
     let c = coarse.as_read();
     assert_eq!(c.cell_count(), PINS * PINS, "exactly one coarse cell per pin");
@@ -286,7 +294,7 @@ fn per_pin_mode_gives_one_coarse_cell_per_pin() {
 fn per_pin_by_volume_refuses_the_nonconvex_moderator_ring() {
     let mut s = session_with("pins");
     let h = s.state().hash();
-    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"per_pin": {"group": "volume"}}})).expect_err("a ring is not a convex cell");
+    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "volume"}})).expect_err("a ring is not a convex cell");
     assert!(e.to_string().contains("coarse"), "{e}");
     assert_eq!(s.state().hash(), h, "a refusal leaves the state untouched");
 }
@@ -294,7 +302,7 @@ fn per_pin_by_volume_refuses_the_nonconvex_moderator_ring() {
 #[test]
 fn per_pin_with_several_cells_per_pin_splits_within_the_pin() {
     let mut s = session_with("pins");
-    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"per_pin": {"group": "lattice", "cells_per_group": 4}}})).expect("per pin x4");
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice", "cells_per_group": 4}})).expect("per pin x4");
     let coarse = mesh_of(&s, m2());
     let c = coarse.as_read();
     assert!(c.cell_count() >= 4 * PINS * PINS && c.cell_count() < 288);
@@ -321,7 +329,7 @@ fn per_pin_with_several_cells_per_pin_splits_within_the_pin() {
 #[test]
 fn target_mode_never_merges_across_volumes_and_keeps_the_interface() {
     let mut s = session_with("two");
-    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 2}}})).expect("target");
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 2}})).expect("target");
     let coarse = mesh_of(&s, m2());
     let c = coarse.as_read();
     assert_eq!(c.cell_count(), 2, "each 2 x 2 x 2 volume is one box");
@@ -338,7 +346,7 @@ fn target_mode_never_merges_across_volumes_and_keeps_the_interface() {
     check_link(&s, m1(), m2());
     // a target in between: 3 cells cannot be reached without crossing, so the count is 3..=16
     let mut s = session_with("two");
-    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 6}}})).expect("target 6");
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 6}})).expect("target 6");
     let c6 = mesh_of(&s, m2());
     assert_eq!(c6.as_read().cell_count(), 6);
     assert!(rel(vol(c6.as_read()), 16.0) < 1e-12);
@@ -348,11 +356,11 @@ fn target_mode_never_merges_across_volumes_and_keeps_the_interface() {
 #[test]
 fn keep_source_false_retires_the_fine_mesh_and_drops_links() {
     let mut s = session_with("two");
-    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 4}}})).expect("first");
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 4}})).expect("first");
     assert_eq!(s.state().layer::<MeshLayer>().unwrap().maps_from(m1()).len(), 1);
     // coarsen the coarse mesh and retire it: the (Mesh#1, Mesh#2) link goes with Mesh#2, and no
     // link is recorded for a retired fine mesh
-    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#2", "mode": {"target": {"cells": 2}}, "keep_source": false})).expect("second");
+    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#2", "mode": {"kind": "target", "cells": 2}, "keep_source": false})).expect("second");
     let layer = s.state().layer::<MeshLayer>().unwrap();
     assert!(layer.get(m2()).is_none() && layer.get(m1()).is_some());
     assert!(layer.maps_from(m1()).is_empty(), "the link of a retired mesh is dropped");
@@ -365,12 +373,12 @@ fn keep_source_false_retires_the_fine_mesh_and_drops_links() {
 #[test]
 fn refusals_are_atomic() {
     for (kind, params) in [
-        ("two", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 0}}})),
-        ("two", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 16}}})),
-        ("two", json!({"mesh": "Mesh#1", "mode": {"blocks": {"size": [0.0, 1.0, 1.0]}}})),
-        ("two", json!({"mesh": "Mesh#1", "mode": {"blocks": {"size": [0.5, 0.5, 0.5]}}})),
-        ("two", json!({"mesh": "Mesh#1", "mode": {"per_pin": {"group": "volume", "cells_per_group": 0}}})),
-        ("two", json!({"mesh": "Mesh#9", "mode": {"target": {"cells": 2}}})),
+        ("two", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 0}})),
+        ("two", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 16}})),
+        ("two", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": [0.0, 1.0, 1.0]}})),
+        ("two", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": [0.5, 0.5, 0.5]}})),
+        ("two", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "volume", "cells_per_group": 0}})),
+        ("two", json!({"mesh": "Mesh#9", "mode": {"kind": "target", "cells": 2}})),
     ] {
         let mut s = session_with(kind);
         let h = s.state().hash();
@@ -381,7 +389,7 @@ fn refusals_are_atomic() {
 
 #[test]
 fn replay_and_fork_give_equal_hashes() {
-    let op = json!({"mesh": "Mesh#1", "mode": {"per_pin": {"group": "lattice"}}});
+    let op = json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice"}});
     let mut s = session_with("pins");
     let h_insert = s.position().expect("head");
     run_json(&mut s, "mesh.agglomerate", op.clone()).expect("agglomerate");
@@ -423,7 +431,7 @@ fn determinism_one_thread_vs_default() {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
         pool.install(|| {
             let mut s = session_with("dual6");
-            run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"target": {"cells": 100}}})).expect("agglomerate");
+            run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 100}})).expect("agglomerate");
             let c = mesh_of(&s, m2());
             (s.state().hash(), sm_mesh_api::topology_hash(c.as_read()), sm_mesh_api::geometry_hash(c.as_read()), c.as_read().cell_count())
         })
@@ -431,6 +439,7 @@ fn determinism_one_thread_vs_default() {
     let a = run_once(1);
     assert_eq!(a, run_once(1));
     assert_eq!(a, run_once(4));
+    eprintln!("target 100 on the 343-cell dual: {} coarse cells", a.3);
     assert!(a.3 >= 100);
 }
 
@@ -448,7 +457,7 @@ proptest::proptest! {
         let mut s = session_with(&format!("hex:{}:{}:{}", n[0], n[1], n[2]));
         let sz = size.map(|x| x as f64);
         let origin = shift.map(|x| x as f64);
-        run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"blocks": {"size": sz, "origin": origin}}})).expect("agglomerate");
+        run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": sz, "origin": origin}})).expect("agglomerate");
         let coarse = mesh_of(&s, m2());
         let c = coarse.as_read();
         proptest::prop_assert!(c.cell_count() < n[0] * n[1] * n[2]);
@@ -459,4 +468,73 @@ proptest::proptest! {
         }
         check_link(&s, m1(), m2());
     }
+}
+
+#[test]
+fn literal_4x4x4_lattice_has_one_cube_of_volume_eight() {
+    // The draft's 4x4x4 lattice (125 dual cells: widths 0.5, 1, 1, 1, 0.5 per axis). Blocks of 2
+    // from 0.5 give per axis {0}, {1,2}, {3,4} = widths 0.5, 2, 1.5, so 27 coarse cells and ONE
+    // cube of volume 8 (not 8): 8 cubes need two interior 2-blocks per axis, i.e. 6 interior dual
+    // cells per axis, the 6x6x6 lattice of the other test.
+    let mut s = session_with("dual4");
+    assert_eq!(mesh_of(&s, m1()).as_read().cell_count(), 125);
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": [2.0, 2.0, 2.0], "origin": [0.5, 0.5, 0.5]}})).expect("agglomerate");
+    let coarse = mesh_of(&s, m2());
+    let c = coarse.as_read();
+    assert_eq!(c.cell_count(), 27);
+    assert!(rel(vol(c), 64.0) < 1e-12);
+    let eights = (0..27).filter(|i| (cell_volume(c, CellIx::new(*i)) - 8.0).abs() < 1e-12).count();
+    assert_eq!(eights, 1);
+    // 3 * 3 * 3 * 4 faces
+    assert_eq!(c.count(MeshEntityKind::Face), 3 * 3 * 4 * 3);
+    check_link(&s, m1(), m2());
+    quality(c);
+}
+
+#[test]
+fn barycentric_dual_with_an_edge_table_and_two_volumes() {
+    let s0 = session_with("bary2");
+    let fine = mesh_of(&s0, m1());
+    assert!(fine.as_read().edges().is_some(), "the source carries an edge table");
+    let nf = fine.as_read().cell_count();
+    // One coarse cell per volume: barycentric dual cells are not all convex and their union is not
+    // either, so the default gate refuses; convex: false builds it when the union is star-shaped.
+    let mut s = session_with("bary2");
+    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "volume"}}));
+    eprintln!("bary2 per_pin volume, convex on: {:?}", e.as_ref().err().map(|e| e.to_string()));
+    let mut s = session_with("bary2");
+    let r = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "convex": false, "mode": {"kind": "per_pin", "group": "volume"}}));
+    eprintln!("bary2 per_pin volume, convex off: {:?}", r.as_ref().err().map(|e| e.to_string()));
+    r.expect("two star-shaped volumes");
+    let c = mesh_of(&s, m2());
+    assert_eq!(c.as_read().cell_count(), 2);
+    for i in 0..2 {
+        assert!(rel(cell_volume(c.as_read(), CellIx::new(i)), 8.0) < 1e-12);
+    }
+    assert!(c.as_read().edges().is_some(), "the edge table is carried");
+    check_link(&s, m1(), m2());
+    // target mode on the barycentric dual: report what the convex gate allows
+    let mut s = session_with("bary2");
+    let r = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 2}}));
+    eprintln!("bary2 ({nf} cells) target 2 under the convex gate: {:?}", r.as_ref().map(|_| mesh_of(&s, m2()).as_read().cell_count()).map_err(|e| e.to_string()));
+}
+
+#[test]
+fn lattice_group_without_tags_is_refused() {
+    let mut s = session_with("two");
+    let h = s.state().hash();
+    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice"}})).expect_err("no lattice tags");
+    assert!(e.to_string().contains("lattice tag"), "{e}");
+    assert_eq!(s.state().hash(), h);
+}
+
+#[test]
+fn blocks_report_dissolved_groups() {
+    // 2 x 2 x 2 bins over the two-volume block: nothing dissolves; over the pin lattice with bins
+    // of 3, a bin cuts the fuel/moderator pieces into L shapes that are not convex.
+    let mut s = session_with("pins");
+    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "blocks", "size": [3.0, 3.0, 2.0]}})).expect("blocks");
+    let w: Vec<_> = d.diagnostics.iter().filter(|x| x.code == "agglomerate.dissolved").collect();
+    eprintln!("blocks 3x3x2 on the pins: {} cells, diagnostics {:?}", mesh_of(&s, m2()).as_read().cell_count(), d.diagnostics.iter().map(|x| x.code.clone()).collect::<Vec<_>>());
+    assert!(!w.is_empty(), "L-shaped bin parts are dissolved and reported");
 }

@@ -14,7 +14,7 @@ use crate::error::PolyError;
 
 /// How the fine cells are grouped into coarse cells.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AggMode {
     /// Greedy pairwise merging down to about `cells` coarse cells (never fewer; fewer merges if
     /// the convex rule stops it). Never merges across model volumes.
@@ -69,7 +69,8 @@ pub enum PinGroup {
 /// plane) stay separate coarse faces, except in `per_pin` mode, where they merge into one face of
 /// the class with the most area. Merge gate: the exact `sm-rt` convex rule on the merged cell (no separate
 /// concavity number); `convex: false` lifts it for `blocks` and `per_pin` with one cell per pin,
-/// which then still need a valid (star-shaped) coarse cell.
+/// which then still need a valid (star-shaped) coarse cell. Block groups that fail the rule are
+/// left as single cells and reported as the warning `agglomerate.dissolved`.
 ///
 /// With the default `keep_source` the fine mesh stays and the map is recorded in the mesh layer
 /// (`link`); with `keep_source: false` the fine mesh is retired and, with it, the link (a map
@@ -118,21 +119,25 @@ fn regions(src: &dyn MeshRead) -> (Vec<u32>, usize) {
 
 type PinKey = (Vec<(String, [i32; 3])>, Option<EntityId>);
 
-fn pin_labels(src: &dyn MeshRead, model: &ModelLayer, group: PinGroup) -> (Vec<u64>, usize) {
+fn pin_labels(src: &dyn MeshRead, model: &ModelLayer, group: PinGroup) -> (Vec<u64>, usize, usize) {
     let mut ids: BTreeMap<PinKey, u64> = BTreeMap::new();
+    let mut tagged = 0usize;
     let lab = (0..src.count(MeshEntityKind::Cell))
         .map(|c| {
             let vol = src.cell_class(CellIx::new(c)).entity;
             let tag = (group == PinGroup::Lattice).then(|| model.model().region_tag(vol)).flatten().filter(|t| !t.slots.is_empty());
             let key: PinKey = match tag {
-                Some(t) => (t.slots.iter().map(|(n, s)| (n.clone(), [s.i, s.j, s.k])).collect(), None),
+                Some(t) => {
+                    tagged += 1;
+                    (t.slots.iter().map(|(n, s)| (n.clone(), [s.i, s.j, s.k])).collect(), None)
+                }
                 None => (Vec::new(), Some(vol)),
             };
             let n = ids.len() as u64;
             *ids.entry(key).or_insert(n)
         })
         .collect();
-    (lab, ids.len())
+    (lab, ids.len(), tagged)
 }
 
 fn group_count(g: &[u32]) -> usize {
@@ -140,7 +145,8 @@ fn group_count(g: &[u32]) -> usize {
 }
 
 impl MeshAgglomerate {
-    fn groups(&self, src: &dyn MeshRead, model: &ModelLayer) -> Result<(Vec<u32>, usize), OpError> {
+    fn groups(&self, src: &dyn MeshRead, model: &ModelLayer) -> Result<(Vec<u32>, usize, usize), OpError> {
+        let mut dissolved = 0;
         let convex = self.convex != Some(false);
         let nc = src.count(MeshEntityKind::Cell);
         let g = match &self.mode {
@@ -161,14 +167,23 @@ impl MeshAgglomerate {
                 }
                 let (region, _) = regions(src);
                 let g = coarsen::group_blocks(src, &region, *size, o);
-                if convex { coarsen::dissolve_nonconvex(src, &g, group_count(&g)).0 } else { g }
+                if convex {
+                    let (g, d) = coarsen::dissolve_nonconvex(src, &g, group_count(&g));
+                    dissolved = d;
+                    g
+                } else {
+                    g
+                }
             }
             AggMode::PerPin { group, cells_per_group } => {
                 let k = cells_per_group.unwrap_or(1);
                 if k == 0 {
                     return Err(OpError::Invalid("cells_per_group must be at least 1".into()));
                 }
-                let (lab, np) = pin_labels(src, model, *group);
+                let (lab, np, tagged) = pin_labels(src, model, *group);
+                if *group == PinGroup::Lattice && tagged == 0 {
+                    return Err(OpError::Invalid("group: lattice needs volumes with a lattice tag (model.lattice_tag); none of the mesh's volumes has one".into()));
+                }
                 let g = coarsen::components(src, &lab);
                 if group_count(&g) != np {
                     return Err(OpError::Failed("a pin group is not face-connected (it has more than one connected part)".into()));
@@ -180,7 +195,7 @@ impl MeshAgglomerate {
         if n == nc {
             return Err(OpError::Failed("nothing to agglomerate: no group has more than one cell (the convex rule may forbid every merge)".into()));
         }
-        Ok((g, n))
+        Ok((g, n, dissolved))
     }
 }
 
@@ -204,7 +219,10 @@ impl TypedOp for MeshAgglomerate {
             return Err(OpError::Invalid(format!("{source} has inactive cells")));
         }
         ctx.step(0, 3, "grouping")?;
-        let (group_of, n) = self.groups(src, &model)?;
+        let (group_of, n, dissolved) = self.groups(src, &model)?;
+        if dissolved > 0 {
+            ctx.warn("agglomerate.dissolved", format!("{dissolved} block group(s) failed the convex rule and were left as single cells"), &[source]);
+        }
         ctx.step(1, 3, "building")?;
         let mut alloc: SerialAlloc = alloc0.clone();
         let (fin, face_map) = coarsen::build_coarse(src, &group_of, n, matches!(self.mode, AggMode::PerPin { .. }), MeshBuilder::new(), &mut alloc).map_err(refuse)?;
