@@ -276,7 +276,8 @@ pub enum Carrier {
     Surface(SurfaceCarrier),
     /// A volume described as a CSG cell (intersection of half-spaces over stored surfaces).
     Csg(CsgCell),
-    /// A virtual face made of host faces (decomposition overlay): the member host faces.
+    /// A virtual face (or, for an edge, a virtual curve) made of host cells (decomposition
+    /// overlay): the member host faces, or the member host edges in chain order.
     Composite(SmallVec<[EntityId; 4]>),
 }
 
