@@ -289,7 +289,7 @@ impl TypedOp for ModelCopy {
         // Groups of volumes that share one new body per copy: each selected body, then each
         // selected volume not already covered by a selected body.
         let (groups, snap) = {
-            let topo = ctx.layer::<ModelLayer>()?.topo();
+            let topo = ctx.layer::<ModelLayer>()?.host();
             let mut bodies: BTreeSet<EntityId> = BTreeSet::new();
             let mut loose: BTreeSet<EntityId> = BTreeSet::new();
             for &e in &self.entities {

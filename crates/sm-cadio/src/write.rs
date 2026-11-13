@@ -393,10 +393,10 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
 /// As [`write_step`], plus [`StepError::Export`] when the state has no `model` layer.
 pub fn export_step(state: &State, bodies: Option<&[EntityId]>, o: &WriteOptions, w: &mut dyn Write) -> Result<WriteReport, StepError> {
     let layer = state.layer::<ModelLayer>().ok_or_else(|| export_err("the state has no model layer"))?;
-    let mut report = write_step(layer.topo(), bodies, o, w)?;
+    let mut report = write_step(layer.host(), bodies, o, w)?;
     // Colors and names are not written: locate each one on an exported cell. Only the report
     // changes, never the bytes. `write_step` succeeded, so the selection resolves.
-    let view = layer.topo();
+    let view = layer.host();
     let volumes = volumes_of(view, bodies)?;
     let mut exported: BTreeSet<EntityId> = BTreeSet::new();
     // Closure of the selected volumes down to their edges and vertices.

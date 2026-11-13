@@ -230,7 +230,7 @@ fn write_frames_and_tags(ctx: &mut ApplyCtx<'_>, placed: &Placed, built: &partit
 type Placed3 = ([i32; 3], Vec<EntityId>);
 
 fn live_bodies(ctx: &ApplyCtx<'_>) -> Result<BTreeSet<EntityId>, OpError> {
-    let topo = ctx.layer::<ModelLayer>()?.topo();
+    let topo = ctx.layer::<ModelLayer>()?.host();
     Ok(topo.cells(Dim::Body).iter().copied().filter(|b| topo.is_alive(*b)).collect())
 }
 
@@ -367,7 +367,7 @@ fn build_reusing(ctx: &mut ApplyCtx<'_>, placed: &Placed, plan: &ReusePlan, bopt
             };
             // Slots reached by runs from slots already placed: x, then y, then z.
             let record = |ctx: &mut ApplyCtx<'_>, slot: [i32; 3], bodies: &[EntityId], elems: &mut Vec<Vol>, have: &mut BTreeMap<[i32; 3], Vec<EntityId>>| -> Result<(), OpError> {
-                let topo = ctx.layer::<ModelLayer>()?.topo();
+                let topo = ctx.layer::<ModelLayer>()?.host();
                 for (v, &nb) in b.vols.iter().zip(bodies) {
                     let vs = volumes_of(topo, nb);
                     let [vol] = vs.as_slice() else { return Err(OpError::Failed(format!("csg.copy: a copied body holds {} volumes", vs.len()))) };

@@ -200,7 +200,7 @@ fn ring_radii(spec: &RingSpec, r_in: f64, r_out: f64, tol: f64, v: EntityId) -> 
 /// `ops.rs`): no mesh, no decomposition, no instancing.
 fn guard(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let layer = ctx.layer::<ModelLayer>()?;
-    let topo = layer.topo();
+    let topo = layer.host();
     let model = layer.model();
     let decomposed = model.decomposition().decomposed_volumes();
     let mesh = ctx.state().layer::<MeshLayer>();
@@ -346,7 +346,7 @@ impl TypedOp for SubdividePin {
         let mut plan: Vec<(EntityId, Vec<f64>)> = Vec::new();
         {
             let layer = ctx.layer::<ModelLayer>()?;
-            let topo = layer.topo();
+            let topo = layer.host();
             let tol = layer.tolerance().linear.max(1e-9);
             for &v in &vols {
                 if let Some(t) = layer.model().region_tag(v)

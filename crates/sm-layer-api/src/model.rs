@@ -8,7 +8,7 @@ use sm_geom_api::ModelTolerance;
 use sm_mesh_api::HashQuanta;
 use sm_model_api::{IdAlloc, Model};
 use sm_op_api::{ApplyCtx, Digest, LayerType, OpError, State, names};
-use sm_topo_api::{CellComplex, Dim, HashWord, OpId, OpSummary, TopologyView};
+use sm_topo_api::{CellComplex, Dim, HashWord, OpId, OpSummary, Overlay, TopologyView};
 
 use crate::error::{LayerError, LayerResultExt};
 use crate::host::TopoHost;
@@ -32,6 +32,37 @@ use crate::host::TopoHost;
 /// Two hosts that emit the same word stream (the reference and the production store) give the
 /// same layer hash.
 ///
+/// **Overlay section (ACR-V1):** only when an overlay is set (`Some`), after `next_op` and before
+/// the pending marker: the stream tag `3`, then the bytes of
+/// `OverlayData::write_canonical(.., tolerance)` (`Digest::bytes`), which cover the host
+/// revision, every recorded virtual op and the id counters. A layer that never had an overlay
+/// digests exactly as before. An overlay with no ops still differs from none (its counters
+/// are state), so `clear_overlay` restores the view but a timeline undo restores the hash.
+///
+/// # Virtual topology (ACR-V1)
+/// The layer may hold one shared [`Overlay`] (`Option<Arc<Overlay>>`): the virtual topology
+/// (composites, partitions) of the model, recorded and replayable. [`topo`](Self::topo) returns
+/// the overlay's view when one is set, so meshing and querying code sees composites and
+/// partitions without change; [`host`](Self::host) is the bare host that editing and exporting
+/// code needs. With no overlay the two are the same object. [`topo_txn`] re-applies the
+/// overlay to the edited host (`Overlay::rebase`) and refuses, rolling back, an edit that
+/// breaks it ([`LayerError::OverlayRebase`]). The decomposition's realized splits
+/// (`Model::split_realized`/`unsplit_realized`) take **this** overlay through
+/// [`model_overlay_txn`] / [`ModelLayer::model_and_overlay_mut`], so their persisted cell ids
+/// always resolve.
+///
+/// ## `topo()` call-site audit (ACR-V1)
+/// *Editing / exporting* (switched to `host()`): `sm-boolean` (`guard_volumes`,
+/// `volumes_of_bodies`, merge, merge_check, `WebcutPlane`, `WebcutSurface`, `subdivide`
+/// guard and pin planning), `sm-model` (`xform::select`, `copy`, `xform2` anchor and rotation
+/// frame), `sm-cadio` (`export_step`, the export query's alive check), `sm-csgbrep`
+/// (`live_bodies`, `csg.copy` record), `sm-server` (`facets_of_model`, `source: model`
+/// export of real geometry). *Meshing / querying* (keep `topo()`): `sm-mesher` (plan, auto,
+/// census, intent, volfit, decompose queries), `sm-fem` lowering, `sm-smooth`, `sm-poly`,
+/// `sm-tess` query, `sm-view`, `sm-rt` overlaps, `sm-diag` volume report, `sm-model` queries
+/// (`topo.related`, entity listing, measure). `model_txn`'s closure gets the host view
+/// (model tables are keyed on real cells); use [`model_overlay_txn`] for overlay access.
+///
 /// # Known deviations
 /// - Curve and surface store handles (`shapes_mut`) are shape handles, not entities: they are
 ///   never adopted into the entity table and never appear in a `Delta`.
@@ -48,6 +79,8 @@ pub struct ModelLayer {
     next_op: u64,
     /// A `topo_txn` ran and `commit_topology` has not: ids are not adopted yet.
     pending: bool,
+    /// The virtual topology over `topo` (ACR-V1), shared with the decomposition.
+    overlay: Option<Arc<Overlay>>,
 }
 
 impl Default for ModelLayer {
@@ -66,6 +99,7 @@ impl ModelLayer {
             model: Arc::new(Model::new()),
             next_op: 0,
             pending: false,
+            overlay: None,
         }
     }
 
@@ -77,12 +111,80 @@ impl ModelLayer {
             model,
             next_op: 0,
             pending: false,
+            overlay: None,
         }
     }
 
-    /// Read-only topology.
+    /// Read-only topology as meshing and querying code sees it: the overlay's view when an
+    /// overlay is set (virtual composites and partitions included), else the host.
     pub fn topo(&self) -> &dyn TopologyView {
+        match &self.overlay {
+            Some(o) => &**o,
+            None => (*self.topo).as_view(),
+        }
+    }
+
+    /// The bare host topology, without the overlay: what ops that edit or export real geometry
+    /// must read. Same object as [`topo`](Self::topo) when no overlay is set. (A new method
+    /// rather than [`topo_host`](Self::topo_host): that one returns the editable `Arc` for
+    /// readers that keep the host alive, not a view.)
+    pub fn host(&self) -> &dyn TopologyView {
         (*self.topo).as_view()
+    }
+
+    /// The virtual-topology overlay, if one was set.
+    pub fn overlay(&self) -> Option<&Arc<Overlay>> {
+        self.overlay.as_ref()
+    }
+
+    /// Set the overlay, replacing any previous one. It must have been built on this layer's
+    /// current host: same revision and content hash, else [`LayerError::Overlay`].
+    pub fn set_overlay(&mut self, overlay: Overlay) -> Result<(), LayerError> {
+        let host = (*self.topo).as_view();
+        if overlay.is_stale_against(host) || overlay.host_hash() != host.canonical_hash() {
+            return Err(LayerError::Overlay(format!(
+                "built on host revision {} (hash {:#x}), the layer's host is at revision {} (hash {:#x})",
+                overlay.host().revision().0,
+                overlay.host_hash(),
+                host.revision().0,
+                host.canonical_hash()
+            )));
+        }
+        self.overlay = Some(Arc::new(overlay));
+        Ok(())
+    }
+
+    /// Drop the overlay (and its id counters), returning it. The view returns to the host's;
+    /// the digest returns to the no-overlay value.
+    pub fn clear_overlay(&mut self) -> Option<Arc<Overlay>> {
+        self.overlay.take()
+    }
+
+    fn overlay_or_new(&mut self) -> &mut Overlay {
+        let host: Arc<dyn TopologyView> = self.topo.clone();
+        Arc::make_mut(
+            self.overlay
+                .get_or_insert_with(|| Arc::new(Overlay::new(host))),
+        )
+    }
+
+    /// Run `f` on the layer's overlay, creating an empty one over the current host on first
+    /// use. A shared overlay (cloned state) is copied first. Not transactional on its own:
+    /// use [`model_overlay_txn`] from an op.
+    pub fn overlay_mut<R>(&mut self, f: impl FnOnce(&mut Overlay) -> R) -> R {
+        f(self.overlay_or_new())
+    }
+
+    /// Like [`overlay_mut`](Self::overlay_mut), with the model tables as well: the shape
+    /// `Model::split_realized(piece, plane, overlay)` and `unsplit_realized` need.
+    pub fn model_and_overlay_mut<R>(&mut self, f: impl FnOnce(&mut Model, &mut Overlay) -> R) -> R {
+        self.overlay_or_new();
+        let model = Arc::make_mut(&mut self.model);
+        let overlay = self.overlay.as_mut().map(Arc::make_mut);
+        match overlay {
+            Some(o) => f(model, o),
+            None => unreachable!("overlay_or_new just set it"),
+        }
     }
 
     /// The shared topology host, for readers that keep it alive beyond the borrow of the layer
@@ -147,6 +249,12 @@ impl LayerType for ModelLayer {
         let tol = *self.topo.tolerance();
         self.model.canonical_visit(&tol, &mut |w| fold(d, w));
         d.u64(self.next_op);
+        if let Some(o) = &self.overlay {
+            let mut buf = Vec::new();
+            o.data().write_canonical(&mut buf, &tol);
+            d.u64(3);
+            d.bytes(&buf);
+        }
         if self.pending {
             // An uncommitted topo_txn is a bug in the op; make its state visibly different.
             d.u64(u64::MAX);
@@ -157,6 +265,7 @@ impl LayerType for ModelLayer {
         let shapes = self.topo.shapes();
         self.next_op == 0
             && !self.pending
+            && self.overlay.is_none()
             && Dim::ALL.iter().all(|&dim| self.topo.cells(dim).is_empty())
             && shapes.curve_count() == 0
             && shapes.surface_count() == 0
@@ -273,6 +382,9 @@ pub fn topo_txn<R>(
     let saved = Arc::clone(&layer.model);
     let ids_before = saved.ids().clone();
     let live_before = live_model_ids(&saved);
+    // With an overlay the host Arc is shared with it, so `host_mut` clones; keep the old one to
+    // roll back to if the edit breaks the overlay.
+    let saved_topo = layer.overlay.is_some().then(|| Arc::clone(&layer.topo));
     let ran = (|| {
         let host = host_mut(&mut layer.topo).or_op()?;
         host.begin_op(op).or_op()?;
@@ -292,6 +404,17 @@ pub fn topo_txn<R>(
             }
         }
     })();
+    let ran = ran.and_then(|(r, summary)| {
+        if let Some(o) = &layer.overlay {
+            // Follow the edited host: re-apply the recorded virtual ops, or refuse the edit.
+            let host: Arc<dyn TopologyView> = layer.topo.clone();
+            let mut next = (**o).clone();
+            next.rebase(host)
+                .map_err(|e| OpError::from(LayerError::OverlayRebase(e)))?;
+            layer.overlay = Some(Arc::new(next));
+        }
+        Ok((r, summary))
+    });
     match ran {
         Ok((r, summary)) => {
             layer.next_op += 1;
@@ -309,6 +432,10 @@ pub fn topo_txn<R>(
         }
         Err(e) => {
             layer.model = saved;
+            if let Some(t) = saved_topo {
+                // The edit was applied and then refused (overlay rebase): put the host back.
+                layer.topo = t;
+            }
             Err(e)
         }
     }
@@ -523,23 +650,51 @@ pub fn model_txn<R>(
     f: impl FnOnce(&mut Model, &dyn TopologyView) -> Result<R, OpError>,
     roles: impl FnOnce(&R, &[EntityId]) -> Vec<(&'static str, Vec<EntityId>)>,
 ) -> Result<R, OpError> {
-    let (saved, ran) = {
+    model_txn_with(
+        ctx,
+        |layer| f(Arc::make_mut(&mut layer.model), (*layer.topo).as_view()),
+        roles,
+    )
+}
+
+/// [`model_txn`] for edits that also write the layer's [`Overlay`]: `f` gets the model tables
+/// and the overlay (created empty over the host on first use). This is how
+/// `Model::split_realized` / `unsplit_realized` are called, so that the cell ids they persist
+/// resolve in THE layer's overlay (ACR-V1, vtopo finding 3). Same adoption, roles and
+/// atomicity as [`model_txn`]; on `Err` the overlay is restored too (to "none" if it did not
+/// exist). No topology operation is opened and the host is untouched.
+pub fn model_overlay_txn<R>(
+    ctx: &mut ApplyCtx<'_>,
+    f: impl FnOnce(&mut Model, &mut Overlay) -> Result<R, OpError>,
+    roles: impl FnOnce(&R, &[EntityId]) -> Vec<(&'static str, Vec<EntityId>)>,
+) -> Result<R, OpError> {
+    model_txn_with(ctx, |layer| layer.model_and_overlay_mut(f), roles)
+}
+
+fn model_txn_with<R>(
+    ctx: &mut ApplyCtx<'_>,
+    f: impl FnOnce(&mut ModelLayer) -> Result<R, OpError>,
+    roles: impl FnOnce(&R, &[EntityId]) -> Vec<(&'static str, Vec<EntityId>)>,
+) -> Result<R, OpError> {
+    let (saved, saved_overlay, ran) = {
         let layer = ctx.layer_mut::<ModelLayer>()?;
         if layer.pending {
             return Err(pending_error());
         }
         let saved = Arc::clone(&layer.model);
+        let saved_overlay = layer.overlay.clone();
         let ids_before = saved.ids().clone();
         let live_before = live_model_ids(&saved);
-        let ran = f(Arc::make_mut(&mut layer.model), (*layer.topo).as_view()).map(|r| {
+        let ran = f(layer).map(|r| {
             let new_ids = minted(&ids_before, layer.model.ids());
             let removed = removed_ids(&live_before, &new_ids, &layer.model);
             (r, new_ids, removed)
         });
         if ran.is_err() {
             layer.model = Arc::clone(&saved);
+            layer.overlay = saved_overlay.clone();
         }
-        (saved, ran)
+        (saved, saved_overlay, ran)
     };
     let (r, new_ids, removed) = ran?;
     let role_list = roles(&r, &new_ids);
@@ -559,7 +714,9 @@ pub fn model_txn<R>(
     match adopted {
         Ok(()) => Ok(r),
         Err(e) => {
-            ctx.layer_mut::<ModelLayer>()?.model = saved;
+            let layer = ctx.layer_mut::<ModelLayer>()?;
+            layer.model = saved;
+            layer.overlay = saved_overlay;
             Err(e)
         }
     }

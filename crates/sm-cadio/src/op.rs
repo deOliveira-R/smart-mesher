@@ -333,7 +333,7 @@ impl TypedQuery for ExportStepQuery {
         let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer(<ModelLayer as sm_op_api::LayerType>::NAME.to_owned()))?;
         if let Some(list) = &self.bodies {
             for &id in list {
-                if layer.topo().is_alive(id) && !matches!(id.kind(), EntityKind::TopoBody | EntityKind::TopoVolume) {
+                if layer.host().is_alive(id) && !matches!(id.kind(), EntityKind::TopoBody | EntityKind::TopoVolume) {
                     return Err(OpError::WrongKind { id, expected: EntityKind::TopoBody });
                 }
             }
