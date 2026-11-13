@@ -6,10 +6,12 @@
 //! `Lattice::element_center`.
 #[path = "common/csg.rs"]
 mod csg;
+#[path = "common/hex.rs"]
+mod hex;
 
 use csg::*;
-use sm_core::{Aabb, Point3};
-use sm_geom_api::{Frame, HalfSpace};
+use sm_core::Point3;
+use sm_geom_api::HalfSpace;
 use sm_rt::{MeshTrackerBuilder, WorldTracker};
 use sm_rt_api::{
     BoundarySpec, BuildInput, BuildOptions, CellId, ComplementPolicy, ComponentId, ComponentKind, CsgLeafInput, Flow, HierInput, InstancePolicy, Lattice, LatticeKind, LeafInput, RtError, Scratch, Segment,
@@ -19,7 +21,7 @@ use sm_rt_api::{
 const P: f64 = 1.5;
 const RF: f64 = 0.4;
 const ZH: f64 = 2.0;
-const S3: f64 = 1.732_050_807_568_877_2;
+use hex::S3;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Or {
@@ -34,42 +36,13 @@ fn kind(o: Or, z_pitch: f64) -> LatticeKind {
     }
 }
 
-/// Outward unit normals of the six flats, angle `base + 60 k` degrees.
 fn flats(o: Or) -> [[f64; 2]; 6] {
-    let base = if o == Or::X { 0.0f64 } else { 30.0 };
-    std::array::from_fn(|k| {
-        let a = (base + 60.0 * k as f64).to_radians();
-        [a.cos(), a.sin()]
-    })
+    hex::flats(o == Or::X)
 }
 
-/// A pin in a hexagonal prism of flat-to-flat `pitch`: fuel cylinder and the moderator around it;
-/// z in `[-ZH, ZH]`; the leaf bounds are the box circumscribing the prism.
+/// A pin in a hexagonal prism of flat-to-flat `pitch` (fuel radius `RF`, z in `[-ZH, ZH]`).
 fn hex_pin(o: Or, pitch: f64, name: &str) -> Fx {
-    let mut fx = Fx::new(10.0);
-    fx.complement = ComplementPolicy::Outside;
-    let hb = if o == Or::X { [0.5 * pitch, pitch / S3] } else { [pitch / S3, 0.5 * pitch] };
-    fx.bounds = Some(Aabb { lo: p3(-hb[0], -hb[1], -ZH), hi: p3(hb[0], hb[1], ZH) });
-    let cyl = fx.cylinder(Frame::at(p3(0.0, 0.0, 0.0)), RF);
-    let mut sides: Vec<HalfSpace> = flats(o)
-        .iter()
-        .map(|n| {
-            let s = fx.plane(p3(0.5 * pitch * n[0], 0.5 * pitch * n[1], 0.0), v3(n[0], n[1], 0.0));
-            hs(s, true)
-        })
-        .collect();
-    let zlo = fx.plane(p3(0.0, 0.0, -ZH), v3(0.0, 0.0, -1.0));
-    let zhi = fx.plane(p3(0.0, 0.0, ZH), v3(0.0, 0.0, 1.0));
-    sides.push(hs(zlo, true));
-    sides.push(hs(zhi, true));
-    let with = |extra: HalfSpace| {
-        let mut v = sides.clone();
-        v.push(extra);
-        v
-    };
-    fx.cell1(&format!("{name}fuel"), &with(hs(cyl, true)));
-    fx.cell1(&format!("{name}mod"), &with(hs(cyl, false)));
-    fx
+    hex::hex_pin(o == Or::X, pitch, RF, ZH, name)
 }
 
 fn build(spec: &WorldSpec, leaves: &[&Fx]) -> Result<WorldTracker, RtError> {
