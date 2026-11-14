@@ -305,8 +305,12 @@ fn per_pin_with_several_cells_per_pin_splits_within_the_pin() {
     run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice", "cells_per_group": 4}})).expect("per pin x4");
     let coarse = mesh_of(&s, m2());
     let c = coarse.as_read();
-    assert!(c.cell_count() >= 4 * PINS * PINS && c.cell_count() < 288);
+    // Each 4 x 4 x 2 pin (volume 32) splits into 4 equal cells of volume 8.
+    assert_eq!(c.cell_count(), 4 * PINS * PINS);
     assert!(rel(vol(c), 288.0) < 1e-12);
+    for i in 0..c.cell_count() {
+        assert!(rel(cell_volume(c, CellIx::new(i)), 8.0) < 1e-12, "coarse cell {i} has volume {}", cell_volume(c, CellIx::new(i)));
+    }
     check_link(&s, m1(), m2());
     // every coarse cell stays inside one pin
     let layer = s.state().layer::<MeshLayer>().unwrap();
@@ -497,26 +501,60 @@ fn barycentric_dual_with_an_edge_table_and_two_volumes() {
     let fine = mesh_of(&s0, m1());
     assert!(fine.as_read().edges().is_some(), "the source carries an edge table");
     let nf = fine.as_read().cell_count();
-    // One coarse cell per volume: barycentric dual cells are not all convex and their union is not
-    // either, so the default gate refuses; convex: false builds it when the union is star-shaped.
+    // One coarse cell per volume. The union of the barycentric dual cells of a 2 x 2 x 2 box is
+    // the box itself, so it passes the convex gate with the default `convex: true`, and with
+    // `convex: false` the result is the same (the gate only matters for non-convex unions).
     let mut s = session_with("bary2");
-    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "volume"}}));
-    eprintln!("bary2 per_pin volume, convex on: {:?}", e.as_ref().err().map(|e| e.to_string()));
+    run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "volume"}})).expect("the gate accepts the box unions");
+    let gated: Vec<f64> = {
+        let c = mesh_of(&s, m2());
+        (0..c.as_read().cell_count()).map(|i| cell_volume(c.as_read(), CellIx::new(i))).collect()
+    };
+    assert_eq!(gated.len(), 2);
     let mut s = session_with("bary2");
     let r = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "convex": false, "mode": {"kind": "per_pin", "group": "volume"}}));
-    eprintln!("bary2 per_pin volume, convex off: {:?}", r.as_ref().err().map(|e| e.to_string()));
     r.expect("two star-shaped volumes");
     let c = mesh_of(&s, m2());
     assert_eq!(c.as_read().cell_count(), 2);
     for i in 0..2 {
-        assert!(rel(cell_volume(c.as_read(), CellIx::new(i)), 8.0) < 1e-12);
+        let v = cell_volume(c.as_read(), CellIx::new(i));
+        assert!(rel(v, 8.0) < 1e-12);
+        assert!(rel(gated[i], v) < 1e-12, "the lifted gate builds the same cells");
     }
     assert!(c.as_read().edges().is_some(), "the edge table is carried");
     check_link(&s, m1(), m2());
-    // target mode on the barycentric dual: report what the convex gate allows
+    // target mode always keeps the convex gate; on the barycentric dual no pair of cells has a
+    // convex union, so nothing merges and the op refuses (atomically).
     let mut s = session_with("bary2");
-    let r = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 2}}));
-    eprintln!("bary2 ({nf} cells) target 2 under the convex gate: {:?}", r.as_ref().map(|_| mesh_of(&s, m2()).as_read().cell_count()).map_err(|e| e.to_string()));
+    let h = s.state().hash();
+    let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "target", "cells": 2}})).expect_err("no convex pair");
+    assert!(e.to_string().contains("nothing to agglomerate"), "{e}");
+    assert_eq!(s.state().hash(), h);
+    // convex: false has no meaning where the gate cannot be lifted (target, per_pin with several
+    // cells per pin): refused rather than ignored.
+    for mode in [json!({"kind": "target", "cells": 2}), json!({"kind": "per_pin", "group": "volume", "cells_per_group": 2})] {
+        let mut s = session_with("bary2");
+        let h = s.state().hash();
+        let e = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "convex": false, "mode": mode})).expect_err("convex: false is refused");
+        assert!(e.to_string().contains("convex: false"), "{e}");
+        assert_eq!(s.state().hash(), h);
+    }
+}
+
+/// The `agglomerate.report` info diagnostic carries the merge counts.
+#[test]
+fn agglomerate_reports_merge_counts() {
+    let mut s = session_with("pins");
+    let (_, d) = run_json(&mut s, "mesh.agglomerate", json!({"mesh": "Mesh#1", "mode": {"kind": "per_pin", "group": "lattice", "cells_per_group": 4}})).expect("per pin x4");
+    let r = d.diagnostics.iter().find(|x| x.code == "agglomerate.report").expect("report");
+    let v: serde_json::Value = serde_json::from_str(&r.message).expect("json");
+    let fine = v["fine_cells"].as_u64().unwrap();
+    let coarse = v["coarse_cells"].as_u64().unwrap();
+    assert_eq!(coarse, 36);
+    assert_eq!(coarse as usize, mesh_of(&s, m2()).as_read().cell_count());
+    assert_eq!(fine as usize, mesh_of(&s, m1()).as_read().cell_count());
+    assert_eq!(v["merged_groups"].as_u64().unwrap() + v["single_cells"].as_u64().unwrap(), coarse);
+    assert_eq!(v["dissolved_groups"].as_u64().unwrap(), 0);
 }
 
 #[test]

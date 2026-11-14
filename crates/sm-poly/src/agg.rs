@@ -68,8 +68,9 @@ pub enum PinGroup {
 /// of its volume. Faces of different model entities (a fuel cap and a moderator face on one
 /// plane) stay separate coarse faces, except in `per_pin` mode, where they merge into one face of
 /// the class with the most area. Merge gate: the exact `sm-rt` convex rule on the merged cell (no separate
-/// concavity number); `convex: false` lifts it for `blocks` and `per_pin` with one cell per pin,
-/// which then still need a valid (star-shaped) coarse cell. Block groups that fail the rule are
+/// concavity number). `convex: false` lifts it for `blocks` and `per_pin` with one cell per pin
+/// (which then still need a valid, star-shaped coarse cell); `target` and `per_pin` with several
+/// cells per pin always merge greedily under the gate, so `convex: false` is refused there. Block groups that fail the rule are
 /// left as single cells and reported as the warning `agglomerate.dissolved`.
 ///
 /// With the default `keep_source` the fine mesh stays and the map is recorded in the mesh layer
@@ -91,7 +92,9 @@ pub struct MeshAgglomerate {
     /// Keep the fine mesh entry (default true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_source: Option<bool>,
-    /// Require every merged coarse cell to pass the convex rule (default true).
+    /// Require every merged coarse cell to pass the convex rule (default true). `false` is only
+    /// accepted for `blocks` and `per_pin` with one cell per pin; it is refused for `target` and for
+    /// `per_pin` with `cells_per_group` above 1, whose greedy merging always applies the gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convex: Option<bool>,
 }
@@ -148,6 +151,14 @@ impl MeshAgglomerate {
     fn groups(&self, src: &dyn MeshRead, model: &ModelLayer) -> Result<(Vec<u32>, usize, usize), OpError> {
         let mut dissolved = 0;
         let convex = self.convex != Some(false);
+        let gated = match &self.mode {
+            AggMode::Target { .. } => true,
+            AggMode::PerPin { cells_per_group, .. } => cells_per_group.unwrap_or(1) > 1,
+            AggMode::Blocks { .. } => false,
+        };
+        if !convex && gated {
+            return Err(OpError::Invalid("convex: false is not supported for mode target or per_pin with cells_per_group above 1: greedy merging always applies the convex gate".into()));
+        }
         let nc = src.count(MeshEntityKind::Cell);
         let g = match &self.mode {
             AggMode::Target { cells } => {
@@ -223,6 +234,20 @@ impl TypedOp for MeshAgglomerate {
         if dissolved > 0 {
             ctx.warn("agglomerate.dissolved", format!("{dissolved} block group(s) failed the convex rule and were left as single cells"), &[source]);
         }
+        let report = {
+            let mut kids = vec![0usize; n];
+            for &x in &group_of {
+                kids[x as usize] += 1;
+            }
+            let merged = kids.iter().filter(|&&k| k > 1).count();
+            format!(
+                "{{\"fine_cells\":{},\"coarse_cells\":{n},\"merged_groups\":{merged},\"single_cells\":{},\"largest_group\":{},\"dissolved_groups\":{dissolved}}}",
+                group_of.len(),
+                n - merged,
+                kids.iter().copied().max().unwrap_or(0)
+            )
+        };
+        ctx.info("agglomerate.report", report, &[source]);
         ctx.step(1, 3, "building")?;
         let mut alloc: SerialAlloc = alloc0.clone();
         let (fin, face_map) = coarsen::build_coarse(src, &group_of, n, matches!(self.mode, AggMode::PerPin { .. }), MeshBuilder::new(), &mut alloc).map_err(refuse)?;
