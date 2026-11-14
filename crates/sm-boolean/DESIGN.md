@@ -123,6 +123,23 @@ faces; tolerant healing of gaps above `linear_max`; partial-overlap merge of cur
 virtual topology; promotion of `cc.rs` into sm-geom; multi-edge cut chains between different loops of
 a holed face; a per-op COW cost fix for 10^5-face models.
 
+## W4-BOOL-HEAL-A: `model.regularize` and `model.heal_check`
+
+`model.regularize {volumes}` runs the regularizer of the booleans as a standalone op and returns
+the surviving joined faces and edges. It differs from the in-boolean call in two ways, which keep
+every boolean result (and hash) as it was: it closes a periodic edge whose two arcs meet at `0`
+and `2 pi` (the kernel's `join_edges` does not take those for one parameter, so the second arc's
+range is moved by one period and put back if the join is still refused), and it rebuilds pcurves
+only on the faces a join touched, so a regular import is unchanged. `regularize_volumes` returns
+the `RegularizeReport` (joined and refused pairs with the kernel's reason).
+
+`model.heal_check` (`heal_check.rs`) is read-only. Thresholds, the rules per code and what is not
+detected (non-planar slivers, sphere/torus/cone blends) are in the module doc; they were tuned on
+the W4-REFCORPUS dirty STEP files and the report equals the manifest's `expected` codes for all
+eleven STEP entries, including `step-dirty-tol-edge` (`gap_near`, `open_shell`: confirmed).
+Findings are sorted by `(code, entity, value)`; the per-entity scans run under rayon with ordered
+collection.
+
 ## W3b-1: candidate-pair BVH
 
 `pieces::candidate_pairs` queries a BVH (`bvh.rs`, median split, index tie-break) over the second

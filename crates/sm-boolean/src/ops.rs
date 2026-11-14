@@ -38,7 +38,7 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
 ];
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
-fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
+pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
     let topo = model_layer.topo();
     let model = model_layer.model();
@@ -378,6 +378,96 @@ impl TypedQuery for MergeCheck {
             return Err(OpError::Invalid(e.clone()));
         }
         Ok(rep)
+    }
+}
+
+/// `model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes
+/// within the model tolerance, moving nothing beyond it (an exact host join: no virtual
+/// topology). A pair on the same geometry that the topology refuses is left as it is.
+/// Outputs: the surviving joined `faces` and `edges`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Regularize {
+    /// The volumes to regularize.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    pub volumes: Vec<EntityId>,
+}
+
+impl TypedOp for Regularize {
+    const NAME: &'static str = "model.regularize";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The surviving faces of joined pairs."),
+        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The surviving edges of joined pairs."),
+    ];
+    const POSITIONAL: Option<&'static str> = Some("volumes");
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        if self.volumes.is_empty() {
+            return Err(OpError::Invalid("`volumes` must not be empty".into()));
+        }
+        resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
+        guard_volumes(ctx, &self.volumes)?;
+        let (rep, txn) = topo_txn(ctx, |topo, _model| crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from))?;
+        // A later join in the same pass can retire an earlier keep (5+7 -> 5, then 3+5 -> 3).
+        let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
+            let dropped: BTreeSet<EntityId> = l.iter().map(|p| p.drop).collect();
+            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).filter(|k| !dropped.contains(k)).collect();
+            s.into_iter().collect()
+        };
+        let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
+        commit_topology(ctx, &txn, &[("faces", &f), ("edges", &e)])
+    }
+}
+
+/// `model.heal_check {entities?, small_edge?, small_face_area?, sliver_aspect?, sliver_width?,
+/// hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for
+/// short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates.
+/// Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used
+/// are returned with the findings. See [`mod@crate::heal_check`] for the rules.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealCheck {
+    /// The cells to scan (default: everything).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    pub entities: Option<Vec<EntityId>>,
+    /// Length at or below which an edge is `small_edge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_edge: Option<f64>,
+    /// Area at or below which a face is `small_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_face_area: Option<f64>,
+    /// Aspect ratio at or above which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_aspect: Option<f64>,
+    /// Width at or below which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_width: Option<f64>,
+    /// Diameter at or below which a hole is `small_hole`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_max_diameter: Option<f64>,
+    /// Radius at or below which a tangent partial cylinder is `blend_candidate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_max_radius: Option<f64>,
+}
+
+impl TypedQuery for HealCheck {
+    const NAME: &'static str = "model.heal_check";
+    type Output = crate::heal_check::HealReport;
+
+    fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<crate::heal_check::HealReport, OpError> {
+        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
+        let scope = check_scope(layer.topo(), &self.entities)?;
+        let o = crate::heal_check::HealOptions {
+            entities: self.entities.as_ref().map(|_| scope),
+            small_edge: self.small_edge,
+            small_face_area: self.small_face_area,
+            sliver_aspect: self.sliver_aspect,
+            sliver_width: self.sliver_width,
+            hole_max_diameter: self.hole_max_diameter,
+            blend_max_radius: self.blend_max_radius,
+        };
+        crate::heal_check::heal_check(layer.topo(), &o).map_err(OpError::from)
     }
 }
 

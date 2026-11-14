@@ -429,7 +429,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     }
     // 11. Regularize.
     if o.regularize {
-        crate::regularize::regularize(topo, &new_volumes)?;
+        crate::regularize::regularize(topo, &new_volumes, false)?;
     }
     // Pcurves of the new and moved coedges on curved faces.
     let mut result_faces: BTreeSet<EntityId> = BTreeSet::new();
