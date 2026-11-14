@@ -113,3 +113,54 @@ fn locate_point_on_a_thin_annulus_matches_the_analytic_answer() {
     }
     assert!(bad.is_empty(), "{} of {n} wrong, first {:?}", bad.len(), &bad[..bad.len().min(5)]);
 }
+
+/// Points whose first probe ray leaves through the top face within a few 1e-4 of the rim of a
+/// plain disk (the inner piece of a brick cut by an ordinary pin) and of a thin annulus: the hit
+/// lies between the sampled chord and the arc, and must still be counted.
+#[test]
+fn locate_point_with_a_rim_exit_hit_is_exact_on_a_disk_and_an_annulus() {
+    use sm_boolean::{PointLocation, locate_point};
+    let d: [f64; 3] = [0.577_350_269_189_625_8, 0.707_106_781_186_547_5 + 0.131_578_947_368_421, 0.418_879_020_478_639_1];
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let d = [d[0] / n, d[1] / n, d[2] / n];
+    let phi0 = d[1].atan2(d[0]);
+    let r1 = 0.414;
+    // Disk: inner piece of the brick cut by a default-frame cylinder.
+    let (disk, dv) = {
+        let mut t = sm_topo::TopoStore::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = brick(&mut t, Point3::new(-1.0, -1.0, 0.0), [2.0, 2.0, 1.0]).unwrap();
+        let c = webcut(&mut t, &[b.body], &cylinder(r1, 0.0), &WebcutOptions::default()).unwrap();
+        let v = t.boundary(c.negative[0]).iter().map(|i| i.cell).find(|c| t.dim_of(*c) == Some(Dim::Volume)).unwrap();
+        (t, v)
+    };
+    let (ann, av) = thin_annulus(0.4, r1, 0.0);
+    let mut bad = Vec::new();
+    let mut tot = 0;
+    for (t, v, r0) in [(&disk, dv, 0.0), (&ann, av, 0.4)] {
+        for i in 0..400 {
+            let phi = phi0 + (i as f64 / 400.0 - 0.5) * 0.6;
+            for k in 1..8 {
+                let rq = r1 - k as f64 * 2.5e-4;
+                let tt = 0.05;
+                let p = Point3::new(rq * phi.cos() - tt * d[0], rq * phi.sin() - tt * d[1], 1.0 - tt * d[2]);
+                let rp = p.x.hypot(p.y);
+                if rp > r1 - 2e-3 || (r0 > 0.0 && (rp - r0).abs() < 2e-3) {
+                    continue;
+                }
+                tot += 1;
+                let inside = rp > r0 && rp < r1;
+                match locate_point(t, v, p) {
+                    Ok(PointLocation::In) if inside => {}
+                    Ok(PointLocation::Out) if !inside => {}
+                    o => bad.push((p, inside, o.map_err(|e| e.to_string()))),
+                }
+            }
+        }
+    }
+    assert!(tot > 1000);
+    assert!(bad.is_empty(), "{} of {tot} wrong; first {:?}", bad.len(), &bad[..bad.len().min(5)]);
+    // The reported repro point.
+    let p = Point3::new(0.2986258284603378, 0.21816330603587458, 0.9809772257938587);
+    assert_eq!(locate_point(&disk, dv, p).unwrap(), PointLocation::In);
+}

@@ -23,6 +23,8 @@ use crate::geo;
 
 /// Samples per non-degenerate coedge of the parameter-space polygon.
 const SAMPLES: usize = 32;
+/// Refinement of the sampling used to settle hits near a curved edge (sagitta shrinks 1/factor^2).
+const DENSE_FACTOR: usize = 64;
 
 /// The sampled model of one face.
 pub(crate) struct FaceModel {
@@ -40,6 +42,7 @@ pub(crate) struct FaceModel {
 pub(crate) struct FaceCache {
     models: RefCell<BTreeMap<EntityId, Rc<FaceModel>>>,
     interior: RefCell<BTreeMap<EntityId, Option<Point3>>>,
+    dense: RefCell<BTreeMap<EntityId, Rc<FaceModel>>>,
 }
 
 impl FaceCache {
@@ -51,13 +54,24 @@ impl FaceCache {
         if let Some(m) = self.models.borrow().get(&f) {
             return Ok(Rc::clone(m));
         }
-        let m = Rc::new(build_model(view, f)?);
+        let m = Rc::new(build_model(view, f, SAMPLES)?);
         self.models.borrow_mut().insert(f, Rc::clone(&m));
+        Ok(m)
+    }
+
+    /// The model sampled `DENSE_FACTOR` times finer, built on demand for the few hits that fall
+    /// within the chord sagitta of a curved edge.
+    fn dense_model<V: TopologyView + ?Sized>(&self, view: &V, f: EntityId) -> Result<Rc<FaceModel>, BooleanError> {
+        if let Some(m) = self.dense.borrow().get(&f) {
+            return Ok(Rc::clone(m));
+        }
+        let m = Rc::new(build_model(view, f, SAMPLES * DENSE_FACTOR)?);
+        self.dense.borrow_mut().insert(f, Rc::clone(&m));
         Ok(m)
     }
 }
 
-fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceModel, BooleanError> {
+fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId, samples: usize) -> Result<FaceModel, BooleanError> {
     let Some((surf, _)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
     let dom = surf.domain();
     let mut polys = Vec::new();
@@ -84,9 +98,9 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
             let Some(curve) = view.shapes().curve(cc.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
             let along = (cc.sense == sm_topo_api::Sense::Forward) == (key.side == Side::Left);
             let mut last3: Option<Point3> = None;
-            let mut run: Vec<Point3> = Vec::with_capacity(SAMPLES + 1);
-            for k in 0..=SAMPLES {
-                let frac = k as f64 / SAMPLES as f64;
+            let mut run: Vec<Point3> = Vec::with_capacity(samples + 1);
+            for k in 0..=samples {
+                let frac = k as f64 / samples as f64;
                 let t = geo::edge_param(cc, if along { frac } else { 1.0 - frac });
                 let p3 = curve.eval(t);
                 if let Some(l) = last3 {
@@ -207,19 +221,37 @@ pub(crate) fn classify_uv<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache,
     Ok((if inside(&m.polys, &m.dom, uv) { PointClass::In } else { PointClass::Out }, uv))
 }
 
-/// True if `p` (on the surface of `f`) lies so close to a curved boundary that the sampled
-/// polygon of [`classify_uv`] may put it on the wrong side: within the chord sagitta bound of the
-/// true boundary. Straight boundaries (zero sagitta) are never doubtful.
-pub(crate) fn chord_doubtful<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId, p: Point3) -> Result<bool, BooleanError> {
-    let m = cache.model(view, f)?;
+/// True if `p` (on the surface of `f`) lies within `2 * m.sag` of the true boundary, where the
+/// sampled polygon of `m` may put it on the wrong side. Straight boundaries are never doubtful.
+fn doubtful_in<V: TopologyView + ?Sized>(view: &V, m: &FaceModel, f: EntityId, p: Point3) -> bool {
     if m.sag <= 0.0 {
-        return Ok(false);
+        return false;
     }
     let reach = m.spacing + 2.0 * m.sag;
     if !m.pts.iter().any(|q| geo::dist(*q, p) <= reach) {
-        return Ok(false);
+        return false;
     }
-    Ok(boundary_distance(view, f, p) <= 2.0 * m.sag)
+    boundary_distance(view, f, p) <= 2.0 * m.sag
+}
+
+/// As [`classify_uv`] for a ray hit `p` (the point at `uv`), settled against the true boundary:
+/// the coarse polygon is inscribed in a curved edge, so a hit within its sagitta band is
+/// re-classified on a polygon 64x finer (sagitta 4096x smaller). `None` if it is still within the
+/// finer band (the hit is then genuinely ambiguous).
+pub(crate) fn classify_hit<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId, uv: Uv, p: Point3, tol: f64) -> Result<Option<PointClass>, BooleanError> {
+    let (class, uv) = classify_uv(view, cache, f, uv, tol)?;
+    if class == PointClass::On {
+        return Ok(Some(class));
+    }
+    let m = cache.model(view, f)?;
+    if !doubtful_in(view, &m, f, p) {
+        return Ok(Some(class));
+    }
+    let d = cache.dense_model(view, f)?;
+    if doubtful_in(view, &d, f, p) {
+        return Ok(None);
+    }
+    Ok(Some(if inside(&d.polys, &d.dom, uv) { PointClass::In } else { PointClass::Out }))
 }
 
 /// A point strictly inside the trimmed face, as far from the boundary as a coarse search finds:

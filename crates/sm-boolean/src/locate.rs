@@ -197,19 +197,15 @@ fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::Fac
                         Err(_) => continue,
                     },
                 };
-                match crate::faceclass::classify_uv(view, cache, f, Uv::new(uv.u, uv.v), tol.linear)?.0 {
-                    PointClass::Out => continue,
-                    PointClass::On => {
+                // Hits near a curved edge are settled on a finer boundary polygon (the coarse one is
+                // inscribed in the arc); one still inside the finer band is ambiguous.
+                match crate::faceclass::classify_hit(view, cache, f, Uv::new(uv.u, uv.v), h.point, tol.linear)? {
+                    Some(PointClass::Out) => continue,
+                    Some(PointClass::In) => {}
+                    Some(PointClass::On) | None => {
                         last_ambiguous = Some(f);
                         continue 'dirs;
                     }
-                    PointClass::In => {}
-                }
-                // The sampled boundary polygon is inscribed in a curved edge: a hit within the
-                // chord sagitta of one may be on the wrong side of it (a thin annulus).
-                if crate::faceclass::chord_doubtful(view, cache, f, h.point)? {
-                    last_ambiguous = Some(f);
-                    continue 'dirs;
                 }
                 if h.crossing == Crossing::Tangent {
                     last_ambiguous = Some(f);
