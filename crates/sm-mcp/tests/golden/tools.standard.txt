@@ -5,6 +5,7 @@ fem__block_element_type
 fem__block_remove
 fem__sideset_add
 help
+mesh__agglomerate
 mesh__auto
 mesh__auto_strategies
 mesh__decompose_plan
@@ -12,11 +13,13 @@ mesh__default_size
 mesh__delete
 mesh__flag_cells
 mesh__info
+mesh__interval_relation
 mesh__intervals
 mesh__plan
 mesh__poly_info
 mesh__preserve_volume
 mesh__quality
+mesh__refine
 mesh__run
 mesh__scheme
 mesh__size
@@ -37,6 +40,7 @@ model__create_sphere_part
 model__create_torus
 model__delete
 model__export
+model__heal_check
 model__import_openmc
 model__import_step
 model__imprint
@@ -52,6 +56,7 @@ model__move_to
 model__reflect
 model__region_clear
 model__region_tags
+model__regularize
 model__rotate
 model__rotate_about
 model__scale

@@ -23,6 +23,10 @@ class FemOps:
 
 class MeshOps:
     """Ops `mesh.*` (keyword-only; `s.ops.mesh.<op>(...)` applies one)."""
+    def agglomerate(self, *, convex: bool | None = ..., keep_source: bool | None = ..., mesh: EntityId | str, mode: Mapping[str, Any]) -> ApplyResult:
+        """`mesh.agglomerate`: build a coarse mesh by grouping the cells of a fine (typically polyhedral) mesh and link the two with a fine-to-coarse `LevelMap` including its face map (ruling D3, CMFD/multigrid levels).
+        Output `mesh` (one, Mesh): the new coarse mesh"""
+
     def auto(self, *, assignments: Sequence[Mapping[str, Any]] | None = ..., strategy: str | None = ..., targets: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`mesh.auto`: let a strategy choose schemes for targets that have none, and store its choices."""
 
@@ -36,11 +40,18 @@ class MeshOps:
         """`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.
         Output `set` (optional, MeshSet): the new cell set; absent when nothing was flagged"""
 
+    def interval_relation(self, *, a: Sequence[EntityId | str], b: Sequence[EntityId | str], ratio: int | None = ..., relation: Literal['eq', 'le', 'ge'] | None = ...) -> ApplyResult:
+        """`mesh.interval_relation`: a relative interval between curves, `sum(a) rel ratio * sum(b)`."""
+
     def intervals(self, *, count: int, firmness: Literal['default', 'soft', 'hard'] | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.intervals`: ask for an interval count on volumes, faces or curves."""
 
     def preserve_volume(self, *, curves: Sequence[EntityId | str] | None = ..., mesh: EntityId | str, surfaces: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`mesh.preserve_volume`: move the nodes classified on circular edges (`curves`), or on circular cylinder faces (`surfaces`), radially to the equal-area radius, so that the linear mesh of each round region has the exact volume of the cylinder it approximates. Opt-in; recorded in the history and replayed as an op (no strategy is consulted); deterministic; the node count and every id stay."""
+
+    def refine(self, *, keep_source: bool | None = ..., levels: int | None = ..., mesh: EntityId | str, project: bool | None = ...) -> ApplyResult:
+        """`mesh.refine`: refine a mesh uniformly into new, finer, independent mesh entries.
+        Output `mesh` (many, Mesh): the refined meshes, coarsest first"""
 
     def run(self, *, targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.run`: mesh whole volumes, or faces only, with the driver and store the result as one mesh.
@@ -192,6 +203,11 @@ class ModelOps:
     def region_clear(self, *, volumes: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`model.region_clear {volumes?}`: drop region tags and lattice frames."""
 
+    def regularize(self, *, volumes: Sequence[EntityId | str]) -> ApplyResult:
+        """`model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes within the model tolerance, moving nothing beyond it (an exact host join: no virtual topology). A pair on the same geometry that the topology refuses is left as it is. Outputs: the surviving joined `faces` and `edges`.
+        Output `faces` (many, TopoFace): The surviving faces of joined pairs.
+        Output `edges` (many, TopoEdge): The surviving edges of joined pairs."""
+
     def rotate(self, *, angle_deg: float, axis: Sequence[float], entities: Sequence[EntityId | str], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.rotate`: rotate volumes by `angle_deg` degrees (right-hand rule) about the axis through `origin` (default the origin) with direction `axis`.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
@@ -285,6 +301,9 @@ class ModelQueries:
     """Queries `model.*` (`s.q.model.<query>(...)`; read-only)."""
     def export(self, *, bodies: Sequence[EntityId | str] | None = ..., path: str | None = ..., schema: Literal['ap214', 'ap242'] | None = ...) -> Any:
         """`model.export {bodies?, schema?, path?}`: the model's bodies as STEP text."""
+
+    def heal_check(self, *, blend_max_radius: float | None = ..., entities: Sequence[EntityId | str] | None = ..., hole_max_diameter: float | None = ..., sliver_aspect: float | None = ..., sliver_width: float | None = ..., small_edge: float | None = ..., small_face_area: float | None = ...) -> Any:
+        """`model.heal_check {entities?, small_edge?, small_face_area?, sliver_aspect?, sliver_width?, hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates. Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used are returned with the findings. See [`mod@crate::heal_check`] for the rules."""
 
     def list(self, *, kind: Literal['TopoVertex', 'TopoEdge', 'TopoFace', 'TopoVolume', 'TopoBody', 'Curve', 'Surface', 'Color', 'Group', 'Boundary', 'Instance', 'Prototype', 'Lattice', 'Symmetry', 'Cluster', 'PartitionCell', 'PartitionFace', 'PartitionEdge', 'PartitionVertex', 'Mesh', 'MeshVertex', 'MeshEdge', 'MeshFace', 'MeshCell', 'Interface', 'MeshSet', 'MeshInstance']) -> Any:
         """`model.list {kind}`: every live entity of `kind` owned by the model layer, ascending."""
