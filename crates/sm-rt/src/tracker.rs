@@ -543,6 +543,40 @@ impl MeshTracker {
         }
     }
 
+    /// Nudge out of a grazing trap (see `graze`): the first point `tol * 2^k` ahead of the state
+    /// along its direction (at most `room` away) that the mesh holds. Moves the state there and
+    /// returns the distance, or leaves it.
+    pub(crate) fn graze_hop(&self, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Option<f64> {
+        let (o, d) = ([st.pos.x, st.pos.y, st.pos.z], [st.dir.x, st.dir.y, st.dir.z]);
+        crate::graze::nudge(self.tol(), room, |nd| {
+            let q = add(o, scale(d, nd));
+            let loc = self.locate_inner(q, Some(d), Some(st.cell), sc);
+            if loc.cell.is_none() {
+                return false;
+            }
+            st.pos = vec_to_point(q);
+            st.cell = loc.cell;
+            st.region = loc.region;
+            st.entered_via = loc.on_face;
+            true
+        })
+    }
+
+    /// The trap check of a mesh walk after a carried step of length `dist`: `None` to go on, or the
+    /// distance hopped, or the typed error when the trap cannot be left (`Err`).
+    pub(crate) fn graze_check(&self, g: &mut crate::graze::Guard, dist: f64, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Result<Option<f64>, sm_rt_api::LostInfo> {
+        if !g.trapped(dist, self.tol()) {
+            return Ok(None);
+        }
+        match g.may_hop().then(|| self.graze_hop(st, room, sc)).flatten() {
+            Some(nd) => {
+                g.hopped();
+                Ok(Some(nd))
+            }
+            None => Err(sm_rt_api::lost(st, LostCause::RecoveryFailed).with_retries(g.hops())),
+        }
+    }
+
     // ---- closest -------------------------------------------------------------------------
 
     pub(crate) fn closest_inner(&self, p: [f64; 3], region: Option<RegionId>, sc: &mut Scratch) -> Option<Closest> {
@@ -774,11 +808,16 @@ impl sm_rt_api::Tracker for MeshTracker {
             return crate::delta::jump_fire(self, st, dist_limit, max_steps, scratch);
         }
         let mut total = 0.0;
+        let mut guard = crate::graze::Guard::new();
         for _ in 0..max_steps {
             let s = self.step(st, dist_limit - total, scratch)?;
             total += s.dist;
             if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
+            }
+            match self.graze_check(&mut guard, s.dist, st, dist_limit - total, scratch) {
+                Ok(hop) => total += hop.unwrap_or(0.0),
+                Err(l) => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(l))),
             }
         }
         Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(sm_rt_api::lost(st, LostCause::MaxStepsExceeded))))

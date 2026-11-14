@@ -45,13 +45,7 @@ type Levels = SmallVec<[Level; LEVEL_INLINE]>;
 /// Largest global cell count (ids are `u32`; `NONE` and `COMPLEMENT` are reserved).
 const MAX_CELLS: u64 = u32::MAX as u64 - 2;
 const MAX_ISSUES: usize = 16;
-/// Consecutive steps of at most `tol` that a trace follows before it treats the run as a
-/// grazing trap (zero-length hand-backs between instances) and nudges out of it.
-const ZERO_RUN_MAX: u32 = 8;
-/// Nudge attempts (`tol * 2^k`, `k < GRAZE_TRIES`) out of a grazing trap, and the traps one trace
-/// may leave this way before it ends in a typed error.
-const GRAZE_TRIES: u32 = 6;
-const GRAZE_HOPS: u32 = 4;
+use crate::graze::{GRAZE_TRIES, Guard};
 
 // ---- affine maps -----------------------------------------------------------------------
 
@@ -1187,23 +1181,17 @@ impl WorldTracker {
     /// root with nothing excluded. Moves the state there and returns the distance, or leaves it.
     fn graze_hop(&self, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Option<f64> {
         let (o, d) = (a3(st.pos), av3(st.dir));
-        for k in 0..GRAZE_TRIES {
-            let nd = self.tol * f64::from(1u32 << k);
-            if nd > room {
-                break;
-            }
+        crate::graze::nudge(self.tol, room, |nd| {
             let q = madd(o, d, nd);
-            if let Loc::Hit(h) = self.locate_rec(self.root, q, d, sc, None, false) {
-                let to = self.global_located(h);
-                st.pos = p3(q);
-                st.cell = to.cell;
-                st.region = to.region;
-                st.entered_via = to.on_face;
-                st.levels = to.levels;
-                return Some(nd);
-            }
-        }
-        None
+            let Loc::Hit(h) = self.locate_rec(self.root, q, d, sc, None, false) else { return false };
+            let to = self.global_located(h);
+            st.pos = p3(q);
+            st.cell = to.cell;
+            st.region = to.region;
+            st.entered_via = to.on_face;
+            st.levels = to.levels;
+            true
+        })
     }
 
     fn global_located(&self, h: Hit) -> Located {
@@ -1744,14 +1732,14 @@ impl Tracker for WorldTracker {
     }
 
     /// The provided `trace` with a bound on grazing traps in worlds with a hex lattice (others run the
-    /// provided loop unchanged): after `ZERO_RUN_MAX` consecutive steps of
+    /// provided loop unchanged): after `graze::ZERO_RUN_MAX` consecutive steps of
     /// at most `tol` (instances handing the ray back and forth), the ray is nudged on along its
-    /// direction (the hop is recorded as a chord of the cell it was in), at most `GRAZE_HOPS` times;
+    /// direction (the hop is recorded as a chord of the cell it was in), at most `graze::GRAZE_HOPS` times;
     /// a trap that cannot be left ends the trace `Lost` with `LostCause::RecoveryFailed`.
     fn trace(&self, st: &mut TrackState, opts: &TraceOptions, sink: &mut dyn sm_rt_api::SegmentSink, sc: &mut Scratch) -> Result<sm_rt_api::TraceEnd> {
         use sm_rt_api::{Flow, Segment, TraceEnd};
         let mut t = 0.0;
-        let (mut zero_run, mut hops) = (0u32, 0u32);
+        let mut guard = Guard::new();
         for _ in 0..opts.max_steps {
             let face_in = st.entered_via;
             let s = self.step(st, opts.max_dist - t, sc)?;
@@ -1767,22 +1755,18 @@ impl Tracker for WorldTracker {
             }
             t += s.dist;
             let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
-            if carried {
-                zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
-                if self.has_hex && zero_run > ZERO_RUN_MAX {
-                    let (cell, region, from) = (st.cell, st.region, st.entered_via);
-                    match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
-                        Some(nd) => {
-                            hops += 1;
-                            zero_run = 0;
-                            let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
-                            if sink.segment(&seg) == Flow::Stop {
-                                return Ok(TraceEnd::Stopped);
-                            }
-                            t += nd;
+            if carried && guard.trapped(s.dist, self.tol) && self.has_hex {
+                let (cell, region, from) = (st.cell, st.region, st.entered_via);
+                match guard.may_hop().then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
+                    Some(nd) => {
+                        guard.hopped();
+                        let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
+                        if sink.segment(&seg) == Flow::Stop {
+                            return Ok(TraceEnd::Stopped);
                         }
-                        None => return Ok(TraceEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops))),
+                        t += nd;
                     }
+                    None => return Ok(TraceEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops()))),
                 }
             }
             match s.end {
@@ -1801,22 +1785,20 @@ impl Tracker for WorldTracker {
 
     fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, sc: &mut Scratch) -> Result<sm_rt_api::FireResult> {
         let mut total = 0.0;
-        let (mut zero_run, mut hops) = (0u32, 0u32);
+        let mut guard = Guard::new();
         for _ in 0..max_steps {
             let s = self.step(st, dist_limit - total, sc)?;
             total += s.dist;
             if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
             }
-            zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
-            if self.has_hex && zero_run > ZERO_RUN_MAX {
-                match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
+            if guard.trapped(s.dist, self.tol) && self.has_hex {
+                match guard.may_hop().then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
                     Some(nd) => {
-                        hops += 1;
-                        zero_run = 0;
+                        guard.hopped();
                         total += nd;
                     }
-                    None => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops)))),
+                    None => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops())))),
                 }
             }
         }
@@ -2298,6 +2280,7 @@ impl MajorantTracker for WorldTracker {
                     // neighbour instances and the world boundary are its), up to the wall.
                     let start_levels = st.levels.clone();
                     let mut iters = 0u32;
+                    let mut guard = Guard::new();
                     loop {
                         let s = self.step(st, (limit - total).max(0.0), sc)?;
                         total += s.dist;
@@ -2310,6 +2293,22 @@ impl MajorantTracker for WorldTracker {
                         // Another instance: the segment ends there (levels are constant over a segment).
                         if !more || st.levels != start_levels {
                             break;
+                        }
+                        // The same bound on grazing traps as `trace` and `fire`.
+                        if guard.trapped(s.dist, self.tol) && self.has_hex {
+                            match guard.may_hop().then(|| self.graze_hop(st, (limit - total).max(0.0), sc)).flatten() {
+                                Some(nd) => {
+                                    guard.hopped();
+                                    total += nd;
+                                    if st.levels != start_levels {
+                                        break;
+                                    }
+                                }
+                                None => {
+                                    end = StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops()));
+                                    break;
+                                }
+                            }
                         }
                         iters += 1;
                         if iters > self.info.max_events {
