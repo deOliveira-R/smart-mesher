@@ -642,3 +642,16 @@ fn composite_edges_refuses_a_collapse_copy() {
     assert!(matches!(r, Err(TopoError::WrongDim { .. } | TopoError::Dead(_))), "{r:?}");
     assert_eq!(ov.ops().len(), n);
 }
+
+#[test]
+fn composite_edge_inherits_a_member_tolerance_override_and_replays() {
+    let mut s = strip();
+    let t = 5e-6;
+    with_op(Arc::get_mut(&mut s.host).unwrap(), OpId(2), |h| Ok(h.raise_tolerance(s.e12, t)?)).unwrap();
+    let mut ov = Overlay::new(host_dyn(&s));
+    assert!(t > ov.tolerance().linear);
+    let id = ov.composite_edges(&[s.e12, s.e23]).unwrap();
+    assert_eq!(ov.tolerance_override(id), Some(t));
+    let back = Overlay::from_data(host_dyn(&s), ov.data()).unwrap();
+    assert_eq!(back.tolerance_override(id), Some(t));
+}
