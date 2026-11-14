@@ -1755,7 +1755,7 @@ impl Tracker for WorldTracker {
             }
             t += s.dist;
             let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
-            if carried && guard.trapped(s.dist, self.tol) && self.has_hex {
+            if carried && guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, opts.max_dist - t) {
                 let (cell, region, from) = (st.cell, st.region, st.entered_via);
                 match guard.may_hop().then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
                     Some(nd) => {
@@ -1792,7 +1792,7 @@ impl Tracker for WorldTracker {
             if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
             }
-            if guard.trapped(s.dist, self.tol) && self.has_hex {
+            if guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, dist_limit - total) {
                 match guard.may_hop().then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
                     Some(nd) => {
                         guard.hopped();
@@ -2295,7 +2295,7 @@ impl MajorantTracker for WorldTracker {
                             break;
                         }
                         // The same bound on grazing traps as `trace` and `fire`.
-                        if guard.trapped(s.dist, self.tol) && self.has_hex {
+                        if guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, (limit - total).max(0.0)) {
                             match guard.may_hop().then(|| self.graze_hop(st, (limit - total).max(0.0), sc)).flatten() {
                                 Some(nd) => {
                                     guard.hopped();

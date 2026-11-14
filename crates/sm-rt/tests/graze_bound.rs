@@ -5,6 +5,8 @@
 //! graze a hex face plane and the z-wall between two layers, through `trace`, `fire` and the
 //! surface and delta flights; each must end in a bounded number of steps, carried through or in
 //! the typed error. Part 2 is a CSG pin of 16 sectors in a hex lattice.
+#[path = "common/mod.rs"]
+mod common;
 #[path = "common/csg.rs"]
 mod csg;
 #[path = "common/hex.rs"]
@@ -379,4 +381,74 @@ fn a_ray_in_a_sector_plane_has_the_analytic_chords() {
     let fuel: f64 = segs.iter().filter(|s| (s.0 as usize % (SECTORS + 1)) < SECTORS).map(|s| s.1).sum();
     // The chord through the cylinder from 0.2 before the axis is 0.2 + RF; other elements add 2 RF each.
     assert!(fuel >= 0.2 + RF - 1e-9, "fuel {fuel}");
+}
+
+// ---------------------------------------------------------------- part 3: sector-fan wedge meshes
+
+/// `ns` wedges around the z axis (unit radius), three layers of height 1: a ray along the axis edge
+/// crosses `ns - 1` consecutive zero-length cells.
+fn fan(ns: usize) -> sm_mesh_api::reference::ReferenceMesh {
+    use sm_mesh_api::{CellShape, SerialAlloc};
+    use sm_testkit::meshes::{CellSpec, build_mesh};
+    let nz = 3usize;
+    let mut pts = vec![];
+    for k in 0..=nz {
+        pts.push([0.0, 0.0, k as f64]);
+        for i in 0..ns {
+            let a = std::f64::consts::TAU * i as f64 / ns as f64;
+            pts.push([a.cos(), a.sin(), k as f64]);
+        }
+    }
+    let ix = |k: usize, i: usize| k * (ns + 1) + 1 + (i % ns);
+    let ax = |k: usize| k * (ns + 1);
+    let mut cells = vec![];
+    for k in 0..nz {
+        for i in 0..ns {
+            cells.push(CellSpec::Template(CellShape::Wedge, vec![ax(k), ix(k, i), ix(k, i + 1), ax(k + 1), ix(k + 1, i), ix(k + 1, i + 1)]));
+        }
+    }
+    build_mesh(&pts, &cells, &mut SerialAlloc::new()).expect("fan mesh")
+}
+
+#[test]
+fn a_ray_through_the_axis_edge_of_a_fan_mesh_is_carried_through_and_limits_are_kept() {
+    for ns in [16usize, 24, 48] {
+        let mesh = fan(ns);
+        let t = common::build_mesh_tracker(&mesh, &common::vacuum(), &common::opts_fail());
+        let o = p3(-0.5, 0.0, 1.5);
+        // Through the axis edge (a run of ns - 1 zero-length steps): chord = 0.5 + 1 (to the rim).
+        let mut run = 0u32;
+        let mut maxrun = 0u32;
+        let mut len = 0.0;
+        let mut sc = Scratch::new();
+        let mut st = t.init_state(o, v3(1.0, 0.0, 0.0), None, &mut sc).expect("init");
+        let end = t
+            .trace(
+                &mut st,
+                &TraceOptions::default(),
+                &mut |s: &Segment| {
+                    len += s.length;
+                    run = if s.length <= 1e-9 { run + 1 } else { 0 };
+                    maxrun = maxrun.max(run);
+                    Flow::Continue
+                },
+                &mut sc,
+            )
+            .expect("trace");
+        assert!(maxrun > 8 || ns == 16, "ns {ns}: a run longer than the bound (got {maxrun})");
+        assert!(matches!(end, TraceEnd::Boundary { .. } | TraceEnd::LeftModel), "ns {ns}: {end:?}");
+        assert!((len - 1.5).abs() < 1e-8, "ns {ns}: trace length {len}");
+        let mut st = t.init_state(o, v3(1.0, 0.0, 0.0), None, &mut sc).expect("init");
+        let r = t.fire(&mut st, f64::INFINITY, 100_000, &mut sc).expect("fire");
+        assert!(matches!(r.end, StepEnd::Boundary { .. }), "ns {ns}: {:?}", r.end);
+        assert!((r.dist - 1.5).abs() < 1e-8, "ns {ns}: fire {}", r.dist);
+        // A limit on the axis edge (or within a tolerance of it) is a Limit at that distance.
+        for eps in [0.0, 1e-12, 1e-10, 1e-9, 5e-9, 1e-7, 1e-5] {
+            let lim = 0.5 + eps;
+            let mut st = t.init_state(o, v3(1.0, 0.0, 0.0), None, &mut sc).expect("init");
+            let r = t.fire(&mut st, lim, 100_000, &mut sc).expect("fire");
+            assert!(matches!(r.end, StepEnd::Limit), "ns {ns} lim {lim}: {:?}", r.end);
+            assert!((r.dist - lim).abs() < 1e-8, "ns {ns} lim {lim}: dist {}", r.dist);
+        }
+    }
 }

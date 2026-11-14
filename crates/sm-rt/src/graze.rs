@@ -47,6 +47,12 @@ impl Guard {
     }
 }
 
+/// Whether the room left is too short for even the first nudge (`tol`). A trap there is not a
+/// failure: the walk keeps going (`max_steps` still bounds it) and ends at its limit as usual.
+pub(crate) fn room_short(tol: f64, room: f64) -> bool {
+    room.is_nan() || room < tol
+}
+
 /// The first nudge distance `tol * 2^k` (at most `room`, `k < GRAZE_TRIES`) for which `accept`
 /// holds; `accept` moves the state when it takes the point.
 pub(crate) fn nudge(tol: f64, room: f64, mut accept: impl FnMut(f64) -> bool) -> Option<f64> {

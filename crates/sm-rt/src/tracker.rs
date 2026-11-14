@@ -568,6 +568,9 @@ impl MeshTracker {
         if !g.trapped(dist, self.tol()) {
             return Ok(None);
         }
+        if crate::graze::room_short(self.tol(), room) {
+            return Ok(None);
+        }
         match g.may_hop().then(|| self.graze_hop(st, room, sc)).flatten() {
             Some(nd) => {
                 g.hopped();
