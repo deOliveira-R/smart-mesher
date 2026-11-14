@@ -308,6 +308,13 @@ fn a_realized_split_writes_into_the_layers_overlay() {
     let cc = l.model().decomposition().cut_cells(cut).unwrap();
     assert!(cc.faces.iter().all(|f| l.topo().is_alive(*f) && !l.host().is_alive(*f)));
     assert!(kids.iter().all(|k| delta.created.contains(k)));
+    // Every virtual id the split minted was adopted: in the delta and in the entity table.
+    let virt: Vec<EntityId> = cc.faces.iter().chain(&cc.edges).chain(&cc.vertices).copied().collect();
+    assert!(!virt.is_empty());
+    for id in &virt {
+        assert!(delta.created.contains(id), "{id:?} not in delta");
+        assert!(s.state().contains(*id), "{id:?} not in state");
+    }
     // topo() sees the pieces, the bare host still has the one volume.
     assert_eq!(l.topo().cells(Dim::Volume).len(), 2);
     assert_eq!(l.host().cells(Dim::Volume), &[vol]);

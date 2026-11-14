@@ -170,7 +170,9 @@ impl ModelLayer {
 
     /// Run `f` on the layer's overlay, creating an empty one over the current host on first
     /// use. A shared overlay (cloned state) is copied first. Not transactional on its own:
-    /// use [`model_overlay_txn`] from an op.
+    /// use [`model_overlay_txn`] from an op. A caller that mints virtual ids through it must
+    /// adopt them itself (`ApplyCtx::adopt`, ascending `(kind, serial)`): they are the
+    /// `Overlay::data().next_serial` diff, ranks 0/1/2 = `PartitionVertex/Edge/Face`.
     pub fn overlay_mut<R>(&mut self, f: impl FnOnce(&mut Overlay) -> R) -> R {
         f(self.overlay_or_new())
     }
@@ -345,6 +347,17 @@ fn minted(before: &IdAlloc, after: &IdAlloc) -> Vec<EntityId> {
         };
         let (lo, hi) = (before.peek(kind), after.peek(kind));
         out.extend((lo..hi).filter_map(|s| EntityId::new(kind, s)));
+    }
+    out
+}
+
+/// Ids the overlay minted between two `next_serial` states (rank 0, 1, 2 = vertex, edge, face).
+fn minted_virtual(before: [u64; 3], after: [u64; 3]) -> Vec<EntityId> {
+    const KINDS: [EntityKind; 3] =
+        [EntityKind::PartitionVertex, EntityKind::PartitionEdge, EntityKind::PartitionFace];
+    let mut out = Vec::new();
+    for (r, kind) in KINDS.into_iter().enumerate() {
+        out.extend((before[r]..after[r]).filter_map(|s| EntityId::new(kind, s)));
     }
     out
 }
@@ -685,9 +698,16 @@ fn model_txn_with<R>(
         let saved_overlay = layer.overlay.clone();
         let ids_before = saved.ids().clone();
         let live_before = live_model_ids(&saved);
+        let serial_before = layer.overlay.as_ref().map_or([1; 3], |o| o.data().next_serial);
         let ran = f(layer).map(|r| {
-            let new_ids = minted(&ids_before, layer.model.ids());
+            let mut new_ids = minted(&ids_before, layer.model.ids());
+            // Only model-table ids can be "removed" (virtual ids live in the overlay).
             let removed = removed_ids(&live_before, &new_ids, &layer.model);
+            // Virtual ids the overlay minted (cut face, loop cells, halves) are adopted too, so
+            // the entity table stays in step with the overlay counters.
+            let serial_after = layer.overlay.as_ref().map_or(serial_before, |o| o.data().next_serial);
+            new_ids.extend(minted_virtual(serial_before, serial_after));
+            new_ids.sort_unstable();
             (r, new_ids, removed)
         });
         if ran.is_err() {
