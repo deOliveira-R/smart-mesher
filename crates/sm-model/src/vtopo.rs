@@ -171,6 +171,22 @@ impl TypedOp for PartitionFace {
     }
 }
 
+/// Collects the plane of `face`: a plane surface, or every member of a composite (recursively).
+/// Any other carrier is refused with the id of `top`, the face the op was asked to cut.
+fn face_planes(view: &dyn TopologyView, top: EntityId, face: EntityId, out: &mut Vec<sm_geom_api::Plane>) -> Result<(), OpError> {
+    match view.carrier(face) {
+        Carrier::Surface(sc) => match view.shapes().surface_def(sc.surface) {
+            Some(SurfaceDef::Plane(p)) => {
+                out.push(*p);
+                Ok(())
+            }
+            _ => Err(OpError::Invalid(format!("face {top} is not planar: a virtual chord on a curved face needs pcurves (not available yet)"))),
+        },
+        Carrier::Composite(members) if !members.is_empty() => members.iter().try_for_each(|&m| face_planes(view, top, m, out)),
+        _ => Err(OpError::Invalid(format!("face {top} is not planar: it has no plane carrier"))),
+    }
+}
+
 /// The straight chord `from -> to` as a [`VirtualCut`]; refuses a non-planar face or a vertex
 /// without a point.
 fn chord(ov: &Overlay, face: EntityId, from: EntityId, to: EntityId) -> Result<VirtualCut, OpError> {
@@ -178,10 +194,15 @@ fn chord(ov: &Overlay, face: EntityId, from: EntityId, to: EntityId) -> Result<V
     if !view.is_alive(face) {
         return Err(OpError::Invalid(format!("face {face} is not live in the overlay view")));
     }
-    if let Carrier::Surface(sc) = view.carrier(face) {
-        let planar = matches!(view.shapes().surface_def(sc.surface), Some(SurfaceDef::Plane(_)));
-        if !planar {
-            return Err(OpError::Invalid(format!("face {face} is not planar: a virtual chord on a curved face needs pcurves (not available yet)")));
+    let mut planes = Vec::new();
+    face_planes(view, face, face, &mut planes)?;
+    let tol = view.tolerance();
+    let r = planes[0];
+    for p in &planes[1..] {
+        let tilt = r.frame.z.cross(p.frame.z).norm();
+        let off = (p.frame.origin - r.frame.origin).dot(r.frame.z).abs();
+        if tilt > tol.angular || off > tol.linear {
+            return Err(OpError::Invalid(format!("face {face} is not planar: its members do not lie on one plane (a virtual chord needs pcurves on a bent face)")));
         }
     }
     let pt = |v: EntityId| match view.is_alive(v).then(|| view.carrier(v)) {

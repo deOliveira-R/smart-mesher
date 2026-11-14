@@ -227,6 +227,32 @@ fn partition_face_refuses_a_curved_face_with_its_id() {
 }
 
 #[test]
+fn partition_face_refuses_bent_and_curved_composites_with_the_id() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
+    let top = face_with_vertices(&s, &[vertex_at(&s, [0., 0., 2.]), vertex_at(&s, [2., 2., 2.]), vertex_at(&s, [2., 0., 2.]), vertex_at(&s, [0., 2., 2.])]);
+    let front = face_with_vertices(&s, &[vertex_at(&s, [0., 0., 0.]), vertex_at(&s, [2., 0., 0.]), vertex_at(&s, [2., 0., 2.]), vertex_at(&s, [0., 0., 2.])]);
+    let comp = go(&mut s, &CompositeFaces { faces: vec![top, front] }).outputs["face"][0];
+    let (a, b) = (vertex_at(&s, [0., 2., 2.]), vertex_at(&s, [2., 0., 0.]));
+    let hash = s.state().hash();
+    let e = try_go(&mut s, &PartitionFace { face: comp, from: a, to: b }).unwrap_err().to_string();
+    assert!(e.contains(&comp.to_string()) && e.contains("not planar"), "{e}");
+    assert_eq!(s.state().hash(), hash, "a refused op leaves the state as it was");
+
+    // A composite of the halves of a cylinder's lateral face is curved.
+    let mut s = session_for(cell_complex);
+    halved_cylinder(&mut s, 1.0, 2.0);
+    let lat = lateral_faces(&s);
+    assert!(lat.len() >= 2);
+    let comp = go(&mut s, &CompositeFaces { faces: lat }).outputs["face"][0];
+    let vs = list(&s, "TopoVertex");
+    let hash = s.state().hash();
+    let e = try_go(&mut s, &PartitionFace { face: comp, from: vs[0], to: vs[1] }).unwrap_err().to_string();
+    assert!(e.contains(&comp.to_string()) && e.contains("not planar"), "{e}");
+    assert_eq!(s.state().hash(), hash);
+}
+
+#[test]
 fn collapse_edge_hides_the_edge_records_the_gap_and_remove_restores() {
     let mut s = session_for(cell_complex);
     // A thin plate: its four z-edges are 1e-4 long.
