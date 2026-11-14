@@ -3,7 +3,9 @@
 
 use sm_core::{Aabb, EntityId, Point3, Vector3};
 use sm_geom_api::{ParametricCurve, ParametricSurface, Uv};
-use sm_topo_api::{Carrier, CellFlags, CurveCarrier, Sense, SurfaceCarrier, TopologyView, TopologyViewExt};
+use sm_topo_api::{
+    Carrier, CellFlags, CurveCarrier, Sense, SurfaceCarrier, TopologyView, TopologyViewExt,
+};
 
 pub(crate) fn unit(v: Vector3) -> Option<Vector3> {
     let n = v.norm();
@@ -27,7 +29,10 @@ pub(crate) fn vertex_point<V: TopologyView + ?Sized>(view: &V, v: EntityId) -> O
 }
 
 /// The curve and carrier of an edge, if it has one.
-pub(crate) fn edge_curve<V: TopologyView + ?Sized>(view: &V, e: EntityId) -> Option<(&dyn ParametricCurve, CurveCarrier)> {
+pub(crate) fn edge_curve<V: TopologyView + ?Sized>(
+    view: &V,
+    e: EntityId,
+) -> Option<(&dyn ParametricCurve, CurveCarrier)> {
     match view.carrier(e) {
         Carrier::Curve(cc) => view.shapes().curve(cc.curve).map(|c| (c, *cc)),
         _ => None,
@@ -35,7 +40,10 @@ pub(crate) fn edge_curve<V: TopologyView + ?Sized>(view: &V, e: EntityId) -> Opt
 }
 
 /// The surface and carrier of a face, if it has one.
-pub(crate) fn face_surface<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<(&dyn ParametricSurface, SurfaceCarrier)> {
+pub(crate) fn face_surface<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+) -> Option<(&dyn ParametricSurface, SurfaceCarrier)> {
     match view.carrier(f) {
         Carrier::Surface(sc) => view.shapes().surface(sc.surface).map(|s| (s, *sc)),
         _ => None,
@@ -52,7 +60,11 @@ pub(crate) fn edge_param(cc: &CurveCarrier, frac: f64) -> f64 {
 
 /// The point at fraction `frac` of an edge, walking from its start vertex. Edges without a curve
 /// are straight between their vertices.
-pub(crate) fn edge_sample<V: TopologyView + ?Sized>(view: &V, e: EntityId, frac: f64) -> Option<Point3> {
+pub(crate) fn edge_sample<V: TopologyView + ?Sized>(
+    view: &V,
+    e: EntityId,
+    frac: f64,
+) -> Option<Point3> {
     let (s, t) = view.edge_ends(e)?;
     if let Some((c, cc)) = edge_curve(view, e) {
         return Some(c.eval(edge_param(&cc, frac)));
@@ -107,7 +119,11 @@ pub(crate) fn aabb_overlap(a: &Aabb, b: &Aabb) -> bool {
 }
 
 /// The face-oriented unit normal at the point of the face surface nearest to `p`, with that point.
-pub(crate) fn face_normal_near<V: TopologyView + ?Sized>(view: &V, f: EntityId, p: Point3) -> Option<(Vector3, Point3, Uv)> {
+pub(crate) fn face_normal_near<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+    p: Point3,
+) -> Option<(Vector3, Point3, Uv)> {
     let (s, sc) = face_surface(view, f)?;
     let pr = s.project(p, None).ok()?;
     let n = s.normal(pr.uv).ok()?;
@@ -116,7 +132,11 @@ pub(crate) fn face_normal_near<V: TopologyView + ?Sized>(view: &V, f: EntityId, 
 }
 
 /// Sample points of a face boundary: every vertex and the interior samples of each edge.
-pub(crate) fn face_boundary_samples<V: TopologyView + ?Sized>(view: &V, f: EntityId, per_edge: usize) -> Vec<Point3> {
+pub(crate) fn face_boundary_samples<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+    per_edge: usize,
+) -> Vec<Point3> {
     let mut out = Vec::new();
     for &e in view.face_edges(f) {
         if is_degenerate(view, e) {

@@ -18,8 +18,13 @@ use crate::geo;
 
 fn shifted(pc: &PCurve, du: f64, dv: f64) -> PCurve {
     match pc {
-        PCurve::Line2(l) => PCurve::Line2(Line2 { origin: Uv::new(l.origin.u + du, l.origin.v + dv), ..*l }),
-        PCurve::Polyline2(p) => PCurve::Polyline2(p.iter().map(|q| Uv::new(q.u + du, q.v + dv)).collect()),
+        PCurve::Line2(l) => PCurve::Line2(Line2 {
+            origin: Uv::new(l.origin.u + du, l.origin.v + dv),
+            ..*l
+        }),
+        PCurve::Polyline2(p) => {
+            PCurve::Polyline2(p.iter().map(|q| Uv::new(q.u + du, q.v + dv)).collect())
+        }
         PCurve::Nurbs2(n) => {
             let mut m = n.clone();
             for c in &mut m.control {
@@ -40,16 +45,25 @@ fn period_shift(period: Option<f64>, from: f64, to: f64) -> f64 {
 }
 
 /// Make the pcurves of every loop of `face` continuous and fill the ones that can be exact.
-pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(topo: &mut E, face: EntityId) -> Result<(), BooleanError> {
+pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    face: EntityId,
+) -> Result<(), BooleanError> {
     if !topo.is_alive(face) {
         return Ok(());
     }
-    let Carrier::Surface(sc) = topo.carrier(face).clone() else { return Ok(()) };
-    let Some(sdef) = topo.shapes().surface_def(sc.surface).cloned() else { return Ok(()) };
+    let Carrier::Surface(sc) = topo.carrier(face).clone() else {
+        return Ok(());
+    };
+    let Some(sdef) = topo.shapes().surface_def(sc.surface).cloned() else {
+        return Ok(());
+    };
     if matches!(sdef, SurfaceDef::Plane(_)) {
         return Ok(());
     }
-    let Some(surf) = sdef.as_surface() else { return Ok(()) };
+    let Some(surf) = sdef.as_surface() else {
+        return Ok(());
+    };
     let dom = surf.domain();
     let (pu, pv) = (dom.u.period, dom.v.period);
     let loops: Vec<Vec<CoedgeKey>> = topo.loops(face).map(|l| l.keys().collect()).collect();
@@ -58,24 +72,42 @@ pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(topo: &mut E, face: EntityId) -
         for key in keys {
             let deg = geo::is_degenerate(&*topo, key.edge);
             if deg {
-                let Some(pc) = topo.pcurve(key).cloned() else { continue };
+                let Some(pc) = topo.pcurve(key).cloned() else {
+                    continue;
+                };
                 let rg = pc.range();
-                let (s, e) = if key.side == Side::Left { (pc.eval(rg.lo), pc.eval(rg.hi)) } else { (pc.eval(rg.hi), pc.eval(rg.lo)) };
-                let (du, dv) = cur.map_or((0.0, 0.0), |c| (period_shift(pu, s.u, c.u), period_shift(pv, s.v, c.v)));
+                let (s, e) = if key.side == Side::Left {
+                    (pc.eval(rg.lo), pc.eval(rg.hi))
+                } else {
+                    (pc.eval(rg.hi), pc.eval(rg.lo))
+                };
+                let (du, dv) = cur.map_or((0.0, 0.0), |c| {
+                    (period_shift(pu, s.u, c.u), period_shift(pv, s.v, c.v))
+                });
                 if du != 0.0 || dv != 0.0 {
                     topo.set_pcurve(key, Some(shifted(&pc, du, dv)))?;
                 }
                 cur = Some(Uv::new(e.u + du, e.v + dv));
                 continue;
             }
-            let Carrier::Curve(cc) = topo.carrier(key.edge).clone() else { continue };
-            let Some(cdef) = topo.shapes().curve_def(cc.curve).cloned() else { continue };
+            let Carrier::Curve(cc) = topo.carrier(key.edge).clone() else {
+                continue;
+            };
+            let Some(cdef) = topo.shapes().curve_def(cc.curve).cloned() else {
+                continue;
+            };
             let curve = cdef.as_curve();
             let along = (cc.sense == Sense::Forward) == (key.side == Side::Left);
-            let (t_start, t_end) = if along { (cc.range.lo, cc.range.hi) } else { (cc.range.hi, cc.range.lo) };
+            let (t_start, t_end) = if along {
+                (cc.range.lo, cc.range.hi)
+            } else {
+                (cc.range.hi, cc.range.lo)
+            };
             if let Some(pc) = topo.pcurve(key).cloned() {
                 let (s, e) = (pc.eval(t_start), pc.eval(t_end));
-                let (du, dv) = cur.map_or((0.0, 0.0), |c| (period_shift(pu, s.u, c.u), period_shift(pv, s.v, c.v)));
+                let (du, dv) = cur.map_or((0.0, 0.0), |c| {
+                    (period_shift(pu, s.u, c.u), period_shift(pv, s.v, c.v))
+                });
                 if du != 0.0 || dv != 0.0 {
                     topo.set_pcurve(key, Some(shifted(&pc, du, dv)))?;
                 }
@@ -90,7 +122,11 @@ pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(topo: &mut E, face: EntityId) -
                 let t = t_start + (t_end - t_start) * (k as f64 / N as f64);
                 let pr = surf.project(curve.eval(t), prev)?;
                 let at_pole = surf.jet(pr.uv).du.norm() < 1e-9;
-                let u = if at_pole { prev.map_or(f64::NAN, |p| p.u) } else { dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)) };
+                let u = if at_pole {
+                    prev.map_or(f64::NAN, |p| p.u)
+                } else {
+                    dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u))
+                };
                 let v = dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v));
                 let uv = Uv::new(u, v);
                 pts.push((t, uv));
@@ -132,7 +168,11 @@ pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(topo: &mut E, face: EntityId) -
             });
             if affine {
                 let origin = Uv::new(uv0.u - dir.u * t0, uv0.v - dir.v * t0);
-                let pc = PCurve::Line2(Line2 { origin, dir, range: Interval::new(cc.range.lo, cc.range.hi) });
+                let pc = PCurve::Line2(Line2 {
+                    origin,
+                    dir,
+                    range: Interval::new(cc.range.lo, cc.range.hi),
+                });
                 topo.set_pcurve(key, Some(pc))?;
             }
         }
@@ -141,7 +181,10 @@ pub(crate) fn fix_face<E: TopologyEdit + ?Sized>(topo: &mut E, face: EntityId) -
 }
 
 /// [`fix_face`] on every face of `faces`.
-pub(crate) fn fix_faces<E: TopologyEdit + ?Sized>(topo: &mut E, faces: &[EntityId]) -> Result<(), BooleanError> {
+pub(crate) fn fix_faces<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    faces: &[EntityId],
+) -> Result<(), BooleanError> {
     for &f in faces {
         fix_face(topo, f)?;
     }

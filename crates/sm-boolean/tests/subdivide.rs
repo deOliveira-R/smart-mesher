@@ -14,7 +14,9 @@ use sm_boolean::subdivide::{RingCount, RingMode, RingRadii, RingSpec, SectorSpec
 use sm_core::{EntityId, Point3, Vector3};
 use sm_layer_api::{LayerResultExt, model_txn};
 use sm_model_api::{LatticeFrame, Layout, RegionTag, SlotIx, SubIndex};
-use sm_op_api::{ApplyCtx, DerivedCache, Engine, Hash256, OpError, Services, Session, TimelineError, TypedOp};
+use sm_op_api::{
+    ApplyCtx, DerivedCache, Engine, Hash256, OpError, Services, Session, TimelineError, TypedOp,
+};
 
 const Z: [f64; 3] = [0.0, 0.0, 1.0];
 
@@ -33,11 +35,22 @@ impl TypedOp for TagSlot {
             ctx,
             |m, _t| {
                 if m.lattice_frame("pins").is_none() {
-                    let layout = Layout::Cartesian { n: [3, 3, 1], pitch: Vector3::new(1.26, 1.26, 1.0) };
-                    m.define_lattice_frame("pins", LatticeFrame::new(layout, Point3::new(0.0, 0.0, 0.0), None)).or_op()?;
+                    let layout = Layout::Cartesian {
+                        n: [3, 3, 1],
+                        pitch: Vector3::new(1.26, 1.26, 1.0),
+                    };
+                    m.define_lattice_frame(
+                        "pins",
+                        LatticeFrame::new(layout, Point3::new(0.0, 0.0, 0.0), None),
+                    )
+                    .or_op()?;
                 }
                 let ix = SlotIx::new(self.slot[0], self.slot[1], self.slot[2]);
-                m.set_region_tag(self.volume, RegionTag::new([("pins".to_string(), ix)].into(), None, None)).or_op()
+                m.set_region_tag(
+                    self.volume,
+                    RegionTag::new([("pins".to_string(), ix)].into(), None, None),
+                )
+                .or_op()
             },
             |_, _| Vec::new(),
         )
@@ -69,8 +82,15 @@ fn rig() -> Rig {
     let mut reg = common::rig::registry(cell_complex);
     reg.register::<TagSlot>().expect("tag slot");
     reg.register::<ClearTag>().expect("clear tag");
-    let engine = Engine::new(Arc::new(reg), Services::new(), Arc::new(DerivedCache::default())).expect("engine");
-    Rig { s: Session::new(engine) }
+    let engine = Engine::new(
+        Arc::new(reg),
+        Services::new(),
+        Arc::new(DerivedCache::default()),
+    )
+    .expect("engine");
+    Rig {
+        s: Session::new(engine),
+    }
 }
 
 fn rings(count: u32, mode: Option<RingMode>) -> Option<RingSpec> {
@@ -82,7 +102,13 @@ fn sectors(count: u32, angle0_deg: Option<f64>) -> Option<SectorSpec> {
 }
 
 fn pin(v: EntityId, rings: Option<RingSpec>, sectors: Option<SectorSpec>) -> SubdividePin {
-    SubdividePin { volumes: vec![v], axis: Z, center: [0.0; 3], rings, sectors }
+    SubdividePin {
+        volumes: vec![v],
+        axis: Z,
+        center: [0.0; 3],
+        rings,
+        sectors,
+    }
 }
 
 fn invalid(e: TimelineError) -> String {
@@ -93,7 +119,11 @@ fn invalid(e: TimelineError) -> String {
 }
 
 fn tag_of(r: &Rig, v: EntityId) -> RegionTag {
-    r.layer().model().region_tag(v).cloned().unwrap_or_else(|| panic!("{v} has no tag"))
+    r.layer()
+        .model()
+        .region_tag(v)
+        .cloned()
+        .unwrap_or_else(|| panic!("{v} has no tag"))
 }
 
 fn vol(r: &Rig, v: EntityId) -> f64 {
@@ -113,8 +143,18 @@ fn make_pin(r: &mut Rig, r_in: f64, r_out: f64) -> EntityId {
     // The annulus is the outer ring of a one-radius cut of the solid pin, with its tag cleared.
     // (The default-seam webcut at 0.418 in 0.475 works since W4-BOOL-TOOLS; this path keeps the
     // turned seam of `subdivide_pin`.)
-    let d = r.run(&pin(outer.volume, Some(RingSpec::Radii(RingRadii { radii: vec![r_in] })), None)).unwrap();
-    let ann = d.outputs["volumes"].iter().copied().find(|&x| tag_of(r, x).ring.unwrap().index == 1).unwrap();
+    let d = r
+        .run(&pin(
+            outer.volume,
+            Some(RingSpec::Radii(RingRadii { radii: vec![r_in] })),
+            None,
+        ))
+        .unwrap();
+    let ann = d.outputs["volumes"]
+        .iter()
+        .copied()
+        .find(|&x| tag_of(r, x).ring.unwrap().index == 1)
+        .unwrap();
     r.run(&ClearTag { volume: ann }).unwrap();
     ann
 }
@@ -124,7 +164,13 @@ fn rings_and_sectors_of_a_solid_pin() {
     let (r_out, h) = (0.4096, 1.0);
     let mut r = rig();
     let v = make_pin(&mut r, 0.0, r_out);
-    let d = r.run(&pin(v, rings(3, Some(RingMode::EqualArea)), sectors(4, None))).unwrap();
+    let d = r
+        .run(&pin(
+            v,
+            rings(3, Some(RingMode::EqualArea)),
+            sectors(4, None),
+        ))
+        .unwrap();
     let pieces = d.outputs["volumes"].clone();
     assert_eq!(pieces.len(), 12);
     assert_eq!(d.outputs["bodies"].len(), 12);
@@ -182,7 +228,10 @@ fn annulus_two_equal_area_rings() {
     }
     let mut ix: Vec<_> = p.iter().map(|&x| tag_of(&r, x).ring).collect();
     ix.sort_by_key(|t| t.map(|s| s.index));
-    assert_eq!(ix, vec![Some(SubIndex::new(0, 2)), Some(SubIndex::new(1, 2))]);
+    assert_eq!(
+        ix,
+        vec![Some(SubIndex::new(0, 2)), Some(SubIndex::new(1, 2))]
+    );
 }
 
 #[test]
@@ -190,17 +239,31 @@ fn equal_radius_and_explicit_radii() {
     let r_out = 0.4096;
     let mut r = rig();
     let v = make_pin(&mut r, 0.0, r_out);
-    let d = r.run(&pin(v, Some(RingSpec::Radii(RingRadii { radii: vec![0.2, 0.3] })), None)).unwrap();
+    let d = r
+        .run(&pin(
+            v,
+            Some(RingSpec::Radii(RingRadii {
+                radii: vec![0.2, 0.3],
+            })),
+            None,
+        ))
+        .unwrap();
     let p = d.outputs["volumes"].clone();
     assert_eq!(p.len(), 3);
     let want = [PI * 0.04, PI * (0.09 - 0.04), PI * (r_out * r_out - 0.09)];
     for (i, w) in want.iter().enumerate() {
-        let x = p.iter().copied().find(|&x| tag_of(&r, x).ring.unwrap().index == i as u32).unwrap();
+        let x = p
+            .iter()
+            .copied()
+            .find(|&x| tag_of(&r, x).ring.unwrap().index == i as u32)
+            .unwrap();
         assert!(rel(vol(&r, x), *w) < 1e-9, "ring {i}");
     }
     let mut r = rig();
     let v = make_pin(&mut r, 0.0, 0.4);
-    let d = r.run(&pin(v, rings(4, Some(RingMode::EqualRadius)), None)).unwrap();
+    let d = r
+        .run(&pin(v, rings(4, Some(RingMode::EqualRadius)), None))
+        .unwrap();
     for &x in &d.outputs["volumes"] {
         let i = f64::from(tag_of(&r, x).ring.unwrap().index);
         let w = PI * (((i + 1.0) * 0.1_f64).powi(2) - (i * 0.1_f64).powi(2));
@@ -225,7 +288,11 @@ fn sectors_only_with_an_offset_start_angle() {
         let c = r.topo().volume_moments(x).unwrap().centroid().unwrap();
         let ang = c.y.atan2(c.x).to_degrees().rem_euclid(360.0);
         let want = (30.0 + 60.0 * f64::from(s.index) + 30.0) % 360.0;
-        assert!(((ang - want + 180.0).rem_euclid(360.0) - 180.0).abs() < 1e-6, "sector {} at {ang}", s.index);
+        assert!(
+            ((ang - want + 180.0).rem_euclid(360.0) - 180.0).abs() < 1e-6,
+            "sector {} at {ang}",
+            s.index
+        );
     }
 }
 
@@ -238,14 +305,21 @@ fn counts_of_one_cut_nothing_and_tag_the_volume() {
     assert_eq!(d.outputs["volumes"], vec![v]);
     assert_eq!(r.topo().cells(sm_topo_api::Dim::Volume).len(), before);
     let t = tag_of(&r, v);
-    assert_eq!((t.ring, t.sector), (Some(SubIndex::new(0, 1)), Some(SubIndex::new(0, 1))));
+    assert_eq!(
+        (t.ring, t.sector),
+        (Some(SubIndex::new(0, 1)), Some(SubIndex::new(0, 1)))
+    );
 }
 
 #[test]
 fn a_lattice_slot_stays_on_every_piece() {
     let mut r = rig();
     let v = make_pin(&mut r, 0.0, 0.4);
-    r.run(&TagSlot { volume: v, slot: [2, 1, 0] }).unwrap();
+    r.run(&TagSlot {
+        volume: v,
+        slot: [2, 1, 0],
+    })
+    .unwrap();
     let d = r.run(&pin(v, rings(2, None), sectors(2, None))).unwrap();
     assert_eq!(d.outputs["volumes"].len(), 4);
     for &p in &d.outputs["volumes"] {
@@ -262,7 +336,13 @@ fn two_stacked_pins_on_an_off_origin_axis_in_one_call() {
     let mut r = rig();
     let a = r.cylinder(1.0, 0.4, [1.0, 2.0, 0.0]);
     let b = r.cylinder(1.0, 0.25, [1.0, 2.0, 5.0]);
-    let op = SubdividePin { volumes: vec![a.volume, b.volume], axis: Z, center: [1.0, 2.0, 0.0], rings: rings(2, None), sectors: sectors(2, Some(10.0)) };
+    let op = SubdividePin {
+        volumes: vec![a.volume, b.volume],
+        axis: Z,
+        center: [1.0, 2.0, 0.0],
+        rings: rings(2, None),
+        sectors: sectors(2, Some(10.0)),
+    };
     let d = r.run(&op).unwrap();
     assert_eq!(d.outputs["volumes"].len(), 8);
     assert_valid(r.topo());
@@ -283,17 +363,59 @@ fn typed_errors_and_atomic_failure() {
     assert!(invalid(r.run(&pin(v, None, sectors(0, None))).unwrap_err()).contains("count"));
     assert!(invalid(r.run(&pin(v, None, None)).unwrap_err()).contains("rings"));
     // Radii outside (r_in, r_out), not increasing, empty.
-    for bad in [vec![0.5], vec![0.0], vec![0.3, 0.2], vec![0.2, 0.2], vec![0.4], vec![]] {
-        let e = invalid(r.run(&pin(v, Some(RingSpec::Radii(RingRadii { radii: bad.clone() })), None)).unwrap_err());
-        assert!(e.contains("ring radius") || e.contains("radii"), "{bad:?}: {e}");
+    for bad in [
+        vec![0.5],
+        vec![0.0],
+        vec![0.3, 0.2],
+        vec![0.2, 0.2],
+        vec![0.4],
+        vec![],
+    ] {
+        let e = invalid(
+            r.run(&pin(
+                v,
+                Some(RingSpec::Radii(RingRadii { radii: bad.clone() })),
+                None,
+            ))
+            .unwrap_err(),
+        );
+        assert!(
+            e.contains("ring radius") || e.contains("radii"),
+            "{bad:?}: {e}"
+        );
     }
     let ann = make_pin(&mut r, 0.2, 0.4);
-    let e = invalid(r.run(&pin(ann, Some(RingSpec::Radii(RingRadii { radii: vec![0.15] })), None)).unwrap_err());
+    let e = invalid(
+        r.run(&pin(
+            ann,
+            Some(RingSpec::Radii(RingRadii { radii: vec![0.15] })),
+            None,
+        ))
+        .unwrap_err(),
+    );
     assert!(e.contains("ring radius"), "{e}");
     // Wrong axis, wrong centre, a brick, a sector piece.
-    let e = invalid(r.run(&SubdividePin { volumes: vec![v], axis: [1.0, 0.0, 0.0], center: [0.0; 3], rings: rings(2, None), sectors: None }).unwrap_err());
+    let e = invalid(
+        r.run(&SubdividePin {
+            volumes: vec![v],
+            axis: [1.0, 0.0, 0.0],
+            center: [0.0; 3],
+            rings: rings(2, None),
+            sectors: None,
+        })
+        .unwrap_err(),
+    );
     assert!(e.contains("coaxial"), "{e}");
-    let e = invalid(r.run(&SubdividePin { volumes: vec![v], axis: Z, center: [0.1, 0.0, 0.0], rings: rings(2, None), sectors: None }).unwrap_err());
+    let e = invalid(
+        r.run(&SubdividePin {
+            volumes: vec![v],
+            axis: Z,
+            center: [0.1, 0.0, 0.0],
+            rings: rings(2, None),
+            sectors: None,
+        })
+        .unwrap_err(),
+    );
     assert!(e.contains("coaxial"), "{e}");
     let b = r.brick([1.0; 3], [5.0; 3]);
     let e = invalid(r.run(&pin(b.volume, rings(2, None), None)).unwrap_err());
@@ -308,7 +430,10 @@ fn typed_errors_and_atomic_failure() {
     let mut r = rig();
     let v = make_pin(&mut r, 0.0, 0.4);
     let d = r.run(&pin(v, rings(2, None), None)).unwrap();
-    let e = invalid(r.run(&pin(d.outputs["volumes"][1], rings(2, None), None)).unwrap_err());
+    let e = invalid(
+        r.run(&pin(d.outputs["volumes"][1], rings(2, None), None))
+            .unwrap_err(),
+    );
     assert!(e.contains("already carries"), "{e}");
 }
 
@@ -319,23 +444,46 @@ fn a_failing_call_leaves_the_hash_unchanged() {
     let h = r.hash();
     assert!(r.run(&pin(v, rings(2, None), sectors(5, None))).is_err());
     assert_eq!(r.hash(), h);
-    assert!(r.run(&pin(v, Some(RingSpec::Radii(RingRadii { radii: vec![0.1, 0.9] })), None)).is_err());
+    assert!(
+        r.run(&pin(
+            v,
+            Some(RingSpec::Radii(RingRadii {
+                radii: vec![0.1, 0.9]
+            })),
+            None
+        ))
+        .is_err()
+    );
     assert_eq!(r.hash(), h);
 }
 
 fn scenario(r: &mut Rig) -> Hash256 {
     let a = make_pin(r, 0.0, 0.4096);
-    r.run(&TagSlot { volume: a, slot: [1, 1, 0] }).unwrap();
-    r.run(&pin(a, rings(3, None), sectors(4, Some(15.0)))).unwrap();
+    r.run(&TagSlot {
+        volume: a,
+        slot: [1, 1, 0],
+    })
+    .unwrap();
+    r.run(&pin(a, rings(3, None), sectors(4, Some(15.0))))
+        .unwrap();
     let b = make_pin(r, 0.418, 0.475);
-    r.run(&pin(b, rings(2, Some(RingMode::EqualRadius)), sectors(2, None))).unwrap();
+    r.run(&pin(
+        b,
+        rings(2, Some(RingMode::EqualRadius)),
+        sectors(2, None),
+    ))
+    .unwrap();
     r.hash()
 }
 
 #[test]
 fn deterministic_across_runs_and_thread_counts() {
     let run = |threads: usize| {
-        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| scenario(&mut rig()))
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| scenario(&mut rig()))
     };
     let h1 = run(1);
     assert_eq!(h1, run(1));

@@ -12,7 +12,9 @@ use sm_topo_api::{CellComplex, TopologyView};
 
 /// Volume of the unit cube below the plane and the area of the section, by clipping.
 fn cube_section(o: Vector3, n: Vector3) -> (f64, f64) {
-    let corners: Vec<Vector3> = (0..8).map(|i| Vector3::new((i & 1) as f64, ((i >> 1) & 1) as f64, ((i >> 2) & 1) as f64)).collect();
+    let corners: Vec<Vector3> = (0..8)
+        .map(|i| Vector3::new((i & 1) as f64, ((i >> 1) & 1) as f64, ((i >> 2) & 1) as f64))
+        .collect();
     let d: Vec<f64> = corners.iter().map(|c| n.dot(*c - o)).collect();
     // Section polygon: edge crossings, ordered around their centroid.
     let mut pts: Vec<Vector3> = Vec::new();
@@ -33,13 +35,21 @@ fn cube_section(o: Vector3, n: Vector3) -> (f64, f64) {
     let area = if pts.len() < 3 {
         0.0
     } else {
-        let c = pts.iter().fold(Vector3::new(0.0, 0.0, 0.0), |a, p| a + *p) * (1.0 / pts.len() as f64);
+        let c =
+            pts.iter().fold(Vector3::new(0.0, 0.0, 0.0), |a, p| a + *p) * (1.0 / pts.len() as f64);
         let nn = n * (1.0 / n.norm());
-        let u = if nn.x.abs() < 0.9 { Vector3::new(1.0, 0.0, 0.0) } else { Vector3::new(0.0, 1.0, 0.0) };
+        let u = if nn.x.abs() < 0.9 {
+            Vector3::new(1.0, 0.0, 0.0)
+        } else {
+            Vector3::new(0.0, 1.0, 0.0)
+        };
         let e1 = nn.cross(u);
         let e1 = e1 * (1.0 / e1.norm());
         let e2 = nn.cross(e1);
-        let mut v: Vec<(f64, Vector3)> = pts.iter().map(|p| ((*p - c).dot(e2).atan2((*p - c).dot(e1)), *p)).collect();
+        let mut v: Vec<(f64, Vector3)> = pts
+            .iter()
+            .map(|p| ((*p - c).dot(e2).atan2((*p - c).dot(e1)), *p))
+            .collect();
         v.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut s = Vector3::new(0.0, 0.0, 0.0);
         for k in 0..v.len() {
@@ -152,11 +162,26 @@ fn three_bricks_minus_the_middle_slab_leave_two_bodies() {
     let a = r.brick([1.0; 3], [0.5, 0.5, 0.5]);
     let b = r.brick([1.0; 3], [1.5, 0.5, 0.5]);
     let c = r.brick([1.0; 3], [2.5, 0.5, 0.5]);
-    let u = r.run(&Unite { bodies: vec![a.body, b.body, c.body], keep: None, regularize: None, tol: None }).unwrap();
+    let u = r
+        .run(&Unite {
+            bodies: vec![a.body, b.body, c.body],
+            keep: None,
+            regularize: None,
+            tol: None,
+        })
+        .unwrap();
     assert_eq!(u.outputs["bodies"].len(), 1);
     assert_eq!(u.outputs["volumes"].len(), 1);
     let slab = r.brick([1.0, 3.0, 3.0], [1.5, 0.5, 0.5]);
-    let d = r.run(&Subtract { targets: u.outputs["bodies"].clone(), tools: vec![slab.body], keep: None, regularize: None, tol: None }).unwrap();
+    let d = r
+        .run(&Subtract {
+            targets: u.outputs["bodies"].clone(),
+            tools: vec![slab.body],
+            keep: None,
+            regularize: None,
+            tol: None,
+        })
+        .unwrap();
     let t = r.topo();
     assert_valid(t);
     assert_eq!(d.outputs["bodies"].len(), 2);

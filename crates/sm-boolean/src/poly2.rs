@@ -91,5 +91,9 @@ pub(crate) fn intersection_area(a: &[P2], b: &[P2], eps: f64) -> Option<f64> {
         return None;
     };
     let c = clip_convex(subject, clip);
-    Some(if c.len() < 3 { 0.0 } else { signed_area(&c).abs() })
+    Some(if c.len() < 3 {
+        0.0
+    } else {
+        signed_area(&c).abs()
+    })
 }
