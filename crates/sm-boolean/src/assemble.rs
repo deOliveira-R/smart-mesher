@@ -83,24 +83,34 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
             bbox = bbox.union(&geo::face_aabb(view, f, 0.0));
         }
         let diag = geo::dist(bbox.lo, bbox.hi);
-        let delta = (1e-3 * diag).max(100.0 * lin);
+        // Probe just inside the shell along its normals. A fixed 1e-3 diag step overshoots a thin
+        // shell (a slab or wall thinner than the step), so the steps run up a decade ladder from
+        // 10 lin to 1e-3 diag and the first conclusive answer is the verdict.
+        let d_max = (1e-3 * diag).max(10.0 * lin);
         let mut verdict: Option<bool> = None;
-        for &(f, sense) in su {
-            let Some(p) = faceclass::interior_point(view, &cache, f)? else { continue };
-            let (nf, _, _) = geo::face_normal_near(view, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
-            let n_out = nf * sense.sign();
-            let q = Point3::new(p.x - delta * n_out.x, p.y - delta * n_out.y, p.z - delta * n_out.z);
-            match locate::locate_in_uses(view, &cache, su, q, &tol) {
-                Ok(PointLocation::In) => {
-                    verdict = Some(true);
-                    break;
+        let mut delta = 10.0 * lin;
+        while verdict.is_none() {
+            for &(f, sense) in su {
+                let Some(p) = faceclass::interior_point(view, &cache, f)? else { continue };
+                let (nf, _, _) = geo::face_normal_near(view, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+                let n_out = nf * sense.sign();
+                let q = Point3::new(p.x - delta * n_out.x, p.y - delta * n_out.y, p.z - delta * n_out.z);
+                match locate::locate_in_uses(view, &cache, su, q, &tol) {
+                    Ok(PointLocation::In) => {
+                        verdict = Some(true);
+                        break;
+                    }
+                    Ok(PointLocation::Out) => {
+                        verdict = Some(false);
+                        break;
+                    }
+                    _ => continue,
                 }
-                Ok(PointLocation::Out) => {
-                    verdict = Some(false);
-                    break;
-                }
-                _ => continue,
             }
+            if delta >= d_max {
+                break;
+            }
+            delta = (delta * 10.0).min(d_max);
         }
         is_outer.push(verdict.ok_or_else(invalid)?);
     }

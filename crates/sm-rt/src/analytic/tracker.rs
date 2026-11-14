@@ -267,9 +267,19 @@ impl AnalyticTracker {
     /// `(t, surface)` of the earliest crossing of a surface that leads into a cell, ties by surface
     /// id. `None` if the ray never enters within `max_t`.
     pub(crate) fn enter_from_outside(&self, o: V3, d: V3, max_t: f64, sc: &mut Scratch) -> Option<(f64, u32)> {
+        self.enter_impl(o, d, max_t, true, sc)
+    }
+
+    /// The first entry of a ray into a cell of the leaf from outside it by the tile walk of the cell index (`indexed`, when the leaf
+    /// has one) or by testing every surface (the oracle): the same answer. `(t, surface)`.
+    pub fn entry_from_outside(&self, o: Point3, d: Vector3, max_t: f64, indexed: bool, scratch: &mut Scratch) -> Option<(f64, SurfaceId)> {
+        self.enter_impl(a3(o), av(d), max_t, indexed, scratch).map(|(t, s)| (t, SurfaceId::new(s as usize)))
+    }
+
+    fn enter_impl(&self, o: V3, d: V3, max_t: f64, indexed: bool, sc: &mut Scratch) -> Option<(f64, u32)> {
         let mut best: Option<(f64, u32)> = None;
         let mut buf = [0.0f64; 4];
-        for s in 0..self.n_surfs() as u32 {
+        let mut one = |s: u32, best: &mut Option<(f64, u32)>, sc: &mut Scratch| {
             let k = self.leaf.surfs[s as usize].hits(o, d, max_t, &mut buf);
             for &t in &buf[..k] {
                 if best.is_some_and(|b| (t, s) >= (b.0, b.1)) {
@@ -282,9 +292,22 @@ impl AnalyticTracker {
                 }
                 let sense: i8 = if dn > 0.0 { 1 } else { -1 };
                 if matches!(self.leaf.across(None, s, sense, p, d, &mut sc.counters), Next::Cell(_)) {
-                    best = Some((t, s));
+                    *best = Some((t, s));
                 }
             }
+        };
+        match self.leaf.index.as_ref().filter(|ix| indexed && !ix.has_unbounded()) {
+            // A crossing that leads into a cell happens inside that cell's tile, whose surface
+            // list holds the surface: walk the tiles front to back and stop once an event lies
+            // strictly before the tile exit (every later tile starts at or after it). The walk is
+            // clipped to the root box, so a leaf with an unbounded cell takes the all-surfaces path.
+            Some(ix) => ix.walk(o, d, max_t, |tile, t_exit| {
+                for &s in ix.tile_surfs(tile) {
+                    one(s, &mut best, sc);
+                }
+                best.is_some_and(|b| b.0 < t_exit)
+            }),
+            None => (0..self.n_surfs() as u32).for_each(|s| one(s, &mut best, sc)),
         }
         best
     }
@@ -390,6 +413,14 @@ impl AnalyticTracker {
         })
     }
 
+    /// The face of regular cell `c` a ray from `p` along `d` runs along (see `Leaf::on_face_along`).
+    pub(crate) fn on_face_along(&self, c: CellId, p: Point3, d: Vector3) -> Option<FaceId> {
+        if c.is_none() || c == CellId::COMPLEMENT || c.get() >= self.leaf.n_cells() {
+            return None;
+        }
+        self.leaf.on_face_along(c.get(), a3(p), av(d)).map(FaceId)
+    }
+
     fn region_of(&self, c: CellId) -> RegionId {
         if c == CellId::COMPLEMENT {
             self.complement.unwrap_or(RegionId::NONE)
@@ -482,7 +513,8 @@ impl AnalyticTracker {
 
     /// The first of the sorted `sc.hits` that is an event: a crossing out of the current cell
     /// into another cell (or, from the complement, into one), before the box exit.
-    fn first_event(&self, cur_cell: Option<u32>, comp: bool, t_box: f64, o: V3, d: V3, sc: &mut Scratch) -> Option<(f64, u32, Next)> {
+    fn first_event(&self, cur_cell: Option<u32>, entry: Option<u32>, comp: bool, t_box: f64, ray: (V3, V3), sc: &mut Scratch) -> Option<(f64, u32, Next)> {
+        let (o, d) = ray;
         for i in 0..sc.hits.len() {
             let (t, s) = sc.hits[i];
             if comp && t_box <= t {
@@ -495,7 +527,7 @@ impl AnalyticTracker {
             }
             let sense: i8 = if dn > 0.0 { 1 } else { -1 };
             if let Some(c) = cur_cell
-                && self.leaf.contains(c as usize, p, d, Some((s, sense)), &mut sc.counters)
+                && self.leaf.contains_keeping(c as usize, p, d, Some((s, sense)), entry, &mut sc.counters)
             {
                 continue;
             }
@@ -541,7 +573,7 @@ impl AnalyticTracker {
                     sc.hits.retain(|h| h.0 > after && h.0 <= t_exit);
                     sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
                     after = t_exit;
-                    event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+                    event = self.first_event(cur_cell, entry, comp, t_box, (o, d), sc);
                     event.is_some()
                 });
             }
@@ -554,7 +586,7 @@ impl AnalyticTracker {
                     self.push_hits(s, o, d, max_dist, entry, sc);
                 }
                 sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-                event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+                event = self.first_event(cur_cell, entry, comp, t_box, (o, d), sc);
             }
         }
 

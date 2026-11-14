@@ -1,7 +1,7 @@
 //! [`WorldTracker`]: the hierarchical walker over prototype trackers (`BuildInput::Hier`).
 //!
 //! A world is a DAG of components (`WorldSpec`): leaves (a prototype [`MeshTracker`] built from a
-//! mesh or a facet soup), unions of rigidly placed children and rectangular lattices. Instances
+//! mesh or a facet soup), unions of rigidly placed children and lattices (rectangular, and hexagonal in both orientations). Instances
 //! share their prototype: regions, surfaces and faces are numbered per prototype
 //! (prefix offsets over prototypes), cells per instance (prefix sums over instances, no table for
 //! a lattice with a uniform fill). A particle's place is `TrackState::levels`: one entry per
@@ -22,6 +22,7 @@
 use crate::bvh::{Box6, EMPTY_BOX, box_dist2, union};
 use crate::builder::build_proto;
 use crate::delta::flight::{box_exit, end_face};
+use crate::hexlat::{self, Orient};
 use crate::analytic::AnalyticTracker;
 use crate::tracker::MeshTracker;
 use crate::vec3::{dot, finite3, madd, norm, scale, sub};
@@ -44,6 +45,13 @@ type Levels = SmallVec<[Level; LEVEL_INLINE]>;
 /// Largest global cell count (ids are `u32`; `NONE` and `COMPLEMENT` are reserved).
 const MAX_CELLS: u64 = u32::MAX as u64 - 2;
 const MAX_ISSUES: usize = 16;
+/// Consecutive steps of at most `tol` that a trace follows before it treats the run as a
+/// grazing trap (zero-length hand-backs between instances) and nudges out of it.
+const ZERO_RUN_MAX: u32 = 8;
+/// Nudge attempts (`tol * 2^k`, `k < GRAZE_TRIES`) out of a grazing trap, and the traps one trace
+/// may leave this way before it ends in a typed error.
+const GRAZE_TRIES: u32 = 6;
+const GRAZE_HOPS: u32 = 4;
 
 // ---- affine maps -----------------------------------------------------------------------
 
@@ -297,8 +305,18 @@ struct Place {
     bbox: Box6,
 }
 
+/// Element layout of a lattice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Rect,
+    Hex(Orient),
+}
+
 struct Lat {
+    shape: Shape,
+    /// Rect: lower corner. Hex: centre of element `(0, 0, 0)`.
     origin: [f64; 3],
+    /// Rect: pitch per axis. Hex: `[p, p, z_pitch]` (`z_pitch` is `0` for a single layer).
     pitch: [f64; 3],
     dims: [u32; 3],
     fill: Vec<u32>,
@@ -310,11 +328,17 @@ struct Lat {
 
 impl Lat {
     fn center(&self, idx: [i32; 3]) -> [f64; 3] {
-        [
-            self.origin[0] + (f64::from(idx[0]) + 0.5) * self.pitch[0],
-            self.origin[1] + (f64::from(idx[1]) + 0.5) * self.pitch[1],
-            self.origin[2] + (f64::from(idx[2]) + 0.5) * self.pitch[2],
-        ]
+        match self.shape {
+            Shape::Rect => [
+                self.origin[0] + (f64::from(idx[0]) + 0.5) * self.pitch[0],
+                self.origin[1] + (f64::from(idx[1]) + 0.5) * self.pitch[1],
+                self.origin[2] + (f64::from(idx[2]) + 0.5) * self.pitch[2],
+            ],
+            Shape::Hex(o) => {
+                let c = hexlat::center(o, self.pitch[0], idx[0], idx[1]);
+                [self.origin[0] + c[0], self.origin[1] + c[1], self.origin[2] + f64::from(idx[2]) * self.pitch[2]]
+            }
+        }
     }
     fn lin(&self, idx: [i32; 3]) -> usize {
         idx[0] as usize + self.dims[0] as usize * (idx[1] as usize + self.dims[1] as usize * idx[2] as usize)
@@ -329,14 +353,28 @@ impl Lat {
     fn n(&self) -> usize {
         self.fill.len()
     }
+    /// Does the closed hexagon of an in-range element hold `u` (relative to the centre of element
+    /// `(0, 0)`)? Exact, no tolerance.
+    fn covers_xy(&self, u: [f64; 2]) -> bool {
+        let Shape::Hex(o) = self.shape else { return false };
+        let p = self.pitch[0];
+        let (q0, r0) = hexlat::round_axial(o, p, u);
+        std::iter::once((0, 0)).chain(hexlat::NEIGHBOURS).any(|(dq, dr)| {
+            let (q, r) = (q0.saturating_add(dq), r0.saturating_add(dr));
+            let c = hexlat::center(o, p, q, r);
+            q >= 0 && r >= 0 && (q as u32) < self.dims[0] && (r as u32) < self.dims[1] && hexlat::sd(o, p, [u[0] - c[0], u[1] - c[1]]) <= 0.0
+        })
+    }
     /// Candidate indices along axis `a` for coordinate `p`: the containing slab, or both slabs
     /// of a wall within `tol`, the one the direction enters first. Axis z of a single-layer
-    /// lattice is unconstrained (index 0).
+    /// lattice is unconstrained (index 0). A hex z layer is centred on its index, so its walls
+    /// are at half-integers (`shift` 0.5).
     fn axis_cands(&self, a: usize, p: f64, dir: f64, tol: f64) -> ([i32; 2], usize) {
         if a == 2 && self.dims[2] == 1 {
             return ([0, 0], 1);
         }
-        let x = (p - self.origin[a]) / self.pitch[a];
+        let shift = if a == 2 && matches!(self.shape, Shape::Hex(_)) { 0.5 } else { 0.0 };
+        let x = (p - self.origin[a]) / self.pitch[a] + shift;
         let r = x.round();
         if (x - r).abs() * self.pitch[a] <= tol {
             let (lo, hi) = (r as i32 - 1, r as i32);
@@ -344,6 +382,37 @@ impl Lat {
         } else {
             ([x.floor() as i32, 0], 1)
         }
+    }
+
+    /// Element indices to try for the point `p` (lattice frame) moving along `dir`, in order:
+    /// z layers outermost, then the planar candidates (see [`hexlat::candidates`] for the hex
+    /// vertex-tie rule). Indices may be out of range.
+    fn cands(&self, p: [f64; 3], dir: [f64; 3], tol: f64) -> SmallVec<[[i32; 3]; 8]> {
+        let (cz, nz) = self.axis_cands(2, p[2], dir[2], tol);
+        let mut out: SmallVec<[[i32; 3]; 8]> = SmallVec::new();
+        match self.shape {
+            Shape::Rect => {
+                let (cx, nx) = self.axis_cands(0, p[0], dir[0], tol);
+                let (cy, ny) = self.axis_cands(1, p[1], dir[1], tol);
+                for &kz in &cz[..nz] {
+                    for &ky in &cy[..ny] {
+                        for &kx in &cx[..nx] {
+                            out.push([kx, ky, kz]);
+                        }
+                    }
+                }
+            }
+            Shape::Hex(o) => {
+                let u = [p[0] - self.origin[0], p[1] - self.origin[1]];
+                let xy = hexlat::candidates(o, self.pitch[0], u, [dir[0], dir[1]], tol);
+                for &kz in &cz[..nz] {
+                    for &(q, r) in &xy {
+                        out.push([q, r, kz]);
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -410,7 +479,7 @@ enum Loc {
 ///   (`dims[2] == 1`) have no z walls.
 /// * The leaf's own boundary conditions and complement policy do not apply in a world; the
 ///   world's `BoundarySpec::default` applies where a ray leaves the last instance. Per-surface
-///   rules, periodic boundaries, hex lattices and lattice `outer` fills are
+///   rules, periodic boundaries and lattice `outer` fills are
 ///   `RtError::Unsupported`. A CSG leaf is hosted as an [`AnalyticTracker`] prototype (no complement
 ///   region, vacuum boundaries; `partition.enabled` is refused for it).
 /// * Region and surface tables hold each prototype once (regions are prototypes); a surface or
@@ -430,6 +499,10 @@ pub struct WorldTracker {
     tol: f64,
     block_size: usize,
     any_partners: bool,
+    /// Some lattice is hexagonal (the grazing-trap nets look at the path only then).
+    has_hex: bool,
+    /// Some hexagonal lattice is stacked in z (the z-wall rules look at the path only then).
+    hex_stack: bool,
     overlap_vertex_tests: u64,
     /// The majorant node tables (`PartitionOptions::enabled`).
     hier: Option<WorldHier>,
@@ -559,6 +632,8 @@ impl WorldTracker {
         if comps[root].cells == 0 {
             return Err(issue("world.empty", "the world has no cells".into()));
         }
+        let has_hex = comps.iter().any(|c| matches!(&c.kind, Kind::Lattice(l) if matches!(l.shape, Shape::Hex(_))));
+        let hex_stack = comps.iter().any(|c| matches!(&c.kind, Kind::Lattice(l) if matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0));
         let any_partners = comps.iter().any(|c| matches!(&c.kind, Kind::Union { partners, .. } if partners.iter().any(|p| !p.is_empty())));
 
         // Info.
@@ -588,6 +663,8 @@ impl WorldTracker {
             tol,
             block_size: opts.block_size as usize,
             any_partners,
+            has_hex,
+            hex_stack,
             overlap_vertex_tests: 0,
             hier: None,
         };
@@ -642,6 +719,10 @@ impl WorldTracker {
                 Kind::Lattice(l) => {
                     h.write_u64(3);
                     l.origin.iter().chain(l.pitch.iter()).for_each(|&x| h.write_f64(x));
+                    // Rect worlds keep their byte stream; a hex lattice adds its orientation.
+                    if let Shape::Hex(o) = l.shape {
+                        h.write_u64(if o == Orient::XRows { 2 } else { 3 });
+                    }
                     l.dims.iter().for_each(|&d| h.write_u64(u64::from(d)));
                     h.write_u64(l.fill.len() as u64);
                     l.fill.iter().for_each(|&f| h.write_u64(u64::from(f)));
@@ -664,45 +745,7 @@ impl WorldTracker {
 
     /// Vertices of the outer boundary of component `c`, in its own frame.
     fn boundary_vertices(&self, c: usize, out: &mut Vec<[f64; 3]>) {
-        match &self.comps[c].kind {
-            // A CSG leaf has no vertices: overlaps with it are found by `probe_partners` and
-            // `rt.check_overlaps`.
-            Kind::Leaf(p) => {
-                let Some(core) = self.protos[*p].tracker.mesh().map(|m| &m.core) else { return };
-                let mut vs: BTreeSet<u32> = BTreeSet::new();
-                for f in 0..core.n_faces() {
-                    if core.f_right[f] == crate::core::NONE {
-                        vs.extend(core.face_verts(f).iter().copied());
-                    }
-                }
-                out.extend(vs.into_iter().map(|v| core.pos[v as usize]));
-            }
-            Kind::Union { places, .. } => {
-                let mut tmp = Vec::new();
-                for p in places {
-                    tmp.clear();
-                    self.boundary_vertices(p.child, &mut tmp);
-                    out.extend(tmp.iter().map(|&v| p.fwd.pt(v)));
-                }
-            }
-            Kind::Lattice(l) => {
-                let mut cache: Vec<(u32, Vec<[f64; 3]>)> = Vec::new();
-                for e in 0..l.n() {
-                    let child = l.fill[e];
-                    let at = match cache.iter().position(|(c, _)| *c == child) {
-                        Some(at) => at,
-                        None => {
-                            let mut v = Vec::new();
-                            self.boundary_vertices(child as usize, &mut v);
-                            cache.push((child, v));
-                            cache.len() - 1
-                        }
-                    };
-                    let ce = l.center(l.idx_of(e));
-                    out.extend(cache[at].1.iter().map(|v| [v[0] + ce[0], v[1] + ce[1], v[2] + ce[2]]));
-                }
-            }
-        }
+        boundary_vertices_of(&|i| Some(&self.comps[i]), &self.protos, c, out);
     }
 
     /// Exact narrow phase over placement pairs whose boxes overlap: a boundary vertex of one
@@ -731,7 +774,7 @@ impl WorldTracker {
                             tests += 1;
                             let q = pb.inv.pt(w);
                             let d = av3(hashed_direction(p3(w)));
-                            if let Loc::Hit(h) = self.locate_rec(pb.child, q, pb.inv.vec(d), &mut sc, None)
+                            if let Loc::Hit(h) = self.locate_rec(pb.child, q, pb.inv.vec(d), &mut sc, None, false)
                                 && h.strict
                             {
                                 if issues.len() < MAX_ISSUES {
@@ -770,7 +813,13 @@ impl WorldTracker {
 
     /// Resolve a level path to its leaf prototype, the global-to-leaf map and the cell base.
     fn frame_of(&self, levels: &[Level]) -> Result<Frame> {
-        let mut comp = self.root;
+        self.frame_from(self.root, levels)
+    }
+
+    /// [`Self::frame_of`] for a path that starts at the component `comp` (its frame is the origin
+    /// of the returned map).
+    fn frame_from(&self, start: usize, levels: &[Level]) -> Result<Frame> {
+        let mut comp = start;
         let mut aff = Aff::ID;
         let mut base = 0u64;
         let mut checks: SmallVec<[Check; 2]> = SmallVec::new();
@@ -863,7 +912,7 @@ impl WorldTracker {
     /// `excl`: the path of an instance to skip (`Some(rest)` while on that path; at the leaf with
     /// nothing left the instance is the excluded one). A particle that just left an instance
     /// through an outer face must not be given that instance back by rounding.
-    fn locate_rec(&self, comp: usize, p: [f64; 3], dir: [f64; 3], sc: &mut Scratch, excl: Option<&[Level]>) -> Loc {
+    fn locate_rec(&self, comp: usize, p: [f64; 3], dir: [f64; 3], sc: &mut Scratch, excl: Option<&[Level]>, carry: bool) -> Loc {
         let c = &self.comps[comp];
         if box_empty(&c.bounds) || !inside_box(&c.bounds, p, self.tol) {
             return Loc::Miss;
@@ -899,7 +948,7 @@ impl WorldTracker {
                         continue;
                     }
                     let sub_excl = excl.and_then(|r| r.split_first()).filter(|(l, _)| l.component.get() == comp && l.instance.get() == i).map(|(_, rest)| rest);
-                    match self.locate_rec(pl.child, pl.inv.pt(p), pl.inv.vec(dir), sc, sub_excl) {
+                    match self.locate_rec(pl.child, pl.inv.pt(p), pl.inv.vec(dir), sc, sub_excl, carry) {
                         Loc::Miss => {}
                         Loc::Overlap => return Loc::Overlap,
                         Loc::Hit(h) => match &best {
@@ -925,35 +974,236 @@ impl WorldTracker {
                 }
             }
             Kind::Lattice(l) => {
-                let (cx, nx) = l.axis_cands(0, p[0], dir[0], self.tol);
-                let (cy, ny) = l.axis_cands(1, p[1], dir[1], self.tol);
-                let (cz, nz) = l.axis_cands(2, p[2], dir[2], self.tol);
-                for &kz in &cz[..nz] {
-                    for &ky in &cy[..ny] {
-                        for &kx in &cx[..nx] {
-                            let idx = [kx, ky, kz];
-                            if !l.in_range(idx) {
-                                continue;
+                // A hex point on a shared flat, with the direction along it: each leaf rules on
+                // its own tangential tie and may take the point yet leave at once (two leaves
+                // handing a ray back and forth with zero-length steps) or refuse it. The point is
+                // still inside the footprint, so take the first candidate in order other than the
+                // excluded one, ruled on with the direction nudged toward its centre (the state's
+                // direction is not changed), provided the ray stays within `tol` of its hexagon
+                // over a run of one edge. After a zero-length exit (`carry`) this goes first.
+                // A hex stack and a ray parallel to the z-walls (`dz` too small to change layer
+                // within the tolerance over any run in the lattice): a point on a hex flat of the
+                // element the ray left is not handed to the neighbouring layer of the same column,
+                // which holds it only within `tol` and ends the run at once (zero-length
+                // hand-backs between the two layers).
+                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= self.zpar_limit(l);
+                let excl_col = excl.and_then(|r| r.first()).filter(|lv| lv.component.get() == comp && parallel_z).map(|lv| lv.lattice);
+                let same_column = |idx: [i32; 3]| {
+                    let Shape::Hex(or) = l.shape else { return false };
+                    // Only for a point on a hex flat of that column (a crossing of the pin
+                    // surface at the wall belongs to the layer next door).
+                    let q = sub(p, l.center(idx));
+                    excl_col.is_some_and(|e| e[0] == idx[0] && e[1] == idx[1] && e[2] != idx[2]) && hexlat::sd(or, l.pitch[0], [q[0], q[1]]) >= -self.tol
+                };
+                let carry_pass = |sc: &mut Scratch| -> Option<Hit> {
+                    let Shape::Hex(or) = l.shape else { return None };
+                    for idx in l.cands(p, dir, self.tol) {
+                        if !l.in_range(idx) || same_column(idx) {
+                            continue;
+                        }
+                        let lin = l.lin(idx);
+                        if excl.and_then(|r| r.split_first()).is_some_and(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin) {
+                            continue;
+                        }
+                        let q = sub(p, l.center(idx));
+                        let n = norm(q);
+                        // For each flat within `tol` of the point, the distance outside it plus
+                        // the sideways drift over a run of one edge (`p / sqrt 3`, the longest run
+                        // along a flat) stays within `tol`, however grazing the departure. A ray
+                        // leaving at a vertex is not carried into it, nor a ray leaving through
+                        // the z-wall of the layer it would be given.
+                        let edge = l.pitch[0] / 3.0_f64.sqrt();
+                        if n <= 0.0 || hexlat::run_leaves(or, l.pitch[0], [q[0], q[1]], [dir[0], dir[1]], edge, self.tol) || self.leaves_through_z(l, q[2], dir[2]) {
+                            continue;
+                        }
+                        if let Loc::Hit(mut h) = self.locate_rec(l.fill[lin] as usize, q, scale(q, -1.0 / n), sc, None, false) {
+                            // The leaf must know it is on the flat the ray runs along, or it may
+                            // end the run at once through that plane (rounding in the direction).
+                            if let Ok(fr) = self.frame_from(l.fill[lin] as usize, &h.levels)
+                                && let Body::Csg(a) = &self.protos[fr.proto].tracker
+                                && let Some(f) = a.on_face_along(h.local.cell, p3(fr.g2l.pt(q)), v3(fr.g2l.vec(dir)))
+                            {
+                                h.local.on_face = Some(f);
                             }
-                            let lin = l.lin(idx);
-                            let ce = l.center(idx);
-                            let q = sub(p, ce);
-                            let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
-                            match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl) {
-                                Loc::Miss => {}
-                                Loc::Overlap => return Loc::Overlap,
-                                Loc::Hit(mut h) => {
-                                    h.base += self.cell_off_in_lattice(l, lin);
-                                    h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
-                                    return Loc::Hit(h);
-                                }
-                            }
+                            h.base += self.cell_off_in_lattice(l, lin);
+                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
+                            return Some(h);
+                        }
+                    }
+                    None
+                };
+                if carry && excl.is_some_and(|r| r.first().is_some_and(|lv| lv.component.get() == comp))
+                    && let Some(h) = carry_pass(sc)
+                {
+                    return Loc::Hit(h);
+                }
+                for idx in l.cands(p, dir, self.tol) {
+                    if !l.in_range(idx) || same_column(idx) {
+                        continue;
+                    }
+                    let lin = l.lin(idx);
+                    let ce = l.center(idx);
+                    let q = sub(p, ce);
+                    let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
+                    // On a z-wall of a hex stack with `dz` ~ 0 the leaf's tie on its z plane is
+                    // hashed, so each layer would take or refuse the point by its own hash. The
+                    // point is in both layers: rule on it with the direction nudged into this
+                    // layer (the state's direction is not changed), so the first candidate in
+                    // order takes it and the run along the wall stays in one layer.
+                    let mut ld = dir;
+                    if let Some(dz) = self.zwall_nudge(l, q[2], dir[2]) {
+                        ld[2] = dz;
+                    }
+                    match self.locate_rec(l.fill[lin] as usize, q, ld, sc, sub_excl, carry) {
+                        Loc::Miss => {}
+                        Loc::Overlap => return Loc::Overlap,
+                        Loc::Hit(mut h) => {
+                            h.base += self.cell_off_in_lattice(l, lin);
+                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
+                            return Loc::Hit(h);
                         }
                     }
                 }
-                Loc::Miss
+                match carry_pass(sc) {
+                    Some(h) => Loc::Hit(h),
+                    None => Loc::Miss,
+                }
             }
         }
+    }
+
+    /// The tolerance-derived z-direction to rule with, for a point at `qz` (relative to the
+    /// element centre) of a hex stack lattice `l` with a ray whose z-component `dz` is within the
+    /// angular tolerance (parallel to the z-walls) and the point on a z-wall (within the on-face
+    /// band): into the element, `10 * tol.angular`, so the leaf's tie on its z plane (hashed
+    /// whenever `|n . d| <= tol.angular`) is decided inward.
+    fn zpar_limit(&self, l: &Lat) -> f64 {
+        // Parallel to the z-walls: `dz` too small to leave the on-face band (`tol`) over a run
+        // of one element (at most two pitches), or within the angular tolerance.
+        self.info.tol.angular.max(self.tol / (2.0 * l.pitch[0].abs().max(f64::MIN_POSITIVE)))
+    }
+
+    fn zwall_nudge(&self, l: &Lat, qz: f64, dz: f64) -> Option<f64> {
+        let ang = self.info.tol.angular;
+        (matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0 && dz.abs() <= self.zpar_limit(l) && (qz.abs() - 0.5 * l.pitch[2]).abs() <= self.tol).then(|| -qz.signum() * 10.0 * ang)
+    }
+
+    /// Whether a ray with z-component `dz` leaves the layer it would be given through the z-wall
+    /// at `qz` (relative to the element centre): on the wall (within `tol`), moving out by more
+    /// than the parallel limit. Such a ray belongs to the next layer; handing the point back to
+    /// this one only ends the step at once.
+    fn leaves_through_z(&self, l: &Lat, qz: f64, dz: f64) -> bool {
+        l.pitch[2] > 0.0 && dz.abs() > self.zpar_limit(l) && qz.abs() - 0.5 * l.pitch[2] >= -self.tol && qz.signum() * dz > 0.0
+    }
+
+    /// For a state (global position `o`, direction `d`) whose path holds a hex stack with the point
+    /// on a z-wall and the ray parallel to it: the global direction to rule with, the direction
+    /// with the lattice-frame z-component replaced by the inward nudge (see [`Self::zwall_nudge`]).
+    fn zwall_dir(&self, levels: &[Level], o: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+        if !self.hex_stack {
+            return None;
+        }
+        let mut comp = self.root;
+        let mut aff = Aff::ID;
+        for lvl in levels {
+            match &self.comps[comp].kind {
+                Kind::Union { places, .. } => {
+                    let pl = places.get(lvl.instance.get())?;
+                    aff = aff.then(&pl.inv);
+                    comp = pl.child;
+                }
+                Kind::Lattice(l) => {
+                    let el = aff.then(&Aff::shift_by(l.center(lvl.lattice)));
+                    let mut dl = el.vec(d);
+                    if let Some(nz) = self.zwall_nudge(l, el.pt(o)[2], dl[2]) {
+                        dl[2] = nz;
+                        return Some(el.vec_back(dl));
+                    }
+                    aff = el;
+                    comp = l.fill[lvl.instance.get()] as usize;
+                }
+                Kind::Leaf(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// A stop of a ray at the global point `g` (leaving the model there): does it lie strictly
+    /// inside a hex lattice of its path, so that it is no boundary of the model but a failure to
+    /// carry a grazing ray? Inside by more than `10 tol` on the ideal hexagons (cheap, exact), and
+    /// the model holds every point of the sphere of that radius about it (a gap in a fill is a
+    /// boundary, a ray ending on the top of a leaf is a boundary).
+    fn stop_inside_hex_lattice(&self, levels: &[Level], g: [f64; 3], d: [f64; 3], sc: &mut Scratch) -> bool {
+        if !self.has_hex {
+            return false;
+        }
+        let r = 10.0 * self.tol;
+        let mut comp = self.root;
+        let mut aff = Aff::ID;
+        let mut ideal = false;
+        for lvl in levels {
+            match &self.comps[comp].kind {
+                Kind::Union { places, .. } => {
+                    let Some(pl) = places.get(lvl.instance.get()) else { return false };
+                    aff = aff.then(&pl.inv);
+                    comp = pl.child;
+                }
+                Kind::Lattice(l) => {
+                    if matches!(l.shape, Shape::Hex(_)) {
+                        let pl = aff.pt(g);
+                        let u = [pl[0] - l.origin[0], pl[1] - l.origin[1]];
+                        let z_ok = l.pitch[2] <= 0.0 || {
+                            let lo = l.origin[2] - 0.5 * l.pitch[2];
+                            pl[2] >= lo + r && pl[2] <= lo + f64::from(l.dims[2]) * l.pitch[2] - r
+                        };
+                        ideal |= z_ok && l.covers_xy(u) && (0..16).all(|k| {
+                            let a = std::f64::consts::PI * f64::from(k) / 8.0;
+                            l.covers_xy([u[0] + r * a.cos(), u[1] + r * a.sin()])
+                        });
+                    }
+                    aff = aff.then(&Aff::shift_by(l.center(lvl.lattice)));
+                    comp = l.fill[lvl.instance.get()] as usize;
+                }
+                Kind::Leaf(_) => break,
+            }
+        }
+        if !ideal {
+            return false;
+        }
+        // The model holds the whole sphere: 26 points of a 3 x 3 x 3 grid of directions.
+        (-1..=1).all(|i| {
+            (-1..=1).all(|j| {
+                (-1..=1).all(|k| {
+                    let v = [f64::from(i), f64::from(j), f64::from(k)];
+                    let n = norm(v);
+                    n == 0.0 || matches!(self.locate_rec(self.root, madd(g, v, r / n), d, sc, None, false), Loc::Hit(_))
+                })
+            })
+        })
+    }
+
+    /// Nudge out of a grazing trap: the first of the points `tol * 2^k` ahead of the state along its
+    /// direction (at most `room` away, `k < GRAZE_TRIES`) that the model holds, located from the
+    /// root with nothing excluded. Moves the state there and returns the distance, or leaves it.
+    fn graze_hop(&self, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Option<f64> {
+        let (o, d) = (a3(st.pos), av3(st.dir));
+        for k in 0..GRAZE_TRIES {
+            let nd = self.tol * f64::from(1u32 << k);
+            if nd > room {
+                break;
+            }
+            let q = madd(o, d, nd);
+            if let Loc::Hit(h) = self.locate_rec(self.root, q, d, sc, None, false) {
+                let to = self.global_located(h);
+                st.pos = p3(q);
+                st.cell = to.cell;
+                st.region = to.region;
+                st.entered_via = to.on_face;
+                st.levels = to.levels;
+                return Some(nd);
+            }
+        }
+        None
     }
 
     fn global_located(&self, h: Hit) -> Located {
@@ -980,7 +1230,7 @@ impl WorldTracker {
             let (oj, dj) = (pj.inv.pt(ou), pj.inv.vec(du));
             // Midpoint of the chord strictly inside the partner.
             if inside_box(&pj.bbox, mid, self.tol)
-                && let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(mid), pj.inv.vec(hashed_dir_arr(mid)), sc, None)
+                && let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(mid), pj.inv.vec(hashed_dir_arr(mid)), sc, None, false)
                 && h.strict
             {
                 return true;
@@ -1001,7 +1251,7 @@ impl WorldTracker {
                     return true;
                 }
                 let q = madd(ou, du, (t + 4.0 * self.tol).min(t_end));
-                if let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(q), pj.inv.vec(du), sc, None)
+                if let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(q), pj.inv.vec(du), sc, None, false)
                     && h.strict
                 {
                     return true;
@@ -1013,6 +1263,51 @@ impl WorldTracker {
 
     fn lost_step(&self, st: &TrackState, cause: LostCause) -> Step {
         Step::new(0.0, st.cell, st.region, StepEnd::Lost(lost(st, cause)))
+    }
+}
+
+/// Vertices of the outer boundary of component `c`, in its own frame (`comps` looks a compiled
+/// component up, so the build can call it before the tracker exists).
+fn boundary_vertices_of<'a>(comps: &dyn Fn(usize) -> Option<&'a Comp>, protos: &[Proto], c: usize, out: &mut Vec<[f64; 3]>) {
+    let Some(comp) = comps(c) else { return };
+match &comp.kind {
+        // A CSG leaf has no vertices: overlaps with it are found by `probe_partners` and
+        // `rt.check_overlaps`.
+        Kind::Leaf(p) => {
+            let Some(core) = protos[*p].tracker.mesh().map(|m| &m.core) else { return };
+            let mut vs: BTreeSet<u32> = BTreeSet::new();
+            for f in 0..core.n_faces() {
+                if core.f_right[f] == crate::core::NONE {
+                    vs.extend(core.face_verts(f).iter().copied());
+                }
+            }
+            out.extend(vs.into_iter().map(|v| core.pos[v as usize]));
+        }
+        Kind::Union { places, .. } => {
+            let mut tmp = Vec::new();
+            for p in places {
+                tmp.clear();
+                boundary_vertices_of(comps, protos, p.child, &mut tmp);
+                out.extend(tmp.iter().map(|&v| p.fwd.pt(v)));
+            }
+        }
+        Kind::Lattice(l) => {
+            let mut cache: Vec<(u32, Vec<[f64; 3]>)> = Vec::new();
+            for e in 0..l.n() {
+                let child = l.fill[e];
+                let at = match cache.iter().position(|(c, _)| *c == child) {
+                    Some(at) => at,
+                    None => {
+                        let mut v = Vec::new();
+                        boundary_vertices_of(comps, protos, child as usize, &mut v);
+                        cache.push((child, v));
+                        cache.len() - 1
+                    }
+                };
+                let ce = l.center(l.idx_of(e));
+                out.extend(cache[at].1.iter().map(|v| [v[0] + ce[0], v[1] + ce[1], v[2] + ce[2]]));
+            }
+        }
     }
 }
 
@@ -1108,30 +1403,39 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
             Ok(Comp { kind: Kind::Union { places, off, partners }, bounds, cells, inst })
         }
         Some(ComponentKind::Lattice(l)) => {
-            let LatticeKind::Rect { pitch } = l.kind else { return Err(RtError::Unsupported("hex lattice")) };
+            let (shape, pitch) = match l.kind {
+                LatticeKind::Rect { pitch } => (Shape::Rect, pitch),
+                LatticeKind::Hex { pitch, z_pitch } => (Shape::Hex(Orient::XRows), [pitch, pitch, if l.dims[2] > 1 { z_pitch } else { 0.0 }]),
+                LatticeKind::HexYRows { pitch, z_pitch } => (Shape::Hex(Orient::YRows), [pitch, pitch, if l.dims[2] > 1 { z_pitch } else { 0.0 }]),
+                _ => return Err(RtError::Unsupported("lattice kind")),
+            };
             if l.outer.is_some() {
                 return Err(RtError::Unsupported("lattice outer fill"));
             }
-            let lat0 = Lat { origin: a3(l.origin), pitch, dims: l.dims, fill: l.fill.iter().map(|c| c.0).collect(), uniform: None, off: Vec::new() };
+            let lat0 = Lat { shape, origin: a3(l.origin), pitch, dims: l.dims, fill: l.fill.iter().map(|c| c.0).collect(), uniform: None, off: Vec::new() };
             let uniform = lat0.fill.first().copied().filter(|f| lat0.fill.iter().all(|x| x == f));
             // Fit: each distinct fill lies inside its element (x, y; z with more than one layer).
             let mut distinct: Vec<u32> = lat0.fill.clone();
             distinct.sort_unstable();
             distinct.dedup();
             for &f in &distinct {
-                let b = child(f as usize)?.bounds;
+                let fc = child(f as usize)?;
+                let b = fc.bounds;
                 if box_empty(&b) {
                     continue;
                 }
-                let axes = if l.dims[2] > 1 { 3 } else { 2 };
-                for a in 0..axes {
-                    let h = 0.5 * pitch[a];
-                    if b[a] < -h - tol || b[3 + a] > h + tol {
-                        return Err(issue(
-                            "world.lattice_fit",
-                            format!("component {ci}: fill component {f} extends beyond its lattice element along axis {a} ([{:e}, {:e}] vs half pitch {h:e})", b[a], b[3 + a]),
-                        ));
+                let fit = |what: String| issue("world.lattice_fit", format!("component {ci}: fill component {f} extends beyond its lattice element {what}"));
+                match shape {
+                    Shape::Rect => {
+                        let axes = if l.dims[2] > 1 { 3 } else { 2 };
+                        for a in 0..axes {
+                            let h = 0.5 * pitch[a];
+                            if b[a] < -h - tol || b[3 + a] > h + tol {
+                                return Err(fit(format!("along axis {a} ([{:e}, {:e}] vs half pitch {h:e})", b[a], b[3 + a])));
+                            }
+                        }
                     }
+                    Shape::Hex(o) => hex_fit(o, pitch, l.dims[2] > 1, &b, fc, f as usize, protos, done, tol).map_err(fit)?,
                 }
             }
             let mut lat = lat0;
@@ -1163,6 +1467,52 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
         }
         _ => Err(issue("world.component", format!("component {ci} is missing or of an unsupported kind"))),
     }
+}
+
+/// The fit of a fill (bounds `b`, in the element frame) inside its hexagonal prism; `Err` names
+/// the violation. Three tests of growing strength, all within `tol`: the box lies in the box
+/// circumscribing the hexagon (and in half a z pitch for a stack); every boundary vertex of a
+/// mesh fill lies in the hexagon; a leaf fill has no cell just outside the six flats or the six
+/// corners (a probe, so a CSG fill that pokes out by less than the probe offset elsewhere is not
+/// seen: documented in DESIGN.md).
+#[allow(clippy::too_many_arguments)]
+fn hex_fit(o: Orient, pitch: [f64; 3], stacked: bool, b: &Box6, fill: &Comp, f: usize, protos: &[Proto], done: &[Option<Comp>], tol: f64) -> core::result::Result<(), String> {
+    let hb = hexlat::half_box(o, pitch[0]);
+    for a in 0..2 {
+        if b[a] < -hb[a] - tol || b[3 + a] > hb[a] + tol {
+            return Err(format!("along axis {a} ([{:e}, {:e}] vs hexagon half extent {:e})", b[a], b[3 + a], hb[a]));
+        }
+    }
+    if stacked {
+        let h = 0.5 * pitch[2];
+        if b[2] < -h - tol || b[5] > h + tol {
+            return Err(format!("along axis 2 ([{:e}, {:e}] vs half z pitch {h:e})", b[2], b[5]));
+        }
+    }
+    let mut vs = Vec::new();
+    boundary_vertices_of(&|i| done[i].as_ref(), protos, f, &mut vs);
+    if let Some(v) = vs.iter().find(|v| hexlat::sd(o, pitch[0], [v[0], v[1]]) > tol) {
+        return Err(format!("(boundary vertex ({:e}, {:e}) is outside the hexagon of pitch {:e})", v[0], v[1], pitch[0]));
+    }
+    if let Kind::Leaf(pi) = &fill.kind {
+        use core::f64::consts::{FRAC_PI_3, FRAC_PI_6};
+        let z = 0.5 * (b[2] + b[5]);
+        let (apothem, circum) = (0.5 * pitch[0], pitch[0] / 3.0_f64.sqrt());
+        let out = 16.0 * tol;
+        // Flat normals sit at the base angle plus k 60 degrees, corners half a step between.
+        let base = if o == Orient::XRows { 0.0 } else { FRAC_PI_6 };
+        let mut sc = Scratch::new();
+        for k in 0..6 {
+            for (rad, ang) in [(apothem + out, base + k as f64 * FRAC_PI_3), (circum + out, base + (k as f64 + 0.5) * FRAC_PI_3)] {
+                let pt = [rad * ang.cos(), rad * ang.sin(), z];
+                let (loc, overlap) = protos[*pi].tracker.locate(pt, hashed_dir_arr(pt), None, &mut sc);
+                if overlap || (!loc.cell.is_none() && loc.cell != CellId::COMPLEMENT) {
+                    return Err(format!("(the fill has a cell outside the hexagon of pitch {:e}, at ({:e}, {:e}))", pitch[0], pt[0], pt[1]));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- Tracker ---------------------------------------------------------------------------
@@ -1244,7 +1594,7 @@ impl Tracker for WorldTracker {
                 return Ok(self.global_located(Hit { proto: pi, base: fr.base, local: loc, levels, strict: true }));
             }
         }
-        Ok(match self.locate_rec(self.root, pa, d, scratch, None) {
+        Ok(match self.locate_rec(self.root, pa, d, scratch, None, false) {
             Loc::Hit(h) => self.global_located(h),
             Loc::Miss | Loc::Overlap => Located::new(CellId::NONE, RegionId::NONE, None),
         })
@@ -1275,6 +1625,12 @@ impl Tracker for WorldTracker {
         ls.cell = CellId(local_cell);
         ls.region = RegionId(local_region);
         ls.entered_via = st.entered_via.and_then(|f| f.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.n_faces()).map(FaceId));
+        // A ray along the z-wall of a hex stack (at any level of the path): the leaf's tie on its z
+        // plane is hashed by position, which can end a run along the wall at once. Step with the
+        // direction nudged into the layer (the state's own direction is not changed).
+        if let Some(dn) = self.zwall_dir(&st.levels, o, d) {
+            ls.dir = v3(fr.g2l.vec(dn));
+        }
         let s = pr.tracker.step(&mut ls, max_dist, sc)?;
         let gface = |f: FaceId| FaceId(f.0 + pr.face_off);
         let gsurf = |x: SurfaceId| if x.is_none() { x } else { SurfaceId(x.0 + pr.surf_off) };
@@ -1323,7 +1679,7 @@ impl Tracker for WorldTracker {
             }
             StepEnd::Boundary { surface, face, .. } => {
                 // The leaf's outer face: relocate the exit point from the root.
-                match self.locate_rec(self.root, new_pos, d, sc, Some(&st.levels[..])) {
+                match self.locate_rec(self.root, new_pos, d, sc, Some(&st.levels[..]), s.dist <= self.tol) {
                     Loc::Overlap => Ok(self.lost_step(st, LostCause::Overlap)),
                     Loc::Hit(h) => {
                         let to = self.global_located(h);
@@ -1338,6 +1694,32 @@ impl Tracker for WorldTracker {
                             StepEnd::RegionBoundary { surface: gsurf(surface), face: gface(face), to_region: to.region, to_cell: to.cell }
                         };
                         Ok(mk(end))
+                    }
+                    Loc::Miss if self.stop_inside_hex_lattice(&st.levels, new_pos, d, sc) => {
+                        // The model holds the point and everything around it: no boundary but a
+                        // grazing ray no instance would take. Carry it a few tolerances on, or
+                        // end it in a typed, located error; never a vacuum inside the lattice.
+                        let mut moved = TrackState::new(p3(new_pos), st.dir);
+                        moved.cell = st.cell;
+                        moved.region = st.region;
+                        moved.entered_via = st.entered_via;
+                        match self.graze_hop(&mut moved, max_dist - s.dist, sc) {
+                            Some(nd) => {
+                                *st = moved;
+                                let end = if st.region == region_before {
+                                    StepEnd::SlotChange { to_cell: st.cell }
+                                } else {
+                                    StepEnd::RegionBoundary { surface: gsurf(surface), face: gface(face), to_region: st.region, to_cell: st.cell }
+                                };
+                                Ok(Step::new(s.dist + nd, cell_before, region_before, end))
+                            }
+                            None => {
+                                let mut li = lost(&moved, LostCause::RecoveryFailed).with_retries(GRAZE_TRIES);
+                                li.last_cell = st.cell;
+                                li.last_face = st.entered_via;
+                                Ok(Step::new(0.0, st.cell, region_before, StepEnd::Lost(li)))
+                            }
+                        }
                     }
                     Loc::Miss => {
                         commit(st);
@@ -1359,6 +1741,86 @@ impl Tracker for WorldTracker {
             // `StepEnd::SlotChange` and `Lost` never come from a prototype.
             _ => Ok(self.lost_step(st, LostCause::NoExitFace)),
         }
+    }
+
+    /// The provided `trace` with a bound on grazing traps in worlds with a hex lattice (others run the
+    /// provided loop unchanged): after `ZERO_RUN_MAX` consecutive steps of
+    /// at most `tol` (instances handing the ray back and forth), the ray is nudged on along its
+    /// direction (the hop is recorded as a chord of the cell it was in), at most `GRAZE_HOPS` times;
+    /// a trap that cannot be left ends the trace `Lost` with `LostCause::RecoveryFailed`.
+    fn trace(&self, st: &mut TrackState, opts: &TraceOptions, sink: &mut dyn sm_rt_api::SegmentSink, sc: &mut Scratch) -> Result<sm_rt_api::TraceEnd> {
+        use sm_rt_api::{Flow, Segment, TraceEnd};
+        let mut t = 0.0;
+        let (mut zero_run, mut hops) = (0u32, 0u32);
+        for _ in 0..opts.max_steps {
+            let face_in = st.entered_via;
+            let s = self.step(st, opts.max_dist - t, sc)?;
+            let face_out = match s.end {
+                StepEnd::CellFace { face, .. } | StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(face),
+                _ => None,
+            };
+            if !matches!(s.end, StepEnd::Lost(_)) && !(s.dist == 0.0 && matches!(s.end, StepEnd::Limit)) {
+                let seg = Segment::new(s.cell, s.region, t, s.dist).with_faces(face_in, face_out);
+                if sink.segment(&seg) == Flow::Stop {
+                    return Ok(TraceEnd::Stopped);
+                }
+            }
+            t += s.dist;
+            let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
+            if carried {
+                zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
+                if self.has_hex && zero_run > ZERO_RUN_MAX {
+                    let (cell, region, from) = (st.cell, st.region, st.entered_via);
+                    match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
+                        Some(nd) => {
+                            hops += 1;
+                            zero_run = 0;
+                            let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
+                            if sink.segment(&seg) == Flow::Stop {
+                                return Ok(TraceEnd::Stopped);
+                            }
+                            t += nd;
+                        }
+                        None => return Ok(TraceEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops))),
+                    }
+                }
+            }
+            match s.end {
+                StepEnd::Limit => return Ok(TraceEnd::Limit),
+                StepEnd::CellFace { .. } | StepEnd::SlotChange { .. } => {}
+                StepEnd::RegionBoundary { .. } if st.cell.is_none() => return Ok(TraceEnd::LeftModel),
+                StepEnd::RegionBoundary { .. } => {}
+                StepEnd::Boundary { action, .. } if action.applied_in_step() && !opts.stop_at_deck => {}
+                StepEnd::Boundary { surface, face, action } => return Ok(TraceEnd::Boundary { surface, face, action }),
+                StepEnd::Lost(l) => return Ok(TraceEnd::Lost(l)),
+                _ => return Ok(TraceEnd::Lost(lost(st, LostCause::NoExitFace))),
+            }
+        }
+        Ok(TraceEnd::Lost(lost(st, LostCause::MaxStepsExceeded)))
+    }
+
+    fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, sc: &mut Scratch) -> Result<sm_rt_api::FireResult> {
+        let mut total = 0.0;
+        let (mut zero_run, mut hops) = (0u32, 0u32);
+        for _ in 0..max_steps {
+            let s = self.step(st, dist_limit - total, sc)?;
+            total += s.dist;
+            if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
+                return Ok(sm_rt_api::FireResult::new(total, s.end));
+            }
+            zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
+            if self.has_hex && zero_run > ZERO_RUN_MAX {
+                match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
+                    Some(nd) => {
+                        hops += 1;
+                        zero_run = 0;
+                        total += nd;
+                    }
+                    None => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops)))),
+                }
+            }
+        }
+        Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded))))
     }
 
     fn closest(&self, p: Point3, region: Option<RegionId>, scratch: &mut Scratch) -> Result<Option<Closest>> {
@@ -1530,21 +1992,13 @@ impl WorldTracker {
             }
             Kind::Union { places, .. } => places.iter().filter(|pl| inside_box(&pl.bbox, p, pad)).find_map(|pl| self.find_instance_with_face(pl.child, pl.inv.pt(p), &g2l.then(&pl.inv), target, f)),
             Kind::Lattice(l) => {
-                let (cx, nx) = l.axis_cands(0, p[0], 0.0, pad);
-                let (cy, ny) = l.axis_cands(1, p[1], 0.0, pad);
-                let (cz, nz) = l.axis_cands(2, p[2], 0.0, pad);
-                for &kz in &cz[..nz] {
-                    for &ky in &cy[..ny] {
-                        for &kx in &cx[..nx] {
-                            let idx = [kx, ky, kz];
-                            if !l.in_range(idx) {
-                                continue;
-                            }
-                            let ce = l.center(idx);
-                            if let Some(a) = self.find_instance_with_face(l.fill[l.lin(idx)] as usize, sub(p, ce), &g2l.then(&Aff::shift_by(ce)), target, f) {
-                                return Some(a);
-                            }
-                        }
+                for idx in l.cands(p, [0.0; 3], pad) {
+                    if !l.in_range(idx) {
+                        continue;
+                    }
+                    let ce = l.center(idx);
+                    if let Some(a) = self.find_instance_with_face(l.fill[l.lin(idx)] as usize, sub(p, ce), &g2l.then(&Aff::shift_by(ce)), target, f) {
+                        return Some(a);
                     }
                 }
                 None

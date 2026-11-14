@@ -116,12 +116,9 @@ fn equal_radii_in_two_universes_placed_coaxially_import() {
     assert_eq!(d.outputs["deck_volumes"].len(), 2);
 }
 
-/// The literal draft rows (a gap of 1e-3 and an overlap sliver of 1e-4 in a box of 10) need
-/// `webcut` to cut a brick by a plane within about 1e-2 (relative) of a parallel face. Today the
-/// kernel refuses any such cut (`result volume invalid`, also for one plane at x = 0.01 of 10): a
-/// limit of `sm-boolean`, not of the partition. Remove `ignore` when the kernel handles it.
+/// The literal draft rows: a gap of 1e-3 and an overlap sliver of 1e-4 in a box of 10 (the
+/// kernel cuts a brick by a plane this close to a parallel face since W4-BOOL-TOOLS).
 #[test]
-#[ignore = "kernel: webcut of a brick by a plane closer than ~1e-2 (relative) to a face fails"]
 fn the_draft_thin_rows_wait_for_the_kernel() {
     let mut r = Rig::new();
     let d = r.import(&two_boxes("4.9995", "5.0005"), Some(&materials(2))).unwrap();
@@ -131,11 +128,16 @@ fn the_draft_thin_rows_wait_for_the_kernel() {
     close("sliver volume", piece_volume(diag(&d, "import.overlap")[0]), 1e-4 * 100.0, 1e-9);
 }
 
-/// Today's kernel limit, pinned so a fix is noticed: a cut 1e-3 (relative) from a face is refused.
+/// A cut 1e-3 (relative) from a face imports, with exact volumes (once a kernel limit).
 #[test]
-fn a_cut_very_close_to_a_face_is_a_typed_kernel_error_today() {
-    let e = Rig::new().import(&two_boxes("0.01", "0.01"), Some(&materials(2))).unwrap_err().to_string();
-    assert!(e.contains("csg.kernel") && e.contains("deck surface"), "{e}");
+fn a_cut_very_close_to_a_face_imports_with_exact_volumes() {
+    let mut r = Rig::new();
+    let d = r.import(&two_boxes("0.01", "0.01"), Some(&materials(2))).unwrap();
+    let mut v: Vec<f64> = d.outputs["deck_volumes"].iter().map(|&x| r.volume(x)).collect();
+    v.sort_by(f64::total_cmp);
+    assert_eq!(v.len(), 2);
+    close("thin", v[0], 0.01 * 100.0, 1e-9);
+    close("thick", v[1], 9.99 * 100.0, 1e-9);
 }
 
 /// Unowned remainder pieces are cut by the array boxes like owned ones: a gap strip that runs

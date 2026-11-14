@@ -23,6 +23,10 @@ class FemOps:
 
 class MeshOps:
     """Ops `mesh.*` (keyword-only; `s.ops.mesh.<op>(...)` applies one)."""
+    def agglomerate(self, *, convex: bool | None = ..., keep_source: bool | None = ..., mesh: EntityId | str, mode: Mapping[str, Any]) -> ApplyResult:
+        """`mesh.agglomerate`: build a coarse mesh by grouping the cells of a fine (typically polyhedral) mesh and link the two with a fine-to-coarse `LevelMap` including its face map (ruling D3, CMFD/multigrid levels).
+        Output `mesh` (one, Mesh): the new coarse mesh"""
+
     def auto(self, *, assignments: Sequence[Mapping[str, Any]] | None = ..., strategy: str | None = ..., targets: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`mesh.auto`: let a strategy choose schemes for targets that have none, and store its choices."""
 
@@ -36,11 +40,18 @@ class MeshOps:
         """`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.
         Output `set` (optional, MeshSet): the new cell set; absent when nothing was flagged"""
 
+    def interval_relation(self, *, a: Sequence[EntityId | str], b: Sequence[EntityId | str], ratio: int | None = ..., relation: Literal['eq', 'le', 'ge'] | None = ...) -> ApplyResult:
+        """`mesh.interval_relation`: a relative interval between curves, `sum(a) rel ratio * sum(b)`."""
+
     def intervals(self, *, count: int, firmness: Literal['default', 'soft', 'hard'] | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.intervals`: ask for an interval count on volumes, faces or curves."""
 
     def preserve_volume(self, *, curves: Sequence[EntityId | str] | None = ..., mesh: EntityId | str, surfaces: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`mesh.preserve_volume`: move the nodes classified on circular edges (`curves`), or on circular cylinder faces (`surfaces`), radially to the equal-area radius, so that the linear mesh of each round region has the exact volume of the cylinder it approximates. Opt-in; recorded in the history and replayed as an op (no strategy is consulted); deterministic; the node count and every id stay."""
+
+    def refine(self, *, keep_source: bool | None = ..., levels: int | None = ..., mesh: EntityId | str, project: bool | None = ...) -> ApplyResult:
+        """`mesh.refine`: refine a mesh uniformly into new, finer, independent mesh entries.
+        Output `mesh` (many, Mesh): the refined meshes, coarsest first"""
 
     def run(self, *, targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.run`: mesh whole volumes, or faces only, with the driver and store the result as one mesh.
@@ -64,18 +75,6 @@ class MeshOps:
 
 class ModelOps:
     """Ops `model.*` (keyword-only; `s.ops.model.<op>(...)` applies one)."""
-    def collapse_edge(self, *, edge: EntityId | str, into_vertex: EntityId | str) -> ApplyResult:
-        """`model.collapse_edge {edge, into_vertex}`: collapse a short edge virtually. It disappears from the view and its end vertices become one (`into_vertex`); other edges at the dropped vertex get virtual copies. No host entity moves. The collapse gap (largest curve-end move) is reported by `model.virtual_info` and is refused above the tolerance's `linear_max`.
-        Output `edges` (many, PartitionEdge): Virtual copies of the edges that ended at the dropped vertex."""
-
-    def composite_edges(self, *, edges: Sequence[EntityId | str]) -> ApplyResult:
-        """`model.composite_edges {edges}`: merge a chain of host edges, joined at degree-2 vertices, into one virtual edge (a `PartitionEdge`); the inner vertices disappear from the view.
-        Output `edge` (one, PartitionEdge): The composite edge."""
-
-    def composite_faces(self, *, faces: Sequence[EntityId | str]) -> ApplyResult:
-        """`model.composite_faces {faces}`: merge host faces into one virtual face (a `PartitionFace`).
-        Output `face` (one, PartitionFace): The composite face."""
-
     def copy(self, *, count: int | None = ..., entities: Sequence[EntityId | str], lattice: str | None = ..., xform: Mapping[str, Any] | None = ...) -> ApplyResult:
         """`model.copy`: `count` copies of the selected volumes or bodies.
         Output `volumes` (many, TopoVolume): The new volumes, ascending.
@@ -197,16 +196,6 @@ class ModelOps:
         """`model.move_to`: translate the selection so that its anchor lands on `to`.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
 
-    def partition_edge(self, *, edge: EntityId | str, param: float) -> ApplyResult:
-        """`model.partition_edge {edge, param}`: add a virtual vertex on `edge` at curve parameter `param`, replacing the edge by two virtual halves in every face that uses it. The halves' lengths sum to the edge's length and the vertex lies on the curve.
-        Output `vertex` (one, PartitionVertex): The new virtual vertex.
-        Output `edges` (many, PartitionEdge): The two halves, in edge order."""
-
-    def partition_face(self, *, face: EntityId | str, to: EntityId | str, **extra: Any) -> ApplyResult:
-        """`model.partition_face {face, from, to}`: split a planar face by a straight virtual chord between two vertices of its outer loop, into two child faces `[first, second]`.
-        Output `chord` (one, PartitionEdge): The virtual chord.
-        Output `faces` (many, PartitionFace): The two child faces."""
-
     def reflect(self, *, entities: Sequence[EntityId | str], normal: Sequence[float], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.reflect`: mirror volumes in the plane through `origin` (default the origin) with normal `normal`. Face orientation is repaired, so the volumes keep a positive volume and outward normals.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
@@ -214,8 +203,11 @@ class ModelOps:
     def region_clear(self, *, volumes: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`model.region_clear {volumes?}`: drop region tags and lattice frames."""
 
-    def remove_virtual(self, *, id: EntityId | str) -> ApplyResult:
-        """`model.remove_virtual {id}`: undo the virtual operation that created `id` (any cell it created; for a collapse also the collapsed edge). The hidden cells return and the virtual ids it minted are retired and never reused. Refused (`StillReferenced`) while a later virtual op uses one of its cells: remove those first."""
+    def regularize(self, *, volumes: Sequence[EntityId | str]) -> ApplyResult:
+        """`model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes within the model tolerance, moving nothing beyond it (an exact host join: no virtual topology). A pair on the same geometry that the topology refuses is left as it is. Outputs: the surviving joined `faces` and `edges`, and the `refused` cells (both faces or edges of every pair on the same geometry that the topology refused to join; the reasons are in the library's `RegularizeReport`).
+        Output `faces` (many, TopoFace): The surviving faces of joined pairs.
+        Output `edges` (many, TopoEdge): The surviving edges of joined pairs.
+        Output `refused` (many, TopoFace/TopoEdge): The faces and edges of pairs on the same geometry that the topology refused to join."""
 
     def rotate(self, *, angle_deg: float, axis: Sequence[float], entities: Sequence[EntityId | str], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.rotate`: rotate volumes by `angle_deg` degrees (right-hand rule) about the axis through `origin` (default the origin) with direction `axis`.
@@ -228,10 +220,6 @@ class ModelOps:
     def scale(self, *, entities: Sequence[EntityId | str], factor: float, origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.scale`: uniform scale of volumes by `factor` about `origin` (default the origin).
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
-
-    def split_realized(self, *, normal: Sequence[float], offset: float, piece: EntityId | str) -> ApplyResult:
-        """`model.split_realized {piece, normal, offset}`: split a decomposition piece by the plane `normal . x = offset` and realize the cut in the layer's overlay, so the persisted cut cell ids resolve in the replayed view. Returns the two pieces `[negative, positive]`.
-        Output `pieces` (many, PartitionCell): The two pieces `[negative, positive]`."""
 
     def subdivide_pin(self, *, axis: Sequence[float], center: Sequence[float], rings: Mapping[str, Any] | None = ..., sectors: Mapping[str, Any] | None = ..., volumes: Sequence[EntityId | str]) -> ApplyResult:
         """`model.subdivide_pin {volumes, axis, center, rings?, sectors?}`: cut each solid cylinder or coaxial annulus into rings (0 innermost) and sectors (0 starting at `angle0`), and write the `ring` and `sector` of each piece's region tag. Lattice slots of a tagged volume stay on every piece. At least one of `rings` and `sectors` is required; a count of 1 cuts nothing and tags the volume `{index 0, count 1}`.
@@ -252,9 +240,6 @@ class ModelOps:
         Output `new_faces` (many, TopoFace): Faces on the intersection surfaces, created by the operation.
         Output `faces` (many, TopoFace): The remaining faces of the result volumes."""
 
-    def unsplit_realized(self, *, piece: EntityId | str) -> ApplyResult:
-        """`model.unsplit_realized {piece}`: undo a realized split from either of its two pieces (both must be unsplit leaves). The overlay cells of the cut are removed and retired."""
-
     def webcut_cylinder(self, *, axis: Sequence[float], center: Sequence[float], imprint: bool | None = ..., keep: Literal['both', 'positive', 'negative'] | None = ..., merge: bool | None = ..., radius: float, targets: Sequence[EntityId | str]) -> ApplyResult:
         """`model.webcut_cylinder {targets, radius, axis, center, keep?, merge?, imprint?}`: split with an infinite cylinder of the given radius about the line through `center` along `axis`. The positive side is the cylinder's outside.
         Output `positive` (many, TopoBody): Bodies on the side the tool normal points to.
@@ -272,7 +257,7 @@ class ModelOps:
         Output `bodies` (many, TopoBody): Pieces on neither side (empty for plane, surface and cylinder tools)."""
 
     def webcut_surface(self, *, face: EntityId | str, imprint: bool | None = ..., keep: Literal['both', 'positive', 'negative'] | None = ..., merge: bool | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
-        """`model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the plane of a planar face (its normal gives the positive side).
+        """`model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the surface of a face (its normal gives the positive side). A planar face gives its plane; a sphere, torus, cone, cylinder or elliptic face gives that whole surface (a cone is one nappe: the solid cone is the negative side). A face whose carrier is reversed swaps the sides.
         Output `positive` (many, TopoBody): Bodies on the side the tool normal points to.
         Output `negative` (many, TopoBody): Bodies on the opposite side.
         Output `volumes` (many, TopoVolume): The volumes of every piece.
@@ -318,6 +303,9 @@ class ModelQueries:
     def export(self, *, bodies: Sequence[EntityId | str] | None = ..., path: str | None = ..., schema: Literal['ap214', 'ap242'] | None = ...) -> Any:
         """`model.export {bodies?, schema?, path?}`: the model's bodies as STEP text."""
 
+    def heal_check(self, *, blend_max_radius: float | None = ..., entities: Sequence[EntityId | str] | None = ..., hole_max_diameter: float | None = ..., sliver_aspect: float | None = ..., sliver_width: float | None = ..., small_edge: float | None = ..., small_face_area: float | None = ...) -> Any:
+        """`model.heal_check {entities?, small_edge?, small_face_area?, sliver_aspect?, sliver_width?, hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates. Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used are returned with the findings. See [`mod@crate::heal_check`] for the rules."""
+
     def list(self, *, kind: Literal['TopoVertex', 'TopoEdge', 'TopoFace', 'TopoVolume', 'TopoBody', 'Curve', 'Surface', 'Color', 'Group', 'Boundary', 'Instance', 'Prototype', 'Lattice', 'Symmetry', 'Cluster', 'PartitionCell', 'PartitionFace', 'PartitionEdge', 'PartitionVertex', 'Mesh', 'MeshVertex', 'MeshEdge', 'MeshFace', 'MeshCell', 'Interface', 'MeshSet', 'MeshInstance']) -> Any:
         """`model.list {kind}`: every live entity of `kind` owned by the model layer, ascending."""
 
@@ -329,9 +317,6 @@ class ModelQueries:
 
     def region_tags(self, *, volumes: Sequence[EntityId | str] | None = ...) -> Any:
         """`model.region_tags {volumes?}`: the lattice frames and the region tags (of `volumes`, or of every tagged volume). Read-only. Consumers read region indices from here, never from the output order of an op."""
-
-    def virtual_info(self, *, id: EntityId | str = ...) -> Any:
-        """`model.virtual_info {id?}`: the overlay's recorded virtual operations, in order, with what each created and used. With `id`, only the operations that created or use that cell, and `members` (the host cells a live virtual `id` stands for). A model with no overlay reports `has_overlay: false` and no operations."""
 
 class RtQueries:
     """Queries `rt.*` (`s.q.rt.<query>(...)`; read-only)."""

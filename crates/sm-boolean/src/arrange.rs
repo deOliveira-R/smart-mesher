@@ -646,8 +646,10 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             return Ok(chain);
         }
         let (i, _) = pts.iter().enumerate().map(|(i, p)| (i, geo::dist(p.1, q3))).fold((0, f64::INFINITY), |m, x| if x.1 < m.1 { x } else { m });
-        let j = (i + 1) % pts.len();
-        let (c, t) = (pts[i].0, Uv::new(pts[j].0.u - pts[i].0.u, pts[j].0.v - pts[i].0.v));
+        // The tangent runs to the next sample; at the last one the closing step would wrap by a
+        // period (the samples are continuous in `u`), so it is taken from the previous sample.
+        let (a, b) = if i + 1 < pts.len() { (i, i + 1) } else { (i - 1, i) };
+        let (c, t) = (pts[i].0, Uv::new(pts[b].0.u - pts[a].0.u, pts[b].0.v - pts[a].0.v));
         let qpr = surf.project(q3, Some(c))?;
         let (qu, qv) = (dom.u.nearest_to(qpr.uv.u, c.u), dom.v.nearest_to(qpr.uv.v, c.v));
         let cross = t.u * (qv - c.v) - t.v * (qu - c.u);

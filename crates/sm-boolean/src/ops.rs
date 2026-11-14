@@ -38,7 +38,7 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
 ];
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
-fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
+pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
     let topo = model_layer.host();
     let model = model_layer.model();
@@ -381,6 +381,102 @@ impl TypedQuery for MergeCheck {
     }
 }
 
+/// `model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes
+/// within the model tolerance, moving nothing beyond it (an exact host join: no virtual
+/// topology). A pair on the same geometry that the topology refuses is left as it is.
+/// Outputs: the surviving joined `faces` and `edges`, and the `refused` cells (both faces or edges
+/// of every pair on the same geometry that the topology refused to join; the reasons are in the
+/// library's `RegularizeReport`).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Regularize {
+    /// The volumes to regularize.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    pub volumes: Vec<EntityId>,
+}
+
+impl TypedOp for Regularize {
+    const NAME: &'static str = "model.regularize";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The surviving faces of joined pairs."),
+        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The surviving edges of joined pairs."),
+        OutputRole::new("refused", &[EntityKind::TopoFace, EntityKind::TopoEdge], Cardinality::Many, "The faces and edges of pairs on the same geometry that the topology refused to join."),
+    ];
+    const POSITIONAL: Option<&'static str> = Some("volumes");
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        if self.volumes.is_empty() {
+            return Err(OpError::Invalid("`volumes` must not be empty".into()));
+        }
+        resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
+        guard_volumes(ctx, &self.volumes)?;
+        let (rep, txn) = topo_txn(ctx, |topo, _model| crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from))?;
+        // A later join in the same pass can retire an earlier keep (5+7 -> 5, then 3+5 -> 3).
+        let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
+            let dropped: BTreeSet<EntityId> = l.iter().map(|p| p.drop).collect();
+            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).filter(|k| !dropped.contains(k)).collect();
+            s.into_iter().collect()
+        };
+        let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
+        // Cells of refused pairs that are still alive and were not absorbed by a later join.
+        let gone: BTreeSet<EntityId> = rep.joined_faces.iter().chain(&rep.joined_edges).map(|p| p.drop).collect();
+        let refused: Vec<EntityId> = rep.refused.iter().flat_map(|r| [r.a, r.b]).filter(|c| !gone.contains(c)).collect::<BTreeSet<_>>().into_iter().collect();
+        commit_topology(ctx, &txn, &[("faces", &f), ("edges", &e), ("refused", &refused)])
+    }
+}
+
+/// `model.heal_check {entities?, small_edge?, small_face_area?, sliver_aspect?, sliver_width?,
+/// hole_max_diameter?, blend_max_radius?}`: scan the model (or the closure of `entities`) for
+/// short edges, small and sliver faces, small holes, near gaps, open shells and blend candidates.
+/// Read-only; every finding is located and sorted by `(code, entity)`, and the thresholds used
+/// are returned with the findings. See [`mod@crate::heal_check`] for the rules.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealCheck {
+    /// The cells to scan (default: everything).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    pub entities: Option<Vec<EntityId>>,
+    /// Length at or below which an edge is `small_edge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_edge: Option<f64>,
+    /// Area at or below which a face is `small_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_face_area: Option<f64>,
+    /// Aspect ratio at or above which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_aspect: Option<f64>,
+    /// Width at or below which a thin planar face is a `sliver_face`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliver_width: Option<f64>,
+    /// Diameter at or below which a hole is `small_hole`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_max_diameter: Option<f64>,
+    /// Radius at or below which a tangent partial cylinder is `blend_candidate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_max_radius: Option<f64>,
+}
+
+impl TypedQuery for HealCheck {
+    const NAME: &'static str = "model.heal_check";
+    type Output = crate::heal_check::HealReport;
+
+    fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<crate::heal_check::HealReport, OpError> {
+        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
+        let scope = check_scope(layer.topo(), &self.entities)?;
+        let o = crate::heal_check::HealOptions {
+            entities: self.entities.as_ref().map(|_| scope),
+            small_edge: self.small_edge,
+            small_face_area: self.small_face_area,
+            sliver_aspect: self.sliver_aspect,
+            sliver_width: self.sliver_width,
+            hole_max_diameter: self.hole_max_diameter,
+            blend_max_radius: self.blend_max_radius,
+        };
+        crate::heal_check::heal_check(layer.topo(), &o).map_err(OpError::from)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Webcut
 // ---------------------------------------------------------------------------------------------
@@ -450,6 +546,12 @@ fn vertex_point(topo: &dyn TopologyView, v: EntityId) -> Result<Point3, OpError>
 }
 
 fn webcut_run(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutTool, keep: Option<KeepSide>, merge_opt: Option<bool>, imprint: Option<bool>) -> Result<(), OpError> {
+    webcut_run_flipped(ctx, targets, tool, keep, merge_opt, imprint, false)
+}
+
+/// [`webcut_run`] for a tool whose positive side is the library's negative one (a face with a
+/// reversed carrier): `keep` and the output roles are mirrored.
+fn webcut_run_flipped(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutTool, keep: Option<KeepSide>, merge_opt: Option<bool>, imprint: Option<bool>, flip: bool) -> Result<(), OpError> {
     if targets.is_empty() {
         return Err(OpError::Invalid("`targets` must not be empty".into()));
     }
@@ -461,8 +563,19 @@ fn webcut_run(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutTool, keep:
     }
     let vols = volumes_of_bodies(ctx, targets)?;
     guard_volumes(ctx, &vols)?;
-    let o = WebcutOptions { merge: merge_opt.unwrap_or(true), imprint: imprint.unwrap_or(false), keep: keep.unwrap_or_default(), consume_tool: false };
-    let (out, txn) = topo_txn(ctx, |topo, _model| webcut(topo, targets, &tool, &o).map_err(OpError::from))?;
+    let mut keep = keep.unwrap_or_default();
+    if flip {
+        keep = match keep {
+            KeepSide::Both => KeepSide::Both,
+            KeepSide::Positive => KeepSide::Negative,
+            KeepSide::Negative => KeepSide::Positive,
+        };
+    }
+    let o = WebcutOptions { merge: merge_opt.unwrap_or(true), imprint: imprint.unwrap_or(false), keep, consume_tool: false };
+    let (mut out, txn) = topo_txn(ctx, |topo, _model| webcut(topo, targets, &tool, &o).map_err(OpError::from))?;
+    if flip {
+        core::mem::swap(&mut out.positive, &mut out.negative);
+    }
     commit_topology(ctx, &txn, &[("positive", &out.positive), ("negative", &out.negative), ("volumes", &out.volumes), ("cut_faces", &out.cut_faces), ("bodies", &out.bodies)])
 }
 
@@ -523,15 +636,17 @@ impl TypedOp for WebcutPlane {
     }
 }
 
-/// `model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the plane of a
-/// planar face (its normal gives the positive side).
+/// `model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the surface of a
+/// face (its normal gives the positive side). A planar face gives its plane; a sphere, torus,
+/// cone, cylinder or elliptic face gives that whole surface (a cone is one nappe: the solid cone
+/// is the negative side). A face whose carrier is reversed swaps the sides.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebcutSurface {
     /// The bodies or volumes to cut.
     #[schemars(extend("x-entity-kind" = ["TopoBody", "TopoVolume"]))]
     pub targets: Vec<EntityId>,
-    /// A planar face giving the tool plane.
+    /// A face giving the tool surface.
     #[schemars(extend("x-entity-kind" = ["TopoFace"]))]
     pub face: EntityId,
     /// Which halves to keep (default both).
@@ -556,7 +671,16 @@ impl TypedOp for WebcutSurface {
         let tol = layer.tolerance().linear;
         let plane = topo.face_plane(self.face, tol.max(1e-9)).map_err(|e| OpError::Failed(e.to_string()))?;
         let Some((n, d)) = plane else {
-            return Err(OpError::Unsupported(format!("{} is not planar: webcut_surface takes a planar face (extended quadric tools are not available yet)", self.face)));
+            let (def, sense) = match topo.carrier(self.face) {
+                Carrier::Surface(sc) => (topo.shapes().surface_def(sc.surface).cloned(), sc.sense),
+                _ => (None, sm_topo_api::Sense::Forward),
+            };
+            return match def {
+                Some(def @ (SurfaceDef::Cylinder(_) | SurfaceDef::Sphere(_) | SurfaceDef::Cone(_) | SurfaceDef::Torus(_) | SurfaceDef::EllipticCylinder(_) | SurfaceDef::EllipticCone(_))) => {
+                    webcut_run_flipped(ctx, &self.targets, CutTool::Surface { surface: def, window: None }, self.keep, self.merge, self.imprint, sense == sm_topo_api::Sense::Reversed)
+                }
+                _ => Err(OpError::Unsupported(format!("{} carries a surface webcut_surface cannot use (it takes a plane, cylinder, sphere, cone, torus or elliptic face)", self.face))),
+            };
         };
         let origin = Point3::new(n.x * d, n.y * d, n.z * d);
         webcut_run(ctx, &self.targets, CutTool::Plane { origin, normal: n }, self.keep, self.merge, self.imprint)

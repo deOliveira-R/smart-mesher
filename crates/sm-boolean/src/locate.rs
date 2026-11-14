@@ -274,6 +274,56 @@ pub fn locate_point(view: &dyn TopologyView, volume: EntityId, p: Point3) -> Res
     locate_in_uses(view, &crate::faceclass::FaceCache::new(), &uses, p, &tol)
 }
 
+/// A point strictly inside the trimmed face `face` (on its surface), as far from the boundary as
+/// a coarse search finds, or `None` for a face without a usable surface or domain.
+///
+/// # Errors
+/// `Query` if the face cannot be classified.
+pub fn face_interior_point(view: &dyn TopologyView, face: EntityId) -> Result<Option<Point3>, BooleanError> {
+    crate::faceclass::interior_point(view, &crate::faceclass::FaceCache::new(), face)
+}
+
+/// A point strictly inside `volume` ([`PointLocation::In`]): a face interior point moved along
+/// the inward normal by the first of a ladder of depths (a fraction of the volume's box, then
+/// ever smaller, so thin walls are found too) that [`locate_point`] confirms as inside. Faces
+/// are tried in id order, so the result is deterministic.
+///
+/// # Errors
+/// `Invalid` if `volume` is not a live volume; `Unsupported` if no candidate was confirmed.
+pub fn volume_interior_point(view: &dyn TopologyView, volume: EntityId) -> Result<Point3, BooleanError> {
+    if !view.is_alive(volume) || view.dim_of(volume) != Some(sm_topo_api::Dim::Volume) {
+        return Err(BooleanError::Invalid(format!("{volume} is not a live volume")));
+    }
+    let uses = volume_uses(view, volume);
+    let tol = *view.tolerance();
+    let cache = crate::faceclass::FaceCache::new();
+    let faces: Vec<EntityId> = view.volume_faces(volume).to_vec();
+    let mut bx = Aabb::empty();
+    for &f in &faces {
+        let b = geo::face_aabb(view, f, 0.0);
+        if !b.is_empty() {
+            bx.extend(b.lo);
+            bx.extend(b.hi);
+        }
+    }
+    let size = if bx.is_empty() { 1.0 } else { (bx.hi - bx.lo).norm().max(tol.linear) };
+    for &f in &faces {
+        let Some(p) = crate::faceclass::interior_point(view, &cache, f)? else { continue };
+        let Some((n, _, _)) = geo::face_normal_near(view, f, p) else { continue };
+        let sense = view.face_use_in(f, volume).first().copied().unwrap_or(Sense::Forward);
+        let inward = n * (-sense.sign());
+        let mut d = 0.25 * size;
+        while d > 100.0 * tol.linear {
+            let q = p + inward * d;
+            if matches!(locate_in_uses(view, &cache, &uses, q, &tol), Ok(PointLocation::In)) {
+                return Ok(q);
+            }
+            d *= 0.25;
+        }
+    }
+    Err(BooleanError::Unsupported("no point confirmed inside the volume"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

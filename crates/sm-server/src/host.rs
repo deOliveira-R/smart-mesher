@@ -212,7 +212,8 @@ impl<'w> SessionHost<'w> {
                 ));
             }
         };
-        if !own && format != ExportFormat::Smsh && !p.options.as_ref().is_none_or(Value::is_null) {
+        let takes_select = matches!(format, ExportFormat::Smsh | ExportFormat::Vtu | ExportFormat::Exodus);
+        if !own && !takes_select && !p.options.as_ref().is_none_or(Value::is_null) {
             return Err(SessionError::bad_request(format!(
                 "`{}` takes no `options`",
                 format_name(format)
@@ -240,6 +241,19 @@ impl<'w> SessionHost<'w> {
                 format_name(format)
             )));
         }
+        // `select`: the shape is checked before any state is read; the set names later, against
+        // the lowered mesh. `overwrite: false` refuses to replace a file that is there.
+        let select = match format {
+            ExportFormat::Smsh => mesh_export::smsh_select(p.options.as_ref())?,
+            ExportFormat::Vtu | ExportFormat::Exodus => mesh_export::select_only(format_name(format), p.options.as_ref())?,
+            _ => None,
+        };
+        if let Some(path) = &path
+            && !mesh_export::overwrite_option(p.options.as_ref())
+            && path.exists()
+        {
+            return Err(SessionError::new("file-exists", format!("{} exists and `select.overwrite` is false", path.display())));
+        }
         let state = self.ws.state();
         if p.source == ExportSource::Model {
             let w = model_export::write_dagmc(state, p.options.as_ref())?;
@@ -250,7 +264,7 @@ impl<'w> SessionHost<'w> {
             let split = mesh_export::smsh_split(p.options.as_ref())?;
             if !split.is_empty() {
                 let prov = if p.provenance { provenance_of(self.ws.status().position) } else { None };
-                let w = mesh_export::write_smsh_split(state, p.mesh, prov, &split)?;
+                let w = mesh_export::write_smsh_split(state, p.mesh, prov, &split, select.as_ref().map(|s| &s.select))?;
                 return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);
             }
         }
@@ -264,6 +278,7 @@ impl<'w> SessionHost<'w> {
         req.empty_patches = p.empty_patches.clone();
         req.wedge_patches = p.wedge_patches.clone();
         req.split_warped_faces = p.split_warped_faces;
+        req.select = select.map(|s| s.select);
         if p.provenance {
             req.provenance = provenance_of(self.ws.status().position);
         }
@@ -552,7 +567,7 @@ fn finish_file(path: Option<&Path>, format: ExportFormat, bytes: &[u8], notes: &
 }
 
 fn notes_of(lines: &[String]) -> Vec<ExportNote> {
-    lines.iter().map(|l| ExportNote::parse(l)).collect()
+    lines.iter().map(|l| mesh_export::note_of(l)).collect()
 }
 
 /// Write the files of a multi-file export below `root` (each through a unique temp name and a

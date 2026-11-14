@@ -42,6 +42,8 @@ pub(crate) struct CellIndex {
     cells: Vec<u32>,
     surf_off: Vec<u32>,
     surfs: Vec<u32>,
+    /// Cells with an infinite box side (ascending): the only candidates outside the root box.
+    outside: Vec<u32>,
 }
 
 /// Build state.
@@ -79,11 +81,17 @@ impl CellIndex {
             }
             cbox.push(c);
         }
-        let ix = Self { root, nodes: Vec::new(), cell_off: vec![0], cells: Vec::new(), surf_off: vec![0], surfs: Vec::new() };
+        let outside: Vec<u32> = raw.iter().enumerate().filter(|(_, b)| b.iter().any(|v| !v.is_finite())).map(|(c, _)| c as u32).collect();
+        let ix = Self { root, nodes: Vec::new(), cell_off: vec![0], cells: Vec::new(), surf_off: vec![0], surfs: Vec::new(), outside };
         let mut b = Build { ix, cbox, cell_surfs, dup: 0, dup_max: DUP_BUDGET * raw.len() };
         let all: Vec<u32> = (0..raw.len() as u32).collect();
         b.split(root, all, 0);
         b.ix
+    }
+
+    /// Does a cell have an infinite box side (so a ray can enter it outside the root box)?
+    pub(crate) fn has_unbounded(&self) -> bool {
+        !self.outside.is_empty()
     }
 
     /// Number of tiles.
@@ -98,7 +106,7 @@ impl CellIndex {
 
     /// Heap bytes of the index.
     pub(crate) fn bytes(&self) -> usize {
-        core::mem::size_of::<Node>() * self.nodes.len() + 4 * (self.cell_off.len() + self.cells.len() + self.surf_off.len() + self.surfs.len())
+        core::mem::size_of::<Node>() * self.nodes.len() + 4 * (self.cell_off.len() + self.cells.len() + self.surf_off.len() + self.surfs.len() + self.outside.len())
     }
 
     /// Hash of the node order and the tile lists (determinism checks).
@@ -141,10 +149,11 @@ impl CellIndex {
         }
     }
 
-    /// Candidate cells at `p` (ascending), `None` when `p` is outside the root box.
+    /// Candidate cells at `p` (ascending). Outside the root box (which holds every finite cell
+    /// box, padded) only the cells with an infinite box side can hold `p`.
     pub(crate) fn cells_at(&self, p: [f64; 3]) -> Option<&[u32]> {
         if !self.contains_point(p) {
-            return None;
+            return Some(&self.outside);
         }
         let t = self.tile_of(p);
         Some(&self.cells[self.cell_off[t] as usize..self.cell_off[t + 1] as usize])

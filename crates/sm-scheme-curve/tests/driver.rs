@@ -45,6 +45,8 @@ enum Count {
     Derive,
     /// A hard count.
     Hard(u32),
+    /// A user's soft count.
+    Soft(u32),
 }
 
 struct Run {
@@ -71,11 +73,12 @@ fn run_on_with(edge_ix: usize, scheme: Option<SchemeChoice>, count: Count, exec:
     for (e, n) in counts {
         let c = match (e == edge_ix, count) {
             (true, Count::Derive) => None,
-            (true, Count::Hard(c)) => Some(c),
+            (true, Count::Hard(c) | Count::Soft(c)) => Some(c),
             _ => Some(n),
         };
         if let Some(c) = c {
-            intent.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(c)));
+            let firm = if e == edge_ix && matches!(count, Count::Soft(_)) { Firm::soft(IntervalRequest::Count(c)) } else { Firm::hard(IntervalRequest::Count(c)) };
+            intent.set_intervals(ids.edges[e], firm);
         }
     }
     intent.set_scheme(ids.volume, sweep_z(&ids));
@@ -184,6 +187,18 @@ fn bias_fine_and_coarse_sizes_derive_the_count() {
     let hard = run_on(X, Some(choice("bias", serde_json::json!({ "first_size": 0.05, "last_size": 0.4 }))), Count::Hard(7)).unwrap();
     assert_eq!(hard.n, 7);
     assert_near(hard.dist[0], 0.05, 1e-12, "first edge with a hard count");
+}
+
+#[test]
+fn derived_count_is_a_preference_a_user_soft_count_still_wins() {
+    let p = serde_json::json!({ "first_size": 0.05, "last_size": 0.4 });
+    let want = spacing::bias_count_from_sizes(1.0, 0.05, 0.4).unwrap();
+    // The derived count is not averaged with a user soft count: the user's wins exactly.
+    for soft in [2, want + 5] {
+        let r = run_on(X, Some(choice("bias", p.clone())), Count::Soft(soft)).unwrap();
+        assert_eq!(r.n, soft, "user soft count {soft} beats the derived {want}");
+    }
+    assert_ne!(want, 2);
 }
 
 #[test]

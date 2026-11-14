@@ -15,6 +15,7 @@ mod error;
 mod export;
 mod layer;
 mod lower;
+mod select;
 pub mod region;
 mod ops;
 
@@ -22,8 +23,10 @@ pub use element::ElementType;
 pub use error::FemError;
 pub use export::{
     ExportBundle, ExportFile, ExportFormat, ExportReport, ExportRequest, export, export_files,
+    level_maps_of, smsh_writer,
 };
 pub use layer::{FEM_LAYER, FemLayer};
+pub use select::{check_select, select_lowered};
 pub use lower::{Lowered, SetOrigin, SetSummary, SplitError, lower, lower_split};
 pub use ops::{BlockAdd, BlockElementType, BlockRemove, SidesetAdd};
 

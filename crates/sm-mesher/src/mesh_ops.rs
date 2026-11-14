@@ -3,9 +3,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
-use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh};
+use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
+use sm_poly::{DualPoints, PolyOptions, TopologyResolver};
 use sm_mesh::MeshBuilder;
-use sm_mesh_api::{MeshEntityKind, MeshRead};
+use sm_mesh_api::{MeshEntityKind, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_scheme_api::{
     Driver, DriverOptions, MeshInput, MeshIntent, Plan, SchemeError, SizeField, WholeFaces,
@@ -305,7 +306,13 @@ impl TypedOp for MeshRun {
         // Borrows of the ctx are exclusive: take Arc-cheap clones of what we read, then write.
         let cfg = ctx.service::<MesherConfig>()?.clone();
         let model = ctx.layer::<ModelLayer>()?.clone();
-        let intent = ctx.layer::<IntentLayer>()?.intent().clone();
+        let mut intent = ctx.layer::<IntentLayer>()?.intent().clone();
+        // The `polyhedron` scheme: tets from `tetmesh`, then the dual (volumes only).
+        let mut dual = None;
+        if !faces && let Some((lowered, d)) = crate::polyscheme::lower(&intent, &targets)? {
+            intent = lowered;
+            dual = Some(d);
+        }
         let alloc0 = ctx.layer::<MeshLayer>()?.alloc().clone();
         {
             let meshes = ctx.layer::<MeshLayer>()?;
@@ -366,8 +373,85 @@ impl TypedOp for MeshRun {
             model.hash_quanta(),
         );
         entry.notes = notes;
-        insert_mesh(ctx, entry, &alloc0, alloc, "mesh")
+        match dual {
+            None => insert_mesh(ctx, entry, &alloc0, alloc, "mesh"),
+            Some(dual) => {
+                let source = entry.mesh().mesh_id();
+                insert_scratch(ctx, entry, &alloc0, alloc)?;
+                dualize_in_place(ctx, &model, source, dual)
+            }
+        }
     }
+}
+
+/// [`insert_mesh`] without an output role: the tet mesh of a `polyhedron` run is adopted (so
+/// the ids and the allocator advance exactly as for a stand-alone `mesh.run`) and retired again
+/// by [`dualize_in_place`]; the delta's `mesh` role holds the polyhedral mesh only.
+fn insert_scratch(
+    ctx: &mut ApplyCtx<'_>,
+    entry: MeshEntry,
+    before: &SerialAlloc,
+    after: SerialAlloc,
+) -> Result<(), OpError> {
+    let id = entry.mesh().mesh_id();
+    ctx.layer::<MeshLayer>()?.check_insert(id, &entry, &after)?;
+    for (kind, next) in after.state() {
+        let first = before.next_serial(kind);
+        if next <= first {
+            continue;
+        }
+        if kind == EntityKind::Mesh {
+            let ids: Vec<EntityId> = (first..next)
+                .filter_map(|s| EntityId::new(kind, s))
+                .collect();
+            ctx.adopt(&ids)?;
+        } else {
+            ctx.adopt_range(EntityId::new(kind, first).ok_or(OpError::IdExhausted)?, next - first)?;
+        }
+    }
+    ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;
+    Ok(())
+}
+
+/// The second half of a `polyhedron` run: what `mesh.to_poly(keep_source: false)` does to the
+/// tet mesh `source` just inserted (same allocator use, same entry fields, same succession), so
+/// the layer ends byte-identical to `tetmesh` run, then that op.
+fn dualize_in_place(
+    ctx: &mut ApplyCtx<'_>,
+    model: &ModelLayer,
+    source: EntityId,
+    dual: DualPoints,
+) -> Result<(), OpError> {
+    let (host, selection, plan, quanta, stale, alloc0) = {
+        let layer = ctx.layer::<MeshLayer>()?;
+        let e = layer.get(source).ok_or(OpError::UnknownEntity(source))?;
+        (
+            e.mesh.clone(),
+            e.selection.clone(),
+            e.plan.clone(),
+            e.quanta,
+            e.stale,
+            layer.alloc().clone(),
+        )
+    };
+    ctx.step(2, 4, "dualizing")?;
+    let mut alloc = alloc0.clone();
+    let (fin, _report) = sm_poly::dualize(
+        host.as_read(),
+        &PolyOptions::new().with_all_polyhedra(true).with_dual(dual),
+        &TopologyResolver(model.topo()),
+        MeshBuilder::new(),
+        &mut alloc,
+    )
+    .map_err(sm_poly::poly_error_to_op)?;
+    let new = fin.mesh.mesh_id();
+    let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
+    entry.plan = plan;
+    entry.stale = stale;
+    entry.derived_from = Some(source);
+    insert_mesh(ctx, entry, &alloc0, alloc, "mesh")?;
+    ctx.record_successors(source, &[new])?;
+    retire_mesh(ctx, source)
 }
 
 /// `mesh.delete`: delete meshes and retire every id they own.

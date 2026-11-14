@@ -373,7 +373,7 @@ fn overlapping_csg_placements_are_never_resolved_by_order() {
 }
 
 #[test]
-fn refusals_partition_complement_fit_and_hex() {
+fn refusals_partition_complement_and_fit() {
     let leaf = pin_leaf();
     let bnd = BoundarySpec::default();
     let build = |spec: &WorldSpec, opts: &BuildOptions, f: &Fx| {

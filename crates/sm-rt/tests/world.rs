@@ -603,7 +603,11 @@ fn world_build_errors_are_typed() {
         )
     };
     let opts = BuildOptions::default();
-    assert!(matches!(build_world(&lat(LatticeKind::Hex { pitch: l, z_pitch: l }, None), &leaves, &bnd, &opts), Err(RtError::Unsupported(_))));
+    // Hex lattices are built now; a square fill is not inside its hexagon (its corner vertices are outside): world.lattice_fit.
+    for kind in [LatticeKind::Hex { pitch: l, z_pitch: l }, LatticeKind::HexYRows { pitch: l, z_pitch: l }] {
+        let e = build_world(&lat(kind, None), &leaves, &bnd, &opts).err().unwrap();
+        assert!(issue_codes(&e).iter().any(|(c, _)| *c == "world.lattice_fit"), "{e:?}");
+    }
     assert!(matches!(build_world(&lat(LatticeKind::Rect { pitch: [l; 3] }, Some(cid(1))), &leaves, &bnd, &opts), Err(RtError::Unsupported(_))));
     // A pitch smaller than the fill: world.lattice_fit.
     let e = build_world(&lat(LatticeKind::Rect { pitch: [0.9 * l, l, l] }, None), &leaves, &bnd, &opts).err().unwrap();

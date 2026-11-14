@@ -31,6 +31,11 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-model = { path = "../sm-model" }
+sm-cadio = { path = "../sm-cadio" }
+# The mesh.auto check of model.regularize runs on the real distribution (a dev-only cycle).
+sm-server = { path = "../sm-server" }
+sm-protocol = { path = "../sm-protocol" }
+serde_json = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

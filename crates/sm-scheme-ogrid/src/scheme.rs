@@ -282,7 +282,8 @@ impl Scheme for Ogrid {
                     for e in &side_edges {
                         out.prefer(*e, per);
                         // The preference alone is averaged away by the neighbours' goals; the hard
-                        // range only when no user count exists anywhere.
+                        // range only when no user count exists anywhere (`hard`) and the sharing
+                        // annuli agree on the count (`steer`).
                         if steer {
                             let (lo, hi) = side_range(per);
                             out.range(*e, lo, Some(hi));

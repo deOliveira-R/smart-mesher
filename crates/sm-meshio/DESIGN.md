@@ -182,3 +182,15 @@ Throughput (record only, no gate): the bench `export` has `dagmc_gmsh_*` groups 
 High-order geometry is not exported to VTU (corners only; `vtu_loss_report` says so); VTU has no
 face/side-set or boundary skin output; Exodus lives in `sm-exodus`, CGNS / Fluent are not written; `.smsh` import returns arrays, not a `MeshRead`. OpenFOAM: ASCII only, no binary, no
 cyclic / AMI patches, dimension-3 meshes without inactive cells only (see `FOAM_FORMAT.md`).
+
+## Export selection (`select`, W4-EXPORT-SELECT)
+
+`select::apply` cuts a mesh to the cells of the selected blocks before any writer runs, so the
+writers are unchanged and a selected export equals the export of a mesh built from only those
+cells (tests/select.rs checks VTU, Gmsh, `.smsh` and DAGMC bytes against a reference-builder
+oracle). Kept cells and nodes keep their order; sets that are not blocks, sidesets or nodesets
+(regions, deck faces) are restricted to the kept entities and keep their names. Ids are minted
+afresh, so a selected mesh is a new mesh (level maps of the whole one do not apply). A cut that
+the classification rules refuse is a typed `SelectError::Build`; high-order cells and curved
+faces are refused (`Unsupported`). Allocation follows the selection, not the host
+(tests/select_alloc.rs).

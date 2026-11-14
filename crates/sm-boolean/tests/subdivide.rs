@@ -111,8 +111,8 @@ fn make_pin(r: &mut Rig, r_in: f64, r_out: f64) -> EntityId {
         return outer.volume;
     }
     // The annulus is the outer ring of a one-radius cut of the solid pin, with its tag cleared.
-    // (A default-seam `model.webcut_cylinder` or `model.subtract` fails for 0.418 in 0.475:
-    // the tool seam lies on the target seam; see the W4-REGIONS-CUT report.)
+    // (The default-seam webcut at 0.418 in 0.475 works since W4-BOOL-TOOLS; this path keeps the
+    // turned seam of `subdivide_pin`.)
     let d = r.run(&pin(outer.volume, Some(RingSpec::Radii(RingRadii { radii: vec![r_in] })), None)).unwrap();
     let ann = d.outputs["volumes"].iter().copied().find(|&x| tag_of(r, x).ring.unwrap().index == 1).unwrap();
     r.run(&ClearTag { volume: ann }).unwrap();
