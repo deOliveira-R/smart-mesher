@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" fill="50" region="22 -23 24 -25 20 -21" universe="0"/>
+  <cell id="100" material="1" region="-1" universe="10"/>
+  <cell id="101" material="2" region="1" universe="10"/>
+  <cell id="110" material="1" region="-2" universe="11"/>
+  <cell id="111" material="2" region="2" universe="11"/>
+  <cell id="120" material="1" region="-3" universe="12"/>
+  <cell id="121" material="2" region="3" universe="12"/>
+  <cell id="130" material="1" region="-4" universe="13"/>
+  <cell id="131" material="2" region="4" universe="13"/>
+  <cell id="140" material="1" region="-5" universe="14"/>
+  <cell id="141" material="2" region="5" universe="14"/>
+  <cell id="150" material="1" region="-6" universe="15"/>
+  <cell id="151" material="2" region="6" universe="15"/>
+  <cell id="160" material="1" region="-7" universe="16"/>
+  <cell id="161" material="2" region="7" universe="16"/>
+  <cell id="170" material="1" region="-8" universe="17"/>
+  <cell id="171" material="2" region="8" universe="17"/>
+  <cell id="180" material="1" region="-9" universe="18"/>
+  <cell id="181" material="2" region="9" universe="18"/>
+  <cell id="190" material="1" region="-10" universe="19"/>
+  <cell id="191" material="2" region="10" universe="19"/>
+  <cell id="200" material="1" region="-11" universe="20"/>
+  <cell id="201" material="2" region="11" universe="20"/>
+  <cell id="210" material="1" region="-12" universe="21"/>
+  <cell id="211" material="2" region="12" universe="21"/>
+  <cell id="220" material="1" region="-13" universe="22"/>
+  <cell id="221" material="2" region="13" universe="22"/>
+  <cell id="230" material="1" region="-14" universe="23"/>
+  <cell id="231" material="2" region="14" universe="23"/>
+  <cell id="240" material="1" region="-15" universe="24"/>
+  <cell id="241" material="2" region="15" universe="24"/>
+  <cell id="250" material="1" region="-16" universe="25"/>
+  <cell id="251" material="2" region="16" universe="25"/>
+  <cell id="260" material="1" region="-17" universe="26"/>
+  <cell id="261" material="2" region="17" universe="26"/>
+  <cell id="270" material="1" region="-18" universe="27"/>
+  <cell id="271" material="2" region="18" universe="27"/>
+  <cell id="280" material="1" region="-19" universe="28"/>
+  <cell id="281" material="2" region="19" universe="28"/>
+  <cell id="900" material="3" universe="30"/>
+  <hex_lattice id="50" n_rings="3" orientation="x">
+    <pitch>1.5</pitch>
+    <outer>30</outer>
+    <center>0.35 -0.2</center>
+    <universes>
+    18  19  20
+  17  26  27  21
+16  25  28  22  10
+  15  24  23  11
+    14  13  12</universes>
+  </hex_lattice>
+  <surface id="1" type="z-cylinder" coeffs="0.0 0.0 0.2"/>
+  <surface id="2" type="z-cylinder" coeffs="0.0 0.0 0.21200000000000002"/>
+  <surface id="3" type="z-cylinder" coeffs="0.0 0.0 0.224"/>
+  <surface id="4" type="z-cylinder" coeffs="0.0 0.0 0.23600000000000002"/>
+  <surface id="5" type="z-cylinder" coeffs="0.0 0.0 0.248"/>
+  <surface id="6" type="z-cylinder" coeffs="0.0 0.0 0.26"/>
+  <surface id="7" type="z-cylinder" coeffs="0.0 0.0 0.272"/>
+  <surface id="8" type="z-cylinder" coeffs="0.0 0.0 0.28400000000000003"/>
+  <surface id="9" type="z-cylinder" coeffs="0.0 0.0 0.29600000000000004"/>
+  <surface id="10" type="z-cylinder" coeffs="0.0 0.0 0.308"/>
+  <surface id="11" type="z-cylinder" coeffs="0.0 0.0 0.32"/>
+  <surface id="12" type="z-cylinder" coeffs="0.0 0.0 0.332"/>
+  <surface id="13" type="z-cylinder" coeffs="0.0 0.0 0.34400000000000003"/>
+  <surface id="14" type="z-cylinder" coeffs="0.0 0.0 0.356"/>
+  <surface id="15" type="z-cylinder" coeffs="0.0 0.0 0.368"/>
+  <surface id="16" type="z-cylinder" coeffs="0.0 0.0 0.38"/>
+  <surface id="17" type="z-cylinder" coeffs="0.0 0.0 0.392"/>
+  <surface id="18" type="z-cylinder" coeffs="0.0 0.0 0.404"/>
+  <surface id="19" type="z-cylinder" coeffs="0.0 0.0 0.41600000000000004"/>
+  <surface id="20" type="z-plane" boundary="vacuum" coeffs="-1.0"/>
+  <surface id="21" type="z-plane" boundary="vacuum" coeffs="1.0"/>
+  <surface id="22" type="x-plane" boundary="vacuum" coeffs="-9.0"/>
+  <surface id="23" type="x-plane" boundary="vacuum" coeffs="9.0"/>
+  <surface id="24" type="y-plane" boundary="vacuum" coeffs="-9.0"/>
+  <surface id="25" type="y-plane" boundary="vacuum" coeffs="9.0"/>
+</geometry>

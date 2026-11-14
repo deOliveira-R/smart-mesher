@@ -14,6 +14,11 @@ use std::collections::BTreeMap;
 
 /// Cap on reported issues per code.
 const MAX_ISSUES: usize = 16;
+/// A `surface -> cells` list longer than this is intersected with the tile list in `across`.
+const LONG_SURF_LIST: usize = 32;
+/// The concentric fast path is kept only while no shell lists more than this many cells or a
+/// quarter of the leaf, whichever is larger.
+const RADIAL_MAX_CANDIDATES: usize = 16;
 
 /// Concentric radial structure for the fast path (nested spheres or coaxial cylinders).
 pub(crate) struct Radial {
@@ -444,6 +449,13 @@ impl Leaf {
             }
             cand_off.push(cand.len() as u32);
         }
+        // The family must constrain the leaf: when most cells have no radius of it (the first
+        // cylinder of a lattice of pins has one pin's two radii), every shell lists all of them
+        // and the path would test every cell. Results do not depend on the path.
+        let widest = cand_off.windows(2).map(|w| (w[1] - w[0]) as usize).max().unwrap_or(0);
+        if widest > RADIAL_MAX_CANDIDATES.max(self.n_cells() / 4) {
+            return None;
+        }
         Some(Radial { sphere, o, a, radii, cand_off, cand })
     }
 
@@ -482,11 +494,22 @@ impl Leaf {
 
     /// Does the cell contain `p`, with the side of one surface optionally forced?
     pub(crate) fn contains(&self, c: usize, p: V3, d: V3, force: Option<(u32, i8)>, cnt: &mut WorkCounters) -> bool {
+        self.contains_keeping(c, p, d, force, None, cnt)
+    }
+
+    /// [`Self::contains`] for the cell a ray is in, which entered through (or runs along) the
+    /// surface `keep`: while `p` is within the on-face band of it and `d` is tangential to it,
+    /// the ray stays on the cell's side of it (the hashed tie would otherwise end a run along a
+    /// face at once, when the hash puts the point outside).
+    pub(crate) fn contains_keeping(&self, c: usize, p: V3, d: V3, force: Option<(u32, i8)>, keep: Option<u32>, cnt: &mut WorkCounters) -> bool {
         'terms: for th in self.terms(c) {
             for &h in th {
                 let s = h >> 1;
                 let sense = match force {
                     Some((fs, fsn)) if fs == s => fsn,
+                    _ if keep == Some(s) && self.surfs[s as usize].sd(p).abs() <= self.tol && dot(self.surfs[s as usize].normal(p), d).abs() <= self.ang => {
+                        if h & 1 == 1 { 1 } else { -1 }
+                    }
                     _ => self.sense(s as usize, p, d, cnt),
                 };
                 if (sense > 0) != (h & 1 == 1) {
@@ -564,6 +587,13 @@ impl Leaf {
         self.cell_surfs(c).iter().copied().find(|&s| self.surfs[s as usize].sd(p).abs() <= self.tol)
     }
 
+    /// Among the cell's surfaces within the on-face band of `p`, the one the direction `d` is most
+    /// nearly parallel to (lowest id on a tie): the surface a ray along a face runs on.
+    pub(crate) fn on_face_along(&self, c: usize, p: V3, d: V3) -> Option<u32> {
+        let key = |s: u32| dot(self.surfs[s as usize].normal(p), d).abs();
+        self.cell_surfs(c).iter().copied().filter(|&s| self.surfs[s as usize].sd(p).abs() <= self.tol).min_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)))
+    }
+
     /// The lowest surface of the leaf within the on-face band of `p` (for a point in the
     /// complement, which borders every surface).
     pub(crate) fn on_face_any(&self, p: V3) -> Option<u32> {
@@ -582,15 +612,24 @@ impl Leaf {
     /// strictly inside the bounds, falls back to the full-leaf scan (`slow_locates`).
     pub(crate) fn across(&self, cur: Option<u32>, s: u32, sense: i8, p: V3, d: V3, cnt: &mut WorkCounters) -> Next {
         let (mut n, mut one) = (0u32, 0u32);
-        for &c in self.surf_cells(s as usize) {
+        let list = self.surf_cells(s as usize);
+        // A surface shared by many cells (the common top and bottom plane of a lattice) lists
+        // them all. The cells that can hold `p` are those of its tile, so a long list is
+        // intersected with the tile list (both ascending): the same matches, a handful of tests.
+        let tile = if list.len() > LONG_SURF_LIST { self.index.as_ref().and_then(|ix| ix.cells_at(p)) } else { None };
+        let mut test = |c: u32, cnt: &mut WorkCounters| {
             if Some(c) == cur {
-                continue;
+                return;
             }
             cnt.locate_candidates += 1;
             if self.contains(c as usize, p, d, Some((s, sense)), cnt) {
                 n += 1;
                 one = c;
             }
+        };
+        match tile {
+            Some(t) => t.iter().filter(|c| list.binary_search(c).is_ok()).for_each(|&c| test(c, cnt)),
+            None => list.iter().for_each(|&c| test(c, cnt)),
         }
         match n {
             0 => {
