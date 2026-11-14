@@ -67,8 +67,17 @@ fn cut_owned(m: &Model, ov: &Overlay) -> BTreeSet<EntityId> {
         }
     }
     for piece in d.cells() {
-        for pf in piece.faces.iter().filter(|pf| matches!(pf, PieceFace::Part { .. } | PieceFace::CutPart { .. })) {
-            out.extend(d.piece_face_cells(pf, ov).unwrap_or_default());
+        let realized = d.parent_of(piece.id).is_some_and(|p| d.is_realized(p));
+        for pf in &piece.faces {
+            match pf {
+                PieceFace::Part { .. } | PieceFace::CutPart { .. } => out.extend(d.piece_face_cells(pf, ov).unwrap_or_default()),
+                // A whole face of a realized piece: partitioning or merging it would leave
+                // `piece_face_cells(Whole(f))` without a realization.
+                PieceFace::Whole(f) if realized => {
+                    out.insert(*f);
+                }
+                _ => {}
+            }
         }
     }
     for op in ov.ops() {

@@ -17,9 +17,12 @@ use sm_topo_api::{Carrier, VirtualOp};
 
 use crate::xform::Xf;
 
+/// Rewritten ops and the overlay id counters.
+pub(crate) type Rewritten = (Vec<VirtualOp>, [u64; 3]);
+
 /// The overlay's ops with the geometry of the ones that touch `closure` transformed by `xf`
 /// (plus the id counters), or `None` if no op touches it (the plain rebase then applies).
-pub(crate) fn transformed_ops(layer: &ModelLayer, closure: &[EntityId], xf: &Xf) -> Result<Option<(Vec<VirtualOp>, [u64; 3])>, OpError> {
+pub(crate) fn transformed_ops(layer: &ModelLayer, closure: &[EntityId], xf: &Xf) -> Result<Option<Rewritten>, OpError> {
     let Some(ov) = layer.overlay() else { return Ok(None) };
     let view = layer.topo();
     let mut moved: BTreeSet<EntityId> = closure.iter().copied().collect();

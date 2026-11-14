@@ -15,7 +15,7 @@ use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::SurfaceDef;
 use sm_layer_api::{CoreLayers, ModelLayer};
 use sm_model::{
-    CollapseEdge, CompositeEdges, CompositeFaces, CreateBrick, CreateCylinder, Delete, ModelPlugin, PartitionEdge, PartitionFace,
+    CollapseEdge, CompositeEdges, CompositeFaces, CreateBrick, CreateCylinder, CreateFrustum, CreateSphere, Delete, ModelPlugin, PartitionEdge, PartitionFace,
     RemoveVirtual, SplitRealized, UnsplitRealized, VirtualInfoOut,
 };
 use sm_model_api::PieceRef;
@@ -692,15 +692,20 @@ fn plain_virtual_ops_refuse_the_cells_of_a_realized_split() {
     // Collapse: the cut edge itself, and an edge whose dropped end is a cut vertex.
     let ends: Vec<EntityId> = layer(&s).topo().boundary(cut_edge).iter().map(|i| i.cell).collect();
     let e = try_go(&mut s, &CollapseEdge { edge: cut_edge, into_vertex: ends[0] }).unwrap_err().to_string();
-    assert!(e.contains("unsplit_realized"), "{e}");
+    assert!(e.contains("unsplit_realized") && e.contains(&cut_edge.to_string()), "{e}");
+    assert_eq!(s.state().hash(), hash, "collapse of a cut edge: state untouched");
     let (_, v, halves) = cc.split_edges[0];
     let ends: Vec<EntityId> = layer(&s).topo().boundary(halves[0]).iter().map(|i| i.cell).collect();
     let keep = *ends.iter().find(|&&x| x != v).expect("far end");
     let e = try_go(&mut s, &CollapseEdge { edge: halves[0], into_vertex: keep }).unwrap_err().to_string();
-    assert!(e.contains("unsplit_realized"), "{e}");
-    // Composites over halves of cut edges / faces.
-    assert!(try_go(&mut s, &CompositeEdges { edges: vec![halves[0], halves[1]] }).is_err());
-    assert!(try_go(&mut s, &CompositeFaces { faces: vec![cc.split_faces[0].1[0], cc.split_faces[0].1[1]] }).is_err());
+    assert!(e.contains("unsplit_realized") && e.contains(&halves[0].to_string()), "{e}");
+    assert_eq!(s.state().hash(), hash, "collapse onto a cut vertex: state untouched");
+    // Composites over halves of cut edges / faces are refused by `kind_is` (the ops take host
+    // cells only), before the cut-ownership check: a kind error, not the unsplit message.
+    let e = try_go(&mut s, &CompositeEdges { edges: vec![halves[0], halves[1]] }).unwrap_err().to_string();
+    assert!(e.contains("expected one of") && e.contains("PartitionEdge"), "{e}");
+    let e = try_go(&mut s, &CompositeFaces { faces: vec![cc.split_faces[0].1[0], cc.split_faces[0].1[1]] }).unwrap_err().to_string();
+    assert!(e.contains("expected one of") && e.contains("PartitionFace"), "{e}");
     assert_eq!(s.state().hash(), hash);
 
     // The decomposition's cut cells still resolve, the view validates, and unsplit still works.
@@ -786,4 +791,113 @@ fn an_overlay_state_hash_is_pinned() {
     let (a, b) = (build(cell_complex), build(topo_store));
     assert_eq!(a, b);
     assert_eq!(format!("{a:?}"), "Hash256(83cf0a9aba4e)", "update the pin only for a reviewed overlay change");
+}
+
+// ------------------------------------------------------------------ W4-VTOPO-FIX2
+
+/// The `Whole` faces a piece lists.
+fn whole_faces(s: &Session, piece: EntityId) -> Vec<EntityId> {
+    layer(s).model().decomposition().piece(piece).expect("piece").faces.iter().filter_map(|pf| if let sm_model_api::PieceFace::Whole(f) = pf { Some(*f) } else { None }).collect()
+}
+
+fn refused_with_unsplit(s: &mut Session, op: &dyn Op, tag: &str) {
+    let hash = s.state().hash();
+    let e = try_go(s, op).unwrap_err().to_string();
+    assert!(e.contains("unsplit_realized"), "{tag}: {e}");
+    assert_eq!(s.state().hash(), hash, "{tag}: refusal leaves the state alone");
+}
+
+#[test]
+fn whole_faces_of_realized_pieces_are_refused_for_partition_and_composite() {
+    use sm_model_api::PieceFace;
+    // Plane split x = 1: the end faces are Whole faces of the pieces.
+    let (mut s, kids) = realized_brick();
+    let wf = whole_faces(&s, kids[0]);
+    assert!(!wf.is_empty(), "the piece has a Whole face");
+    let dec = layer(&s).model().decomposition().clone();
+    for f in wf {
+        assert_eq!(dec.piece_face_cells(&PieceFace::Whole(f), layer(&s).topo()), Some(vec![f]));
+        let pts = layer(&s).topo().face_outline(f);
+        let (a, b) = (vertex_at(&s, [pts[0].x, pts[0].y, pts[0].z]), vertex_at(&s, [pts[2].x, pts[2].y, pts[2].z]));
+        refused_with_unsplit(&mut s, &PartitionFace { face: f, start: a, end: b }, "partition_face of a Whole face");
+    }
+
+    // Corner split: composite_faces of two Whole faces of PartitionCell#2.
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+    let kids = go(&mut s, &SplitRealized { piece: id(EntityKind::TopoVolume, 1), normal: [1.0, 1.0, 1.0], offset: 0.8 }).outputs["pieces"].clone();
+    let wf = whole_faces(&s, kids[1]);
+    let pair = [id(EntityKind::TopoFace, 2), id(EntityKind::TopoFace, 4)];
+    assert!(pair.iter().all(|f| wf.contains(f)), "{wf:?} should hold {pair:?}");
+    refused_with_unsplit(&mut s, &CompositeFaces { faces: pair.to_vec() }, "composite_faces of Whole faces");
+    let dec = layer(&s).model().decomposition();
+    assert!(pair.iter().all(|f| dec.piece_face_cells(&PieceFace::Whole(*f), layer(&s).topo()) == Some(vec![*f])));
+}
+
+/// Whether the open segments `a b` and `c d` properly cross.
+fn segs_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    o(a, b, c) * o(a, b, d) < 0.0 && o(c, d, a) * o(c, d, b) < 0.0
+}
+
+/// A brick whose top face has a half-disc notch of radius 1 centred on (cx, 0); returns the top
+/// face and the corners (0, 2) and (4, 0). The chord between them is `|cx - 4| / sqrt 5` from
+/// the notch centre.
+fn notch_session(cx: f64) -> (Session, EntityId, EntityId, EntityId) {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+    go(&mut s, &CreateCylinder { height: 4.0, radius: 1.0, center: Some([cx, 0.0, 1.0]) });
+    go(&mut s, &Subtract { targets: vec![id(EntityKind::TopoBody, 1)], tools: vec![id(EntityKind::TopoBody, 2)], keep: None, regularize: None, tol: None });
+    let v = |x, y| vertex_at(&s, [x, y, 2.0]);
+    let (p0, p1, p3, p4, p5) = (v(0., 0.), v(cx - 1.0, 0.), v(cx + 1.0, 0.), v(4., 0.), v(0., 2.));
+    let top = face_with_vertices(&s, &[p0, p1, p3, p4, p5]);
+    (s, top, p5, p4)
+}
+
+#[test]
+fn a_chord_grazing_the_arc_inside_the_32_segment_sagitta_is_refused_and_one_clear_of_it_is_not() {
+    let r5 = 5f64.sqrt();
+    // The chord comes 2e-4 inside the circle (tangent point at 63.4 deg, within one segment of
+    // the 32-segment polygon, whose sagitta is 1.2e-3; both polygon vertices next to it project 3.7e-4 inside the circle).
+    let cx = 4.0 - r5 * (1.0 - 2e-4);
+    let (mut s, top, a, b) = notch_session(cx);
+    // 32 fixed samples would have missed it: the inscribed polygon of the half circle does not
+    // meet the chord.
+    let polygon: Vec<[f64; 2]> = (0..=32).map(|k| (k as f64) * std::f64::consts::PI / 32.0).map(|t| [cx + t.cos(), t.sin()]).collect();
+    assert!(polygon.windows(2).all(|w| !segs_cross([0.0, 2.0], [4.0, 0.0], w[0], w[1])), "the graze must hide inside the 32-sample polygon");
+    let e = assert_refused_untouched(&mut s, top, a, b);
+    assert!(e.contains("crosses or touches the face boundary"), "{e}");
+    // Clear of the arc by 2e-4: accepted, and the result is valid.
+    let (mut s, top, a, b) = notch_session(4.0 - r5 * (1.0 + 2e-4));
+    let kids = go(&mut s, &PartitionFace { face: top, start: a, end: b }).outputs["faces"].clone();
+    assert_eq!(kids.len(), 2);
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
+}
+
+#[test]
+fn no_planar_face_carries_an_edge_without_a_sampler() {
+    // `check_chord_inside` refuses a loop edge without an `edge_sampler` (a degenerate edge, no
+    // curve). Such edges exist (sphere poles, cone apex) but only on curved faces, which
+    // `face_planes` refuses first: the branch is a guard no model reaches.
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateSphere { radius: 1.0, center: None });
+    go(&mut s, &CreateFrustum { height: 2.0, radius: 1.0, minor: None, top: None, center: Some([5.0, 0.0, 0.0]) });
+    go(&mut s, &CreateFrustum { height: 2.0, radius: 1.0, minor: None, top: Some(0.5), center: Some([10.0, 0.0, 0.0]) });
+    let t = layer(&s).topo();
+    let (mut bare, mut planar) = (0, 0);
+    for &f in t.cells(Dim::Face) {
+        let is_plane = matches!(t.carrier(f), Carrier::Surface(sc) if matches!(t.shapes().surface_def(sc.surface), Some(SurfaceDef::Plane(_))));
+        for l in t.loops(f) {
+            for e in l.entries {
+                let has = t.edge_sampler(e.cell).is_some();
+                if is_plane {
+                    planar += 1;
+                    assert!(has, "planar face {f} has the sampler-less edge {}", e.cell);
+                } else if !has {
+                    bare += 1;
+                }
+            }
+        }
+    }
+    assert!(bare >= 2 && planar >= 2, "bare {bare}, planar {planar}");
 }
