@@ -32,6 +32,7 @@ mod poly2;
 pub mod regularize;
 mod registry;
 pub mod subdivide;
+mod toolbody;
 pub mod webcut;
 
 pub use error::BooleanError;
