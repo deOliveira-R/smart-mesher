@@ -1,10 +1,15 @@
-//! Webcut: split volumes with a plane or a cylinder.
+//! Webcut: split volumes with a plane, a cylinder, or a sphere, cone, torus or elliptic surface.
 //!
 //! The tool is a bare surface. Each target volume's faces are cut along the intersection with the
 //! tool (the same kernel as the booleans), the cut edges are chained into closed loops, the loops
 //! become the cap face(s) on the tool surface, and `split_volume` separates the volume. Every
 //! piece becomes its own body; the caps are shared (merged) by the two pieces unless `merge` is
 //! off, in which case each piece gets its own cap (`unmerge_face`, Cubit `nomerge`).
+//!
+//! Sphere, cone, torus and elliptic tools cannot be capped loop by loop (poles, two seams,
+//! nappes), so the surface is closed into a temporary solid (`toolbody`) and the volume is split
+//! against it once: the part inside is the negative piece, the part outside the positive one,
+//! and both use the same fragment of the tool surface as their cut face.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,9 +51,12 @@ pub enum CutTool {
         /// The normal (need not be unit); the positive side is where it points.
         normal: Vector3,
     },
-    /// A surface: a plane or a cylinder (a cylinder's positive side is its outside). `window` is a
-    /// world box `[xmin, ymin, zmin, xmax, ymax, zmax]` that bounds the tool; it must contain the
-    /// targets (`None` takes the targets' box).
+    /// A surface: a plane, cylinder, sphere, cone (one nappe), torus, elliptic cylinder or
+    /// elliptic cone. The positive side is where the surface normal points: the outside of a
+    /// cylinder, sphere, torus or elliptic cylinder, and the outside of the solid cone (its
+    /// negative side) for a nappe. `window` is a world box `[xmin, ymin, zmin, xmax, ymax, zmax]`
+    /// that bounds the tool (cones and elliptic cylinders are cut off beyond it); it must contain
+    /// the targets (`None` takes the targets' box).
     Surface {
         /// The surface definition.
         surface: SurfaceDef,
@@ -106,9 +114,12 @@ fn unit_or(v: Vector3) -> Result<Vector3, BooleanError> {
 /// bricks along their interface; callers that need a real cut check that both roles are non-empty.
 ///
 /// # Errors
-/// `Unsupported` for non-manifold targets, for tools other than planes and cylinders, for
-/// `imprint`, and when the cut curves do not form simple closed loops; `Topo(CutDoesNotSeparate)`
-/// when the tool does not split a volume in two.
+/// `Unsupported` for non-manifold targets, for tool surfaces without a closed form (NURBS,
+/// implicit), for `imprint`, and when the cut curves do not form simple closed loops (plane and
+/// cylinder tools); `Topo(CutDoesNotSeparate)` when the tool does not split a volume in two.
+/// A closed tool (sphere, torus) wholly inside a target splits it into the inside piece and the
+/// outside piece with a cavity; one that does not touch the target, or contains it, leaves it
+/// whole on the side it lies on. `ResultInvalid` if a piece is not a closed positive solid.
 pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool: &CutTool, o: &WebcutOptions) -> Result<WebcutOutcome, BooleanError> {
     if o.imprint {
         return Err(BooleanError::Unsupported("webcut with imprint is not available yet"));

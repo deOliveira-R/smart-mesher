@@ -42,7 +42,7 @@ pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 pub use bvh::CandidateStats;
 pub use heal_check::{HealCode, HealFinding, HealOptions, HealReport, HealThresholds, heal_check};
 pub use regularize::{JoinedPair, RefusedJoin, RegularizeReport, regularize_volumes};
-pub use locate::{PointLocation, locate_point};
+pub use locate::{PointLocation, face_interior_point, locate_point, volume_interior_point};
 pub use pieces::candidate_pair_stats;
 pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
 

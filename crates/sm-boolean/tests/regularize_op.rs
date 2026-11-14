@@ -65,7 +65,8 @@ fn regularize_is_a_no_op_on_a_regular_body_and_deterministic() {
     let w0 = words(r.topo());
     let (_, rep) = r.lib(|h| sm_boolean::regularize_volumes(h, &[c.volume])).unwrap();
     assert!(rep.joined_faces.is_empty() && rep.joined_edges.is_empty() && rep.refused.is_empty());
-    r.run(&Regularize { volumes: vec![c.volume] }).unwrap();
+    let d = r.run(&Regularize { volumes: vec![c.volume] }).unwrap();
+    assert!(d.outputs.get("refused").is_none_or(|v| v.is_empty()), "nothing refused: {:?}", d.outputs);
     assert_eq!(words(r.topo()), w0);
     // Twice from scratch gives the same state hash.
     let (mut a, mut b) = (Rig::cc(), Rig::cc());
@@ -121,7 +122,7 @@ fn regularize_survives_chained_joins_of_quartered_and_octant_bodies() {
     let mut reference = Rig::cc();
     reference.cylinder(H, R, [0.0, 0.0, 0.0]);
     let want = counts(reference.topo());
-    assert_eq!(want, [2, 3, 3, 1].map(|x| x).to_vec().into_iter().rev().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().as_slice().try_into().unwrap_or(want));
+    assert_eq!(want, [2, 3, 3, 1, 1]);
 
     let mut r = Rig::cc();
     let c = r.cylinder(H, R, [0.0, 0.0, 0.0]);
@@ -149,5 +150,7 @@ fn regularize_survives_chained_joins_of_quartered_and_octant_bodies() {
     r.run(&Regularize { volumes: vec![v] }).unwrap();
     let t = r.topo();
     assert_valid(t);
-    assert_eq!(counts(t)[2], 6, "octant brick regularizes to 6 faces");
+    assert_eq!(counts(t), [8, 12, 6, 1, 1], "octant brick regularizes to the brick's V, E, F");
+    let vol = volume_of(t, v);
+    assert!((vol - 1.0).abs() <= 1e-12, "volume {vol}");
 }
