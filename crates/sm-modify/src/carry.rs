@@ -3,7 +3,7 @@
 //! `sm-modify` passes (conversion, local refinement) reuse it with their own maps.
 
 use sm_core::EntityId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use sm_mesh_api::{
     CellIx, FaceIx, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SetMembers, Side, SignedFace, TagValues, VertexIx,
 };
@@ -44,7 +44,9 @@ pub(crate) struct Lineage<'a> {
 /// sides whose cell descends from the member side; vertex sets the original vertices plus the new
 /// nodes lying on a covered entity: a model face (model edge in 2D) all of whose mesh vertices are
 /// members covers its mesh faces (so does a single wall face with member vertices, one of them on
-/// that model face, which carries box-picked patches), and the midpoints of their edges and their centres join; the
+/// that model face, which carries box-picked patches; on a model face without any interior mesh
+/// vertex, such as a wall one interval thick, every wall face with member vertices covers, so a
+/// corner triangle there is indistinguishable from a patch and also covers), and the midpoints of their edges and their centres join; the
 /// midpoint of a model edge with both ends members joins too. Interior faces and cell centres
 /// never join. Without classification, boundary faces whose vertices are all members cover
 /// (this cannot tell walls apart). Cell tags are inherited; vertex tags take
@@ -115,16 +117,28 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                         *ent_cov.entry(c.entity).or_insert(true) &= all;
                     }
                 }
+                // Model faces with at least one mesh vertex in their interior: only there can a
+                // corner face (all vertices on model edges) be told from a patch.
+                let mut has_interior: BTreeSet<EntityId> = BTreeSet::new();
+                for v in 0..nv {
+                    let c = src.vertex_class(VertexIx::new(v));
+                    if c.dim() == Some(wall_dim) {
+                        has_interior.insert(c.entity);
+                    }
+                }
                 let covers = |f: usize| -> bool {
                     let fi = FaceIx::new(f);
                     let c = src.face_class(fi);
                     if c.dim() == Some(wall_dim) {
                         // Covered when the whole model face is, or locally when all its vertices
                         // are members and one of them lies on this model face (a patch); corner
-                        // faces with every vertex on model edges or vertices do not cover.
+                        // faces with every vertex on model edges or vertices do not cover, unless
+                        // the model face has no interior vertex at all (a wall one interval thick),
+                        // where every wall face is such a face and all of them cover.
                         ent_cov.get(&c.entity).copied().unwrap_or(false)
                             || (src.face_vertices(fi).iter().all(|x| inset[x.get()])
-                                && src.face_vertices(fi).iter().any(|x| src.vertex_class(*x).entity == c.entity))
+                                && (src.face_vertices(fi).iter().any(|x| src.vertex_class(*x).entity == c.entity)
+                                    || !has_interior.contains(&c.entity)))
                     } else {
                         c.dim().is_none() && src.face_right(fi).is_none() && src.face_vertices(fi).iter().all(|x| inset[x.get()])
                     }

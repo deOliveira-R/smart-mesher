@@ -527,6 +527,25 @@ fn vertex_set_on_part_of_a_wall_carries_the_whole_patch() {
     assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
 }
 
+/// A wall one interval thick has no interior mesh vertex: the patch {x == 0, y <= 1} of a
+/// 2 x 2 x 1 block (4 nodes) carries to all 9 refined nodes of the patch (nodes, edge midpoints,
+/// the face centre), not only to the corners.
+#[test]
+fn vertex_set_on_a_one_interval_thick_wall_keeps_edge_midpoints_and_centres() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 1], [1.0; 3], &mut alloc).expect("block");
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 && src.point(v.get()).y <= 1.0).collect();
+    assert_eq!(set.len(), 4);
+    src.add_set("patch", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("patch").expect("set").members else { panic!("vertices") };
+    let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
+    assert_eq!((vs.len(), on_patch), (9, 9));
+    assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
+}
+
 #[test]
 fn polyhedra_and_high_order_are_refused_with_a_reason() {
     let fx = sm_testkit::meshes::dual_patch().expect("dual patch");
