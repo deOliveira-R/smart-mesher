@@ -16,6 +16,8 @@ pub(crate) struct Lineage<'a> {
     pub nn: usize,
     /// Source edges as sorted vertex pairs; node `base_e + i` is the midpoint of edge `i`.
     pub pairs: &'a [[u32; 2]],
+    /// Whether source edge `i` lies on a model edge.
+    pub edge_on_curve: &'a [bool],
     /// Source faces with a centre node (`base_q + rank`), ascending.
     pub qfaces: &'a [u32],
     /// Source cells with a centre node (`base_c + rank`), ascending.
@@ -37,8 +39,10 @@ pub(crate) struct Lineage<'a> {
 /// Add the sets and cell / vertex tags of `src` to the builder `b` of the new mesh.
 ///
 /// Cell sets become the children; face sets the new faces on the member faces; side sets the new
-/// sides whose cell descends from the member side; vertex sets the original vertices plus every
-/// new node all of whose spanned vertices are members. Cell tags are inherited; vertex tags take
+/// sides whose cell descends from the member side; vertex sets the original vertices plus the new
+/// nodes lying on a member entity (the midpoint of an edge of a face whose vertices are all
+/// members, or of a model edge with both ends members; the centre of a face with all vertices
+/// members), never a cell centre. Cell tags are inherited; vertex tags take
 /// the mean (real) or the lowest spanned vertex's value (integer). Returns `(code, message)` notes
 /// for what is dropped (face and edge tags, shell-side and point sets).
 pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
@@ -47,7 +51,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
     l: &Lineage<'_>,
 ) -> Result<Vec<(&'static str, String)>, MeshError> {
     let mut notes: Vec<(&'static str, String)> = Vec::new();
-    let Lineage { nv, nn, pairs, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent } = *l;
+    let Lineage { nv, nn, pairs, edge_on_curve, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent } = *l;
     let children_of = |c: u32| child_start[c as usize]..child_start[c as usize + 1];
     for set in src.sets() {
         let members = match &set.members {
@@ -92,9 +96,31 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     inset[x.get()] = true;
                 }
                 let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
-                out.extend(pairs.iter().enumerate().filter(|(_, [a, bb])| inset[*a as usize] && inset[*bb as usize]).map(|(e, _)| VertexIx((base_e + e) as u32)));
+                // An edge lies in the set if it is an edge of a face all of whose vertices are
+                // members (in 2D a face is the edge itself), or if it lies on a model edge and
+                // both its ends are members. Cell centres never join: they are interior.
+                let mut edge_in = vec![false; pairs.len()];
+                for f in 0..src.face_count() {
+                    let l = src.face_vertices(FaceIx::new(f));
+                    if !l.iter().all(|x| inset[x.get()]) {
+                        continue;
+                    }
+                    let n = if l.len() == 2 { 1 } else { l.len() };
+                    for i in 0..n {
+                        let (a, c) = (l[i].0, l[(i + 1) % l.len()].0);
+                        if let Ok(e) = pairs.binary_search(&[a.min(c), a.max(c)]) {
+                            edge_in[e] = true;
+                        }
+                    }
+                }
+                out.extend(
+                    pairs
+                        .iter()
+                        .enumerate()
+                        .filter(|(e, [a, bb])| edge_in[*e] || (edge_on_curve[*e] && inset[*a as usize] && inset[*bb as usize]))
+                        .map(|(e, _)| VertexIx((base_e + e) as u32)),
+                );
                 out.extend(qfaces.iter().enumerate().filter(|(_, f)| src.face_vertices(FaceIx::new(**f as usize)).iter().all(|x| inset[x.get()])).map(|(r, _)| VertexIx((base_q + r) as u32)));
-                out.extend(cen_cells.iter().enumerate().filter(|(_, c)| src.cell_corners(CellIx::new(**c as usize)).unwrap_or(&[]).iter().all(|x| inset[x.get()])).map(|(r, _)| VertexIx((base_c + r) as u32)));
                 SetMembers::Vertices(out)
             }
             _ => {

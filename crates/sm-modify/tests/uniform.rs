@@ -442,6 +442,41 @@ fn a7_the_pass_is_deterministic_for_any_thread_count() {
     assert_eq!(r1.face_map, r4.face_map);
 }
 
+/// A node set never gains interior nodes. The 8 corners of the cell [0,1]^3 of a 2 x 2 x 2 block
+/// carry over as the 26 nodes on that cell's boundary (8 corners, 12 edge midpoints, 6 face
+/// centres), not 27 (the cell centre is interior). The 9 nodes of the interior plane x = 1 carry
+/// over as 9 + 12 edge midpoints + 4 face centres = 25, all on the plane.
+#[test]
+fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let pick = |f: &dyn Fn(Point3) -> bool| -> Vec<sm_mesh_api::VertexIx> {
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| f(src.point(v.get()))).collect()
+    };
+    let corners = pick(&|p| p.x <= 1.0 && p.y <= 1.0 && p.z <= 1.0);
+    let plane = pick(&|p| p.x == 1.0);
+    assert_eq!((corners.len(), plane.len()), (8, 9));
+    src.add_set("cell_nodes", SetMembers::Vertices(corners), &mut alloc).expect("set");
+    src.add_set("plane_nodes", SetMembers::Vertices(plane), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    assert_valid(m);
+    let set = |n: &str| match &m.set_by_name(n).expect("set").members {
+        SetMembers::Vertices(v) => v.clone(),
+        _ => panic!("vertices"),
+    };
+    let cell = set("cell_nodes");
+    assert_eq!(cell.len(), 26, "boundary of the refined cell only");
+    for v in &cell {
+        let p = m.point(v.get());
+        let on_boundary = [p.x, p.y, p.z].iter().any(|c| *c == 0.0 || *c == 1.0);
+        assert!(on_boundary && p.x <= 1.0 && p.y <= 1.0 && p.z <= 1.0, "{p:?} is not on the cell boundary");
+    }
+    let plane = set("plane_nodes");
+    assert_eq!(plane.len(), 25);
+    assert!(plane.iter().all(|v| m.point(v.get()).x == 1.0), "a face set stays on its plane");
+}
+
 #[test]
 fn polyhedra_and_high_order_are_refused_with_a_reason() {
     let fx = sm_testkit::meshes::dual_patch().expect("dual patch");

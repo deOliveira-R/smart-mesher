@@ -452,6 +452,7 @@ pub fn refine<B: MeshBuild>(
     }
 
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));
+    let edge_on_curve: Vec<bool> = eclass.iter().map(|c| c.entity.kind() == sm_core::EntityKind::TopoEdge).collect();
     let notes = carry_sets_and_tags(
         src,
         &mut b,
@@ -459,6 +460,7 @@ pub fn refine<B: MeshBuild>(
             nv,
             nn,
             pairs: &pairs,
+            edge_on_curve: &edge_on_curve,
             qfaces: &qfaces,
             cen_cells: &cen_cells,
             base_e,
