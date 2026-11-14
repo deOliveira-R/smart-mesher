@@ -443,9 +443,11 @@ fn a7_the_pass_is_deterministic_for_any_thread_count() {
 }
 
 /// A node set never gains interior nodes. The 8 corners of the cell [0,1]^3 of a 2 x 2 x 2 block
-/// carry over as the 26 nodes on that cell's boundary (8 corners, 12 edge midpoints, 6 face
-/// centres), not 27 (the cell centre is interior). The 9 nodes of the interior plane x = 1 carry
-/// over as 9 + 12 edge midpoints + 4 face centres = 25, all on the plane.
+/// carry over as 11 nodes: the 8 corners plus the 3 midpoints of the model edges at the origin
+/// (both ends members). No model face is covered, so no other edge midpoint, face centre or the
+/// cell centre joins. The 9 nodes of the wall x = 0 (a model face)
+/// carry over as 9 + 12 edge midpoints + 4 face centres = 25, all on the wall. The interior plane
+/// x = 1 is no model face, so its set gains nothing (9).
 #[test]
 fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
     let mut alloc = SerialAlloc::new();
@@ -454,8 +456,10 @@ fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
         (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| f(src.point(v.get()))).collect()
     };
     let corners = pick(&|p| p.x <= 1.0 && p.y <= 1.0 && p.z <= 1.0);
-    let plane = pick(&|p| p.x == 1.0);
-    assert_eq!((corners.len(), plane.len()), (8, 9));
+    let plane = pick(&|p| p.x == 0.0);
+    let inner = pick(&|p| p.x == 1.0);
+    assert_eq!((corners.len(), plane.len(), inner.len()), (8, 9, 9));
+    src.add_set("inner_nodes", SetMembers::Vertices(inner), &mut alloc).expect("set");
     src.add_set("cell_nodes", SetMembers::Vertices(corners), &mut alloc).expect("set");
     src.add_set("plane_nodes", SetMembers::Vertices(plane), &mut alloc).expect("set");
     let r = run(&src);
@@ -466,7 +470,7 @@ fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
         _ => panic!("vertices"),
     };
     let cell = set("cell_nodes");
-    assert_eq!(cell.len(), 26, "boundary of the refined cell only");
+    assert_eq!(cell.len(), 11, "corners plus the model-edge midpoints at the origin");
     for v in &cell {
         let p = m.point(v.get());
         let on_boundary = [p.x, p.y, p.z].iter().any(|c| *c == 0.0 || *c == 1.0);
@@ -474,7 +478,34 @@ fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
     }
     let plane = set("plane_nodes");
     assert_eq!(plane.len(), 25);
-    assert!(plane.iter().all(|v| m.point(v.get()).x == 1.0), "a face set stays on its plane");
+    assert!(plane.iter().all(|v| m.point(v.get()).x == 0.0), "a wall set stays on its wall");
+    let inner = set("inner_nodes");
+    assert_eq!(inner.len(), 9, "an interior plane is no model entity: only its own nodes");
+    assert!(inner.iter().all(|v| m.point(v.get()).x == 1.0));
+}
+
+/// A node set on two adjacent walls (x = 0 and y = 2) of a wedge block carries over to nodes on
+/// those walls only: the interior diagonal quad faces and the corner triangles of the top and
+/// bottom (all vertices on the walls, but not wall faces) add nothing.
+#[test]
+fn vertex_set_on_two_walls_of_a_wedge_block_stays_on_the_walls() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = wedge_block(2);
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 || src.point(v.get()).y == 2.0).collect();
+    let n_src = set.len();
+    src.add_set("wall", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("wall").expect("set").members else { panic!("vertices") };
+    for v in vs {
+        let p = m.point(v.get());
+        assert!(p.x == 0.0 || p.y == 2.0, "{p:?} is on neither wall");
+    }
+    // Every node of the refined mesh on a wall is in the set: 2 walls of 5 x 5 nodes sharing one
+    // line of 5 -> 45 nodes (the originals are 3 x 3 + 3 x 3 - 3 = 15).
+    let on_walls = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 || m.point(i).y == 2.0).count();
+    assert_eq!((n_src, vs.len(), on_walls), (15, 45, 45));
 }
 
 #[test]

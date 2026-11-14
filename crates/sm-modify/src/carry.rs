@@ -2,8 +2,10 @@
 //! and the child-face-to-parent-face pairs. Written against [`Lineage`] only, so the other
 //! `sm-modify` passes (conversion, local refinement) reuse it with their own maps.
 
+use sm_core::EntityId;
+use std::collections::BTreeMap;
 use sm_mesh_api::{
-    CellIx, FaceIx, MeshBuild, MeshEntityKind, MeshError, MeshRead, SetMembers, Side, SignedFace, TagValues, VertexIx,
+    CellIx, FaceIx, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SetMembers, Side, SignedFace, TagValues, VertexIx,
 };
 use smallvec::SmallVec;
 
@@ -40,9 +42,11 @@ pub(crate) struct Lineage<'a> {
 ///
 /// Cell sets become the children; face sets the new faces on the member faces; side sets the new
 /// sides whose cell descends from the member side; vertex sets the original vertices plus the new
-/// nodes lying on a member entity (the midpoint of an edge of a face whose vertices are all
-/// members, or of a model edge with both ends members; the centre of a face with all vertices
-/// members), never a cell centre. Cell tags are inherited; vertex tags take
+/// nodes lying on a covered entity: a model face (model edge in 2D) all of whose mesh vertices are
+/// members covers its mesh faces, and the midpoints of their edges and their centres join; the
+/// midpoint of a model edge with both ends members joins too. Interior faces and cell centres
+/// never join. Without classification, boundary faces whose vertices are all members cover
+/// (this cannot tell walls apart). Cell tags are inherited; vertex tags take
 /// the mean (real) or the lowest spanned vertex's value (integer). Returns `(code, message)` notes
 /// for what is dropped (face and edge tags, shell-side and point sets).
 pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
@@ -96,15 +100,35 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     inset[x.get()] = true;
                 }
                 let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
-                // An edge lies in the set if it is an edge of a face all of whose vertices are
-                // members (in 2D a face is the edge itself), or if it lies on a model edge and
-                // both its ends are members. Cell centres never join: they are interior.
-                let mut edge_in = vec![false; pairs.len()];
+                // A face "covers" when it lies on a model face (a model edge in 2D) all of whose
+                // mesh faces have only member vertices, so the whole entity is in the set. A mesh
+                // without classification falls back to boundary faces whose vertices are all
+                // members; it cannot tell walls apart. Interior faces never cover.
+                let mut ent_cov: BTreeMap<EntityId, bool> = BTreeMap::new();
+                let wall_dim = if matches!(src.dim(), MeshDim::Two) { 1 } else { 2 };
                 for f in 0..src.face_count() {
-                    let l = src.face_vertices(FaceIx::new(f));
-                    if !l.iter().all(|x| inset[x.get()]) {
-                        continue;
+                    let fi = FaceIx::new(f);
+                    let c = src.face_class(fi);
+                    if c.dim() == Some(wall_dim) {
+                        let all = src.face_vertices(fi).iter().all(|x| inset[x.get()]);
+                        *ent_cov.entry(c.entity).or_insert(true) &= all;
                     }
+                }
+                let covers = |f: usize| -> bool {
+                    let fi = FaceIx::new(f);
+                    let c = src.face_class(fi);
+                    if c.dim() == Some(wall_dim) {
+                        ent_cov.get(&c.entity).copied().unwrap_or(false)
+                    } else {
+                        c.dim().is_none() && src.face_right(fi).is_none() && src.face_vertices(fi).iter().all(|x| inset[x.get()])
+                    }
+                };
+                let face_cov: Vec<bool> = (0..src.face_count()).map(covers).collect();
+                // An edge joins if it is an edge of a covering face (in 2D a face is the edge
+                // itself), or lies on a model edge and both its ends are members.
+                let mut edge_in = vec![false; pairs.len()];
+                for (f, _) in face_cov.iter().enumerate().filter(|(_, c)| **c) {
+                    let l = src.face_vertices(FaceIx::new(f));
                     let n = if l.len() == 2 { 1 } else { l.len() };
                     for i in 0..n {
                         let (a, c) = (l[i].0, l[(i + 1) % l.len()].0);
@@ -120,7 +144,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                         .filter(|(e, [a, bb])| edge_in[*e] || (edge_on_curve[*e] && inset[*a as usize] && inset[*bb as usize]))
                         .map(|(e, _)| VertexIx((base_e + e) as u32)),
                 );
-                out.extend(qfaces.iter().enumerate().filter(|(_, f)| src.face_vertices(FaceIx::new(**f as usize)).iter().all(|x| inset[x.get()])).map(|(r, _)| VertexIx((base_q + r) as u32)));
+                out.extend(qfaces.iter().enumerate().filter(|(_, f)| face_cov[**f as usize]).map(|(r, _)| VertexIx((base_q + r) as u32)));
                 SetMembers::Vertices(out)
             }
             _ => {
