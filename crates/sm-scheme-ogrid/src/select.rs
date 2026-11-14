@@ -11,10 +11,12 @@ use std::f64::consts::{PI, SQRT_2};
 
 /// Predicted worst planar edge ratio above which `ogrid` scores below the unstructured
 /// alternatives. A heuristic calibrated against pave on the W3c through pin and B5 (pave reaches
-/// 1.5 on the pin faces at size 0.3): the pin's fuel disk at n = 8 predicts 1.91 and loses, the B5
-/// annulus at n = 20 predicts 1.74 and wins; at B5 sizes 0.3 and 0.5 the ogrid mesh beats pave on
-/// every metric, at 0.7 and 1.0 the prediction fails and pave stays. The measured 3D ratio also
-/// carries the sweep height, so it is higher than this planar value.
+/// 1.5 on the pin faces at size 0.3). The pin's fuel disk at n = 8 predicts 1.91: that is above
+/// this limit, but disks of 6 to 14 circle nodes use [`ER_FLAT_LIMIT`] (see
+/// [`PAVE_FLAT_COUNTS`]) and win. The B5 annulus at n = 20 predicts 1.74 and wins; at B5 sizes 0.3
+/// and 0.5 the ogrid mesh beats pave on every metric, at 0.7 and 1.0 the prediction fails and pave
+/// stays. The measured 3D ratio also carries the sweep height, so it is higher than this planar
+/// value.
 pub(crate) const ER_LIMIT: f64 = 1.8;
 /// Disk circle counts at which `pave` cannot avoid a quad with two consecutive edges on the circle
 /// (measured on the kernel, `tests/corner_cells.rs` of `sm-scheme-pave`: 6 to 14 nodes; 4 is one
