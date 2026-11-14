@@ -1700,6 +1700,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sm-boolean",
  "sm-core",
  "sm-geom-api",
  "sm-layer-api",
