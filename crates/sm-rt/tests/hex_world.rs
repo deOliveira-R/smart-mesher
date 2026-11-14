@@ -14,8 +14,9 @@ use sm_core::Point3;
 use sm_geom_api::HalfSpace;
 use sm_rt::{MeshTrackerBuilder, WorldTracker};
 use sm_rt_api::{
-    BoundarySpec, BuildInput, BuildOptions, CellId, ComplementPolicy, ComponentId, ComponentKind, CsgLeafInput, Flow, HierInput, InstancePolicy, Lattice, LatticeKind, LeafInput, RtError, Scratch, Segment,
-    StepEnd, TraceEnd, TraceOptions, Tracker, WorldSpec,
+    BoundarySpec, BuildInput, BuildOptions, CellId, ComplementPolicy, ComponentId, ComponentKind,
+    CsgLeafInput, Flow, HierInput, InstancePolicy, Lattice, LatticeKind, LeafInput, RtError,
+    Scratch, Segment, StepEnd, TraceEnd, TraceOptions, Tracker, WorldSpec,
 };
 
 /// `(cell, chord length)` of a segment.
@@ -50,9 +51,21 @@ fn hex_pin(o: Or, pitch: f64, name: &str) -> Fx {
 
 fn build(spec: &WorldSpec, leaves: &[&Fx]) -> Result<WorldTracker, RtError> {
     let bnd = BoundarySpec::default();
-    let ins: Vec<LeafInput<'_>> = leaves.iter().map(|f| LeafInput::Csg(CsgLeafInput::new(&f.store, &f.cells, f.bounds, &f.complement))).collect();
+    let ins: Vec<LeafInput<'_>> = leaves
+        .iter()
+        .map(|f| {
+            LeafInput::Csg(CsgLeafInput::new(
+                &f.store,
+                &f.cells,
+                f.bounds,
+                &f.complement,
+            ))
+        })
+        .collect();
     let h = HierInput::new(spec, &ins, &bnd);
-    MeshTrackerBuilder.build_world(&BuildInput::Hier(h), &BuildOptions::default()).map(|r| r.0)
+    MeshTrackerBuilder
+        .build_world(&BuildInput::Hier(h), &BuildOptions::default())
+        .map(|r| r.0)
 }
 
 /// An `n x n x nz` rhombus of the pin, element `(0, 0, 0)` centred at `origin`.
@@ -60,7 +73,10 @@ fn lattice_spec(o: Or, n: u32, nz: u32, origin: Point3) -> WorldSpec {
     let zp = 2.0 * ZH;
     let fills = vec![ComponentId(0); (n * n * nz) as usize];
     WorldSpec::new(
-        vec![ComponentKind::Leaf { input: 0 }, ComponentKind::Lattice(Lattice::new(kind(o, zp), origin, [n, n, nz], fills, None))],
+        vec![
+            ComponentKind::Leaf { input: 0 },
+            ComponentKind::Lattice(Lattice::new(kind(o, zp), origin, [n, n, nz], fills, None)),
+        ],
         ComponentId(1),
         InstancePolicy::Auto,
     )
@@ -68,14 +84,20 @@ fn lattice_spec(o: Or, n: u32, nz: u32, origin: Point3) -> WorldSpec {
 
 fn world(o: Or, n: u32, nz: u32, origin: Point3) -> (WorldTracker, Lattice) {
     let spec = lattice_spec(o, n, nz, origin);
-    let ComponentKind::Lattice(l) = &spec.components[1] else { unreachable!() };
+    let ComponentKind::Lattice(l) = &spec.components[1] else {
+        unreachable!()
+    };
     let l = l.clone();
     let w = build(&spec, &[&hex_pin(o, P, "")]).expect("hex world builds");
     (w, l)
 }
 
 /// `(cell, length)` of the segments of one trace from `o` along `d`, and how it ended.
-fn trace(w: &dyn Tracker, o: Point3, d: sm_core::Vector3) -> Option<(Vec<(u32, f64)>, &'static str)> {
+fn trace(
+    w: &dyn Tracker,
+    o: Point3,
+    d: sm_core::Vector3,
+) -> Option<(Vec<(u32, f64)>, &'static str)> {
     let mut sc = Scratch::new();
     let mut st = w.init_state(o, d, None, &mut sc).ok()?;
     if st.cell.is_none() {
@@ -121,7 +143,11 @@ fn reference(o: Or, l: &Lattice, org: Point3, d: [f64; 3]) -> Vec<(usize, u32, f
     let n = l.dims[0] as usize;
     let nl = flats(o);
     for lin in 0..l.element_count().unwrap() {
-        let idx = [(lin % n) as i32, ((lin / n) % l.dims[1] as usize) as i32, (lin / (n * l.dims[1] as usize)) as i32];
+        let idx = [
+            (lin % n) as i32,
+            ((lin / n) % l.dims[1] as usize) as i32,
+            (lin / (n * l.dims[1] as usize)) as i32,
+        ];
         let c = l.element_center(idx);
         let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
         let mut ok = true;
@@ -142,10 +168,23 @@ fn reference(o: Or, l: &Lattice, org: Point3, d: [f64; 3]) -> Vec<(usize, u32, f
         }
         // Fuel: the infinite cylinder of radius RF about the element axis.
         let (ox, oy) = (org.x - c.x, org.y - c.y);
-        let (a2, b2, c2) = (d[0] * d[0] + d[1] * d[1], 2.0 * (ox * d[0] + oy * d[1]), ox * ox + oy * oy - RF * RF);
+        let (a2, b2, c2) = (
+            d[0] * d[0] + d[1] * d[1],
+            2.0 * (ox * d[0] + oy * d[1]),
+            ox * ox + oy * oy - RF * RF,
+        );
         let disc = b2 * b2 - 4.0 * a2 * c2;
-        let fuel = (a2 > 1e-300 && disc > 0.0).then(|| ((-b2 - disc.sqrt()) / (2.0 * a2), (-b2 + disc.sqrt()) / (2.0 * a2)));
-        let fuel = if a2 <= 1e-300 && c2 < 0.0 { Some((f64::NEG_INFINITY, f64::INFINITY)) } else { fuel };
+        let fuel = (a2 > 1e-300 && disc > 0.0).then(|| {
+            (
+                (-b2 - disc.sqrt()) / (2.0 * a2),
+                (-b2 + disc.sqrt()) / (2.0 * a2),
+            )
+        });
+        let fuel = if a2 <= 1e-300 && c2 < 0.0 {
+            Some((f64::NEG_INFINITY, f64::INFINITY))
+        } else {
+            fuel
+        };
         match fuel {
             Some((f0, f1)) if f1 > t0 && f0 < t1 => {
                 let (f0, f1) = (f0.max(t0), f1.min(t1));
@@ -178,18 +217,42 @@ fn reference(o: Or, l: &Lattice, org: Point3, d: [f64; 3]) -> Vec<(usize, u32, f
     run
 }
 
-fn check_ray(o: Or, w: &WorldTracker, l: &Lattice, org: Point3, d: sm_core::Vector3, what: &str) -> usize {
+fn check_ray(
+    o: Or,
+    w: &WorldTracker,
+    l: &Lattice,
+    org: Point3,
+    d: sm_core::Vector3,
+    what: &str,
+) -> usize {
     let da = [d.x, d.y, d.z];
     let want = reference(o, l, org, da);
     let Some((got, end)) = trace(w, org, d) else {
-        assert!(want.is_empty(), "{what}: the tracker found no cell, the reference has {} segments", want.len());
+        assert!(
+            want.is_empty(),
+            "{what}: the tracker found no cell, the reference has {} segments",
+            want.len()
+        );
         return 0;
     };
     assert_ne!(end, "lost", "{what}");
-    assert_eq!(got.len(), want.len(), "{what}: segment count\n{got:?}\n{want:?}");
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{what}: segment count\n{got:?}\n{want:?}"
+    );
     for (g, r) in got.iter().zip(&want) {
-        assert_eq!(u64::from(g.0), 2 * r.0 as u64 + u64::from(r.1), "{what}: cell");
-        assert!((g.1 - (r.3 - r.2)).abs() < 1e-12, "{what}: chord {} vs {}", g.1, r.3 - r.2);
+        assert_eq!(
+            u64::from(g.0),
+            2 * r.0 as u64 + u64::from(r.1),
+            "{what}: cell"
+        );
+        assert!(
+            (g.1 - (r.3 - r.2)).abs() < 1e-12,
+            "{what}: chord {} vs {}",
+            g.1,
+            r.3 - r.2
+        );
     }
     got.len()
 }
@@ -203,7 +266,10 @@ fn chords_along_the_three_lattice_directions_are_the_analytic_ones() {
         // A row of elements along each lattice direction: the neighbours of element (2, 2) at
         // +-(1,0), +-(0,1), +-(1,-1) lie on the line through (2, 2) with that direction.
         for (dq, dr) in [(1, 0), (0, 1), (1, -1)] {
-            let (c0, c1) = (l.element_center([2 - 2 * dq, 2 - 2 * dr, 0]), l.element_center([2 + 2 * dq, 2 + 2 * dr, 0]));
+            let (c0, c1) = (
+                l.element_center([2 - 2 * dq, 2 - 2 * dr, 0]),
+                l.element_center([2 + 2 * dq, 2 + 2 * dr, 0]),
+            );
             let len = ((c1.x - c0.x).powi(2) + (c1.y - c0.y).powi(2)).sqrt();
             let d = v3((c1.x - c0.x) / len, (c1.y - c0.y) / len, 0.0);
             // Start at the centre of the first element: fuel RF, then per element mod, fuel, mod.
@@ -214,14 +280,22 @@ fn chords_along_the_three_lattice_directions_are_the_analytic_ones() {
             assert_eq!(fuel.len(), 5);
             // 5 elements, centre of the first to the flat of the last: 4.5 pitches.
             let total: f64 = got.iter().map(|g| g.1).sum();
-            assert!((total - 4.5 * P).abs() < 1e-12, "{o:?} ({dq},{dr}) total {total}");
+            assert!(
+                (total - 4.5 * P).abs() < 1e-12,
+                "{o:?} ({dq},{dr}) total {total}"
+            );
             let sf: f64 = fuel.iter().map(|g| g.1).sum();
-            assert!((sf - (4.0 * 2.0 * RF + RF)).abs() < 1e-12, "{o:?} fuel {sf}");
+            assert!(
+                (sf - (4.0 * 2.0 * RF + RF)).abs() < 1e-12,
+                "{o:?} fuel {sf}"
+            );
             let sm: f64 = md.iter().map(|g| g.1).sum();
             assert!((sm - (4.5 * P - 9.0 * RF)).abs() < 1e-12);
             // Every element on the row is visited once, in order.
             let cells: Vec<u32> = got.iter().map(|g| g.0 / 2).collect();
-            let want: Vec<u32> = (0..5).map(|k| (2 + (k - 2) * dq + 5 * (2 + (k - 2) * dr)) as u32).collect();
+            let want: Vec<u32> = (0..5)
+                .map(|k| (2 + (k - 2) * dq + 5 * (2 + (k - 2) * dr)) as u32)
+                .collect();
             let mut dedup = cells.clone();
             dedup.dedup();
             assert_eq!(dedup, want, "{o:?} ({dq},{dr})");
@@ -243,7 +317,11 @@ fn seeded_random_rays_cross_elements_at_the_analytic_distances() {
             // A start inside the array: the centre of a random element plus an offset.
             let lin = ((0.5 * (r.unit() + 1.0)) * 36.0).floor().min(35.0) as i32;
             let c = l.element_center([lin % 6, lin / 6, 0]);
-            let org = p3(c.x + 0.45 * P * r.unit(), c.y + 0.45 * P * r.unit(), (0.9 * ZH) * r.unit());
+            let org = p3(
+                c.x + 0.45 * P * r.unit(),
+                c.y + 0.45 * P * r.unit(),
+                (0.9 * ZH) * r.unit(),
+            );
             let d = random_dir(&mut r);
             let n = check_ray(o, &w, &l, org, d, &format!("{o:?} ray {k}"));
             if n > 0 {
@@ -270,17 +348,47 @@ fn locate_names_the_element_and_the_layer() {
             assert_eq!((lv.lattice, lv.instance.get()), (idx, lin as usize));
             // A point in the moderator corner of the hexagon (r > RF) of the same element.
             let f = flats(o)[0];
-            let q = w.locate(p3(c.x + 0.45 * P * f[0], c.y + 0.45 * P * f[1], c.z + 0.2), None, None, &mut sc).unwrap();
+            let q = w
+                .locate(
+                    p3(c.x + 0.45 * P * f[0], c.y + 0.45 * P * f[1], c.z + 0.2),
+                    None,
+                    None,
+                    &mut sc,
+                )
+                .unwrap();
             assert_eq!(q.cell, CellId::new(2 * lin as usize + 1));
         }
         // Layer centres are `origin.z + k z_pitch`: the z walls are at half pitches.
         let zp = 2.0 * ZH;
         let c = l.element_center([1, 1, 1]);
-        let (up, dn) = (w.locate(p3(c.x, c.y, c.z + 0.5 * zp - 0.01), None, None, &mut sc).unwrap(), w.locate(p3(c.x, c.y, c.z - 0.5 * zp + 0.01), None, None, &mut sc).unwrap());
-        assert_eq!((up.levels[0].lattice, dn.levels[0].lattice), ([1, 1, 1], [1, 1, 1]));
+        let (up, dn) = (
+            w.locate(p3(c.x, c.y, c.z + 0.5 * zp - 0.01), None, None, &mut sc)
+                .unwrap(),
+            w.locate(p3(c.x, c.y, c.z - 0.5 * zp + 0.01), None, None, &mut sc)
+                .unwrap(),
+        );
+        assert_eq!(
+            (up.levels[0].lattice, dn.levels[0].lattice),
+            ([1, 1, 1], [1, 1, 1])
+        );
         // Outside the stack in z, outside the rhombus in the plane.
-        assert!(w.locate(p3(c.x, c.y, ORIGIN().z + 2.0 * zp + 0.5 * zp + 0.2), None, None, &mut sc).unwrap().cell.is_none());
-        assert!(w.locate(p3(-3.0 * P, -3.0 * P, 0.0), None, None, &mut sc).unwrap().cell.is_none());
+        assert!(
+            w.locate(
+                p3(c.x, c.y, ORIGIN().z + 2.0 * zp + 0.5 * zp + 0.2),
+                None,
+                None,
+                &mut sc
+            )
+            .unwrap()
+            .cell
+            .is_none()
+        );
+        assert!(
+            w.locate(p3(-3.0 * P, -3.0 * P, 0.0), None, None, &mut sc)
+                .unwrap()
+                .cell
+                .is_none()
+        );
     }
 }
 
@@ -298,7 +406,12 @@ fn a_ray_down_the_stack_changes_layer_at_the_z_walls() {
         let e = |k: u32| 2 * (1 + 2 * n + k * n * n);
         assert_eq!(cells, vec![e(0), e(1), e(2)], "{o:?}");
         let lens: Vec<f64> = got.iter().map(|g| g.1).collect();
-        assert!((lens[0] - (2.0 * ZH - 0.25)).abs() < 1e-12 && (lens[1] - 2.0 * ZH).abs() < 1e-12 && (lens[2] - 2.0 * ZH).abs() < 1e-12, "{lens:?}");
+        assert!(
+            (lens[0] - (2.0 * ZH - 0.25)).abs() < 1e-12
+                && (lens[1] - 2.0 * ZH).abs() < 1e-12
+                && (lens[2] - 2.0 * ZH).abs() < 1e-12,
+            "{lens:?}"
+        );
     }
 }
 
@@ -320,20 +433,38 @@ fn vertex_ties_follow_the_documented_rule() {
         for ((i, j), ce) in [((2, 2), a), ((3, 2), b), ((2, 3), c)] {
             let d = v3(ce.x - v.x, ce.y - v.y, 0.0);
             let n = d.x.hypot(d.y);
-            let loc = w.locate(v, Some(v3(d.x / n, d.y / n, 0.0)), None, &mut sc).unwrap();
+            let loc = w
+                .locate(v, Some(v3(d.x / n, d.y / n, 0.0)), None, &mut sc)
+                .unwrap();
             assert_eq!(cell_of(loc), lin(i, j), "{o:?}: heading into ({i},{j})");
         }
         // An edge midpoint between (2,2) and (3,2): the entered side leads.
         let m = p3(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.1);
         let (dab, dba) = (v3(b.x - a.x, b.y - a.y, 0.0), v3(a.x - b.x, a.y - b.y, 0.0));
-        assert_eq!(cell_of(w.locate(m, Some(dab), None, &mut sc).unwrap()), lin(3, 2), "{o:?}");
-        assert_eq!(cell_of(w.locate(m, Some(dba), None, &mut sc).unwrap()), lin(2, 2), "{o:?}");
+        assert_eq!(
+            cell_of(w.locate(m, Some(dab), None, &mut sc).unwrap()),
+            lin(3, 2),
+            "{o:?}"
+        );
+        assert_eq!(
+            cell_of(w.locate(m, Some(dba), None, &mut sc).unwrap()),
+            lin(2, 2),
+            "{o:?}"
+        );
         // Along the shared face: either element or neither (each leaf rules on its own flat with a
         // hashed direction of its local point, as for a Cartesian wall), and the same each time.
         let along = v3(-dab.y, dab.x, 0.0);
         let first = cell_of(w.locate(m, Some(along), None, &mut sc).unwrap());
-        assert!(first == lin(2, 2) || first == lin(3, 2) || first == CellId::new(CellId::NONE.0 as usize & !1), "{o:?}: {first:?}");
-        assert_eq!(first, cell_of(w.locate(m, Some(along), None, &mut sc).unwrap()));
+        assert!(
+            first == lin(2, 2)
+                || first == lin(3, 2)
+                || first == CellId::new(CellId::NONE.0 as usize & !1),
+            "{o:?}: {first:?}"
+        );
+        assert_eq!(
+            first,
+            cell_of(w.locate(m, Some(along), None, &mut sc).unwrap())
+        );
         // A walk from a centre through the vertex is carried along the shared face (not lost, not
         // ended mid-lattice: `rays_along_or_near_shared_faces_reach_the_lattice_boundary` has the
         // closed-form totals), and repeats exactly.
@@ -343,7 +474,11 @@ fn vertex_ties_follow_the_documented_rule() {
         let org = p3(a.x, a.y, 0.1);
         let (got, end) = trace(&w, org, d).unwrap();
         assert_ne!(end, "lost", "{o:?}");
-        let into_first: f64 = got.iter().filter(|g| g.0 / 2 == (2 + 5 * 2) as u32).map(|g| g.1).sum();
+        let into_first: f64 = got
+            .iter()
+            .filter(|g| g.0 / 2 == (2 + 5 * 2) as u32)
+            .map(|g| g.1)
+            .sum();
         assert!((into_first - P / S3).abs() < 1e-12, "{o:?}: {into_first}");
         assert_eq!(trace(&w, org, d).unwrap().0, got);
     }
@@ -376,7 +511,10 @@ fn fit_oversize_fills_are_refused_and_exact_prisms_accepted() {
     if let ComponentKind::Lattice(l) = &mut spec.components[1] {
         l.outer = Some(ComponentId(0));
     }
-    assert!(matches!(build(&spec, &[&hex_pin(Or::X, P, "")]), Err(RtError::Unsupported(_))));
+    assert!(matches!(
+        build(&spec, &[&hex_pin(Or::X, P, "")]),
+        Err(RtError::Unsupported(_))
+    ));
 }
 
 #[test]
@@ -394,11 +532,17 @@ fn hex_traces_are_bit_identical_for_one_thread_and_many() {
     let rays: Vec<sm_geom_api::Ray> = (0..800)
         .map(|_| {
             let c = l.element_center([2, 2, 0]);
-            sm_geom_api::Ray { origin: p3(c.x + 2.0 * r.unit(), c.y + 2.0 * r.unit(), 2.0 * r.unit()), dir: random_dir(&mut r) }
+            sm_geom_api::Ray {
+                origin: p3(c.x + 2.0 * r.unit(), c.y + 2.0 * r.unit(), 2.0 * r.unit()),
+                dir: random_dir(&mut r),
+            }
         })
         .collect();
     let run = |threads: usize| {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
         pool.install(|| {
             let b = w.trace_bundle(&rays, &TraceOptions::default()).unwrap();
             let mut bits: Vec<u64> = b.length.iter().map(|x| x.to_bits()).collect();
@@ -439,7 +583,9 @@ fn slot_changes_count_the_elements_visited() {
 fn footprint_run(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> (f64, f64) {
     let nl = flats(o);
     let n = l.dims[0] as usize;
-    let centres: Vec<Point3> = (0..l.element_count().unwrap()).map(|lin| l.element_center([(lin % n) as i32, ((lin / n) % l.dims[1] as usize) as i32, 0])).collect();
+    let centres: Vec<Point3> = (0..l.element_count().unwrap())
+        .map(|lin| l.element_center([(lin % n) as i32, ((lin / n) % l.dims[1] as usize) as i32, 0]))
+        .collect();
     let mut ivs: Vec<(f64, f64)> = Vec::new();
     for c in &centres {
         let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
@@ -457,7 +603,12 @@ fn footprint_run(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> (f
         }
     }
     ivs.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let sd = |c: &Point3, t: f64| nl.iter().map(|f| ((org.x + t * d[0] - c.x) * f[0] + (org.y + t * d[1] - c.y) * f[1]).abs()).fold(0.0, f64::max) - 0.5 * P;
+    let sd = |c: &Point3, t: f64| {
+        nl.iter()
+            .map(|f| ((org.x + t * d[0] - c.x) * f[0] + (org.y + t * d[1] - c.y) * f[1]).abs())
+            .fold(0.0, f64::max)
+            - 0.5 * P
+    };
     let (mut end, mut lo) = (0.0, f64::INFINITY);
     for (a, b) in ivs {
         if a > end + 1e-9 {
@@ -472,7 +623,10 @@ fn footprint_run(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> (f
         let on_outer = |t: f64| on_outer1(t) && on_outer1(t + 0.05);
         let steps = ((b - a) / 1e-2).ceil() as usize + 1;
         if let Some(k) = (0..=steps).find(|&k| on_outer((a + 1e-2 * k as f64).min(b))) {
-            let (mut u, mut v) = ((a + 1e-2 * (k as f64 - 1.0)).max(a), (a + 1e-2 * k as f64).min(b));
+            let (mut u, mut v) = (
+                (a + 1e-2 * (k as f64 - 1.0)).max(a),
+                (a + 1e-2 * k as f64).min(b),
+            );
             for _ in 0..60 {
                 let m = 0.5 * (u + v);
                 if on_outer(m) { v = m } else { u = m }
@@ -496,7 +650,9 @@ fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
             let c = l.element_center([ci, cj, 0]);
             let org = p3(c.x, c.y, 0.1);
             for k in 0..6 {
-                for eps in [0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-9, -1e-9, 1e-7, -1e-7, 1e-6, -1e-6] {
+                for eps in [
+                    0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-9, -1e-9, 1e-7, -1e-7, 1e-6, -1e-6,
+                ] {
                     let a = (base + 60.0 * f64::from(k)).to_radians() + eps;
                     let d = [a.cos(), a.sin()];
                     let what = format!("{o:?} centre ({ci},{cj}) dir {k} eps {eps:e}");
@@ -513,15 +669,28 @@ fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
                     // (tol = 1e-6) of the lattice footprint.
                     if total > wide + 1e-6 {
                         let band = footprint_run(o, &l, org, d, 1e-6).1;
-                        assert!(total <= band + 1e-6, "{what}: overrun, total {total} vs {band}");
+                        assert!(
+                            total <= band + 1e-6,
+                            "{what}: overrun, total {total} vs {band}"
+                        );
                     }
                     if lo < wide - 1e-6 {
-                        assert!(total >= lo - 1e-6 && total <= wide + 1e-6, "{what}: total {total} outside [{lo}, {wide}]");
+                        assert!(
+                            total >= lo - 1e-6 && total <= wide + 1e-6,
+                            "{what}: total {total} outside [{lo}, {wide}]"
+                        );
                     } else {
                         // The tolerance band also blurs the exit of a ray 1e-9 rad off a flat.
                         let tight = footprint_run(o, &l, org, d, 1e-12).1;
-                        let tol = if eps.abs() >= 1e-9 { 2e-8_f64.max(10.0 * eps.abs()) } else { 2e-9 };
-                        assert!((total - tight).abs() < tol, "{what}: total {total} vs closed form {tight}");
+                        let tol = if eps.abs() >= 1e-9 {
+                            2e-8_f64.max(10.0 * eps.abs())
+                        } else {
+                            2e-9
+                        };
+                        assert!(
+                            (total - tight).abs() < tol,
+                            "{what}: total {total} vs closed form {tight}"
+                        );
                         exact += 1;
                     }
                 }
@@ -540,12 +709,54 @@ fn rays_on_the_layer_interface_reach_the_lattice_boundary() {
     let mut checked = 0;
     for o in [Or::X, Or::Y] {
         let (w, l) = world(o, 7, 2, ORIGIN());
+        checked += zwall_rays(o, &w, &l, &[0.0, 1e-12, 5e-10, 1e-9], 150);
+    }
+    assert!(checked > 4 * 2 * 250, "{checked}");
+}
+
+/// The same z-wall rays on a world built with a wider angular tolerance: the band the fix covers
+/// follows it.
+#[test]
+fn rays_on_the_layer_interface_with_a_wide_angular_tolerance() {
+    for ang in [1e-7, 1e-6] {
+        for o in [Or::X, Or::Y] {
+            let spec = lattice_spec(o, 7, 2, ORIGIN());
+            let ComponentKind::Lattice(l) = &spec.components[1] else {
+                unreachable!()
+            };
+            let l = l.clone();
+            let f = hex_pin(o, P, "");
+            let ins = [LeafInput::Csg(CsgLeafInput::new(
+                &f.store,
+                &f.cells,
+                f.bounds,
+                &f.complement,
+            ))];
+            let bnd = BoundarySpec::default();
+            let h = HierInput::new(&spec, &ins, &bnd);
+            let mut opts = BuildOptions::default();
+            opts.tol.angular = ang;
+            let w = MeshTrackerBuilder
+                .build_world(&BuildInput::Hier(h), &opts)
+                .map(|r| r.0)
+                .expect("builds");
+            let n = zwall_rays(o, &w, &l, &[0.0, 0.5 * ang, ang], 100);
+            assert!(n > 3 * 150, "{n}");
+        }
+    }
+}
+
+/// Trace rays along the z-wall (generic and along a shared flat) with `dz` from `dzs`; none may be
+/// lost. Returns the number checked.
+fn zwall_rays(o: Or, w: &WorldTracker, l: &Lattice, dzs: &[f64], per: usize) -> usize {
+    let mut checked = 0;
+    {
         let zw = ORIGIN().z + ZH;
         let mut r = rng(&format!("hex-zwall-{o:?}"));
         let base = if o == Or::X { 30.0f64 } else { 0.0 };
         let mut rays: Vec<(Point3, [f64; 2], String)> = Vec::new();
         // Generic rays from random interior points of the wall.
-        for k in 0..300 {
+        for k in 0..per {
             let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
             let c = l.element_center([lin % 7, lin / 7, 0]);
             let org = p3(c.x + 0.45 * P * r.unit(), c.y + 0.45 * P * r.unit(), zw);
@@ -554,28 +765,47 @@ fn rays_on_the_layer_interface_reach_the_lattice_boundary() {
         }
         // Along a shared flat: from a point of a flat of a random element, along the flat (the
         // six vertex directions), exactly and a hair off it.
-        for k in 0..300 {
+        for k in 0..per {
             let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
             let c = l.element_center([lin % 7, lin / 7, 0]);
             let a = (base + 60.0 * (k % 6) as f64).to_radians();
             let na = a + 90f64.to_radians();
             let s = 0.5 * 0.5774 * P * r.unit();
-            let org = p3(c.x + 0.5 * P * na.cos() + s * a.cos(), c.y + 0.5 * P * na.sin() + s * a.sin(), zw);
+            let org = p3(
+                c.x + 0.5 * P * na.cos() + s * a.cos(),
+                c.y + 0.5 * P * na.sin() + s * a.sin(),
+                zw,
+            );
             let eps = [0.0, 1e-13, -1e-9][k / 6 % 3];
             let a = a + eps;
-            rays.push((org, [a.cos(), a.sin()], format!("{o:?} flat {k} eps {eps:e}")));
+            rays.push((
+                org,
+                [a.cos(), a.sin()],
+                format!("{o:?} flat {k} eps {eps:e}"),
+            ));
         }
         for (org, d, what) in rays {
-            let Some((got, end)) = trace(&w, org, v3(d[0], d[1], 0.0)) else { continue };
-            assert_ne!(end, "lost", "{what}: from {org:?} dir {d:?}");
-            assert_eq!(end, "boundary", "{what}");
-            let total: f64 = got.iter().map(|g| g.1).sum();
-            // Within the tolerance band of the footprint (a grazing exit blurs it by tol / sin).
-            let (lo, wide) = (footprint_run(o, &l, org, d, -2e-6).0, footprint_run(o, &l, org, d, 1e-7).1);
-            let band = footprint_run(o, &l, org, d, 1e-6).1;
-            assert!(total >= lo - 1e-6 && total <= band + 1e-6, "{what}: from {org:?} dir {d:?} total {total} outside [{lo}, {wide}] (band {band})");
-            checked += 1;
+            for &dz in dzs {
+                let what = format!("{what} dz {dz:e}");
+                let Some((got, end)) = trace(w, org, v3(d[0], d[1], dz)) else {
+                    continue;
+                };
+                assert_ne!(end, "lost", "{what}: from {org:?} dir {d:?}");
+                assert_eq!(end, "boundary", "{what}");
+                let total: f64 = got.iter().map(|g| g.1).sum();
+                // Within the tolerance band of the footprint (a grazing exit blurs it by tol / sin).
+                let (lo, wide) = (
+                    footprint_run(o, l, org, d, -2e-6).0,
+                    footprint_run(o, l, org, d, 1e-7).1,
+                );
+                let band = footprint_run(o, l, org, d, 1e-6).1;
+                assert!(
+                    total >= lo - 1e-6 && total <= band + 1e-6,
+                    "{what}: from {org:?} dir {d:?} total {total} outside [{lo}, {wide}] (band {band})"
+                );
+                checked += 1;
+            }
         }
     }
-    assert!(checked > 800, "{checked}");
+    checked
 }

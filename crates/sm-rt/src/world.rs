@@ -953,7 +953,7 @@ impl WorldTracker {
                 // element the ray left is not handed to the neighbouring layer of the same column,
                 // which holds it only within `tol` and ends the run at once (zero-length
                 // hand-backs between the two layers).
-                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= 1e-9;
+                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= self.info.tol.angular;
                 let excl_col = excl.and_then(|r| r.first()).filter(|lv| lv.component.get() == comp && parallel_z).map(|lv| lv.lattice);
                 let same_column = |idx: [i32; 3]| {
                     let Shape::Hex(or) = l.shape else { return false };
@@ -1016,8 +1016,8 @@ impl WorldTracker {
                     // layer (the state's direction is not changed), so the first candidate in
                     // order takes it and the run along the wall stays in one layer.
                     let mut ld = dir;
-                    if parallel_z && l.pitch[2] > 0.0 && (q[2].abs() - 0.5 * l.pitch[2]).abs() <= self.tol {
-                        ld[2] = -q[2].signum() * 1e-8;
+                    if let Some(dz) = self.zwall_nudge(l, q[2], dir[2]) {
+                        ld[2] = dz;
                     }
                     match self.locate_rec(l.fill[lin] as usize, q, ld, sc, sub_excl, carry) {
                         Loc::Miss => {}
@@ -1035,6 +1035,16 @@ impl WorldTracker {
                 }
             }
         }
+    }
+
+    /// The tolerance-derived z-direction to rule with, for a point at `qz` (relative to the
+    /// element centre) of a hex stack lattice `l` with a ray whose z-component `dz` is within the
+    /// angular tolerance (parallel to the z-walls) and the point on a z-wall (within the on-face
+    /// band): into the element, `10 * tol.angular`, so the leaf's tie on its z plane (hashed
+    /// whenever `|n . d| <= tol.angular`) is decided inward.
+    fn zwall_nudge(&self, l: &Lat, qz: f64, dz: f64) -> Option<f64> {
+        let ang = self.info.tol.angular;
+        (matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0 && dz.abs() <= ang && (qz.abs() - 0.5 * l.pitch[2]).abs() <= self.tol).then(|| -qz.signum() * 10.0 * ang)
     }
 
     fn global_located(&self, h: Hit) -> Located {
@@ -1456,6 +1466,15 @@ impl Tracker for WorldTracker {
         ls.cell = CellId(local_cell);
         ls.region = RegionId(local_region);
         ls.entered_via = st.entered_via.and_then(|f| f.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.n_faces()).map(FaceId));
+        // A ray along the z-wall of a hex stack: the leaf's tie on its z plane is hashed by
+        // position, which can end a run along the wall at once. Step with the direction nudged
+        // into the layer (the state's own direction is not changed).
+        if let Some(lv) = st.levels.last()
+            && let Kind::Lattice(l) = &self.comps[lv.component.get()].kind
+            && let Some(dz) = self.zwall_nudge(l, ls.pos.z, ls.dir.z)
+        {
+            ls.dir.z = dz;
+        }
         let s = pr.tracker.step(&mut ls, max_dist, sc)?;
         let gface = |f: FaceId| FaceId(f.0 + pr.face_off);
         let gsurf = |x: SurfaceId| if x.is_none() { x } else { SurfaceId(x.0 + pr.surf_off) };
