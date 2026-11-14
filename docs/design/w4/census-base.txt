@@ -9,6 +9,7 @@
 # note: golden-reviewed row refreshed at the W4a-a3 combine (7acd147): sm-mcp tools.standard.txt (+mesh__preserve_volume W4-MESHER-LISTS; OR-e) 1941f43752ce706ef52745b6900d94bd5340b1644773455d152bd02fa323d265 -> 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9
 # note: golden-reviewed row refreshed at the W4b virtual-topology combine (4b51af3): sm-mcp tools.standard.txt (+model__collapse_edge, +model__composite_edges, +model__composite_faces, +model__partition_edge, +model__partition_face, +model__remove_virtual, +model__split_realized, +model__unsplit_realized, +model__virtual_info W4-VTOPO-OPS; OR-e) 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9 -> c28beb867295a810edb23d71a09b0b90a44cbe7a49d9d9ed0e4fcf0d13ed7d6f
 # note: golden-reviewed row refreshed at the W4b-b1 combine: sm-mcp tools.standard.txt (+mesh__agglomerate W4-POLY-AGG, +mesh__interval_relation W4-SIZE-IIA-OP, +mesh__refine W4-MOD-REFINE-U, +model__heal_check, +model__regularize W4-BOOL-HEAL-A; OR-e) 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9 -> b38ba131bfb15325cbead66e70c0ee8205b6ec3c857f34e7e1ac75ec60f23bbb
+# note: golden-reviewed row refreshed at the W4b virtual-topology combine after merging main (W4b b1, PR #12) and W4-VTOPO-FIX2: sm-mcp tools.standard.txt (main b1 tools + model__collapse_edge, model__composite_edges, model__composite_faces, model__partition_edge, model__partition_face, model__remove_virtual, model__split_realized, model__unsplit_realized, model__virtual_info W4-VTOPO-OPS; OR-e) b38ba131bfb15325cbead66e70c0ee8205b6ec3c857f34e7e1ac75ec60f23bbb -> 34aa5403be93d2c19cd63036065386f60842e1fff25368b983ad203f87b7b458
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
@@ -268,7 +269,7 @@ golden-reviewed|crates/sm-lang/tests/golden/w2/wrong_kind_in_array.txt|any|416af
 golden-reviewed|crates/sm-mcp/tests/golden/session.in.jsonl|any|6e78c1f184ddd2601deb019714f0def4730d7cc4fd730fde2e7d93bc3a326419
 golden-reviewed|crates/sm-mcp/tests/golden/session.out.jsonl|any|4fe5380a28c1449b938c7612cf721bd5219c5976d368b5a8570b9949546a3d3a
 golden-reviewed|crates/sm-mcp/tests/golden/session.out.respell.jsonl|any|3d025964e068c69b4f4d7add46fbc2888463adf93c46951e7ff95eaa98ca0c58
-golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|b38ba131bfb15325cbead66e70c0ee8205b6ec3c857f34e7e1ac75ec60f23bbb
+golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|34aa5403be93d2c19cd63036065386f60842e1fff25368b983ad203f87b7b458
 golden-reviewed|crates/sm-mesh-api/tests/golden/validate_broken.txt|any|1bae7b5412546e55a0011438cdea9f8d016e9f90845ec64eb96f8bd23fc6dfad
 golden-reviewed|crates/sm-protocol/golden/catalog.json|any|01d3b85aefa31cbb182bf06cafdae2c2ec604ed2a172706354f1817212ffc60a
 golden-reviewed|crates/sm-protocol/golden/lenient.json|any|104ca833bb34bfd34ae1123f86615f45267a272a7c72dcb8a8adb2470a272be0
