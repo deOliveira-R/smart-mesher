@@ -172,7 +172,9 @@ impl ModelLayer {
     /// use. A shared overlay (cloned state) is copied first. Not transactional on its own:
     /// use [`model_overlay_txn`] from an op. A caller that mints virtual ids through it must
     /// adopt them itself (`ApplyCtx::adopt`, ascending `(kind, serial)`): they are the
-    /// `Overlay::data().next_serial` diff, ranks 0/1/2 = `PartitionVertex/Edge/Face`.
+    /// `Overlay::data().next_serial` diff, ranks 0/1/2 = `PartitionVertex/Edge/Face`. It must
+    /// also retire (`ApplyCtx::retire`) the virtual ids its edit removes (for example through
+    /// `Overlay::remove`), or the entity table keeps dead ids.
     pub fn overlay_mut<R>(&mut self, f: impl FnOnce(&mut Overlay) -> R) -> R {
         f(self.overlay_or_new())
     }
@@ -352,6 +354,20 @@ fn minted(before: &IdAlloc, after: &IdAlloc) -> Vec<EntityId> {
 }
 
 /// Ids the overlay minted between two `next_serial` states (rank 0, 1, 2 = vertex, edge, face).
+/// Live virtual (partition) vertices, edges and faces of an overlay.
+fn live_virtual(o: &Overlay) -> Vec<EntityId> {
+    [Dim::Vertex, Dim::Edge, Dim::Face]
+        .into_iter()
+        .flat_map(|d| o.cells(d).iter().copied())
+        .filter(|id| {
+            matches!(
+                id.kind(),
+                EntityKind::PartitionVertex | EntityKind::PartitionEdge | EntityKind::PartitionFace
+            )
+        })
+        .collect()
+}
+
 fn minted_virtual(before: [u64; 3], after: [u64; 3]) -> Vec<EntityId> {
     const KINDS: [EntityKind; 3] =
         [EntityKind::PartitionVertex, EntityKind::PartitionEdge, EntityKind::PartitionFace];
@@ -674,7 +690,8 @@ pub fn model_txn<R>(
 /// and the overlay (created empty over the host on first use). This is how
 /// `Model::split_realized` / `unsplit_realized` are called, so that the cell ids they persist
 /// resolve in THE layer's overlay (ACR-V1, vtopo finding 3). Same adoption, roles and
-/// atomicity as [`model_txn`]; on `Err` the overlay is restored too (to "none" if it did not
+/// atomicity as [`model_txn`], and the virtual ids `f` drops from the overlay (live before or
+/// minted here, dead after) are retired like removed records; on `Err` the overlay is restored too (to "none" if it did not
 /// exist). No topology operation is opened and the host is untouched.
 pub fn model_overlay_txn<R>(
     ctx: &mut ApplyCtx<'_>,
@@ -699,14 +716,22 @@ fn model_txn_with<R>(
         let ids_before = saved.ids().clone();
         let live_before = live_model_ids(&saved);
         let serial_before = layer.overlay.as_ref().map_or([1; 3], |o| o.data().next_serial);
+        let virtual_before = layer.overlay.as_deref().map(live_virtual).unwrap_or_default();
         let ran = f(layer).map(|r| {
             let mut new_ids = minted(&ids_before, layer.model.ids());
             // Only model-table ids can be "removed" (virtual ids live in the overlay).
-            let removed = removed_ids(&live_before, &new_ids, &layer.model);
+            let mut removed = removed_ids(&live_before, &new_ids, &layer.model);
             // Virtual ids the overlay minted (cut face, loop cells, halves) are adopted too, so
             // the entity table stays in step with the overlay counters.
             let serial_after = layer.overlay.as_ref().map_or(serial_before, |o| o.data().next_serial);
-            new_ids.extend(minted_virtual(serial_before, serial_after));
+            let minted_virt = minted_virtual(serial_before, serial_after);
+            // Virtual ids that were live (or minted here) and are gone from the overlay are
+            // retired, so the entity table and the Delta agree with the overlay.
+            let alive = |id: &EntityId| layer.overlay.as_deref().is_some_and(|o| o.is_alive(*id));
+            removed.extend(virtual_before.iter().chain(&minted_virt).filter(|id| !alive(id)));
+            removed.sort_unstable();
+            removed.dedup();
+            new_ids.extend(minted_virt);
             new_ids.sort_unstable();
             (r, new_ids, removed)
         });

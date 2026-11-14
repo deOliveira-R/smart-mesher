@@ -238,6 +238,27 @@ impl TypedOp for SplitRealized {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct UnsplitRealized {
+    piece: EntityId,
+}
+
+impl TypedOp for UnsplitRealized {
+    const NAME: &'static str = "test.unsplit_realized";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        model_overlay_txn(
+            ctx,
+            |m, ov| {
+                m.unsplit_realized(self.piece, ov)
+                    .map_err(|e| OpError::Failed(e.to_string()))
+            },
+            |_, _| vec![],
+        )
+        .map(|_| ())
+    }
+}
+
 fn session() -> Session {
     let mut reg = Registry::new();
     reg.install(&CoreLayers::new(|| Box::new(CellComplex::new()))).unwrap();
@@ -247,6 +268,7 @@ fn session() -> Session {
     reg.register::<AddVertex>().unwrap();
     reg.register::<KillFace>().unwrap();
     reg.register::<SplitRealized>().unwrap();
+    reg.register::<UnsplitRealized>().unwrap();
     let engine =
         Engine::new(Arc::new(reg), Services::new(), Arc::new(DerivedCache::default())).unwrap();
     Session::new(engine)
@@ -324,4 +346,33 @@ fn a_realized_split_writes_into_the_layers_overlay() {
     let bad = run(&mut s, &SplitRealized { volume: vol, x: 1.5 });
     assert!(bad.is_err());
     assert_eq!(s.state().hash(), before);
+}
+
+#[test]
+fn an_unsplit_realized_retires_every_virtual_id_the_overlay_dropped() {
+    let mut s = session();
+    run(&mut s, &MakeBrick {}).unwrap();
+    let vol = EntityId::new(EntityKind::TopoVolume, 1).unwrap();
+    run(&mut s, &SplitRealized { volume: vol, x: 1.0 }).unwrap();
+    let l = model(&s);
+    let kid = l.overlay().unwrap().cells(Dim::Volume)[0];
+    let cut = l.model().decomposition().split_of(PieceRef::Whole(vol)).unwrap().cut;
+    let cc = l.model().decomposition().cut_cells(cut).unwrap().clone();
+    let mut ids: Vec<EntityId> =
+        cc.faces.iter().chain(&cc.edges).chain(&cc.vertices).copied().collect();
+    ids.extend(cc.split_faces.iter().flat_map(|(_, h)| h.iter().copied()));
+    ids.extend(cc.split_edges.iter().flat_map(|(_, v, h)| std::iter::once(*v).chain(h.iter().copied())));
+    ids.extend(l.overlay().unwrap().cells(Dim::Volume).iter().copied());
+    assert!(!ids.is_empty());
+    assert!(ids.iter().all(|id| s.state().contains(*id)));
+
+    let delta = run(&mut s, &UnsplitRealized { piece: kid }).unwrap();
+    for id in &ids {
+        assert!(delta.removed.contains(id), "{id:?} not in delta.removed");
+        assert!(!s.state().contains(*id), "{id:?} still in the entity table");
+        assert!(!model(&s).topo().is_alive(*id), "{id:?} still alive in the overlay");
+    }
+    // The host volume is back whole and untouched.
+    assert!(s.state().contains(vol));
+    assert_eq!(model(&s).topo().cells(Dim::Volume), &[vol]);
 }
