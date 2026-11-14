@@ -39,6 +39,10 @@ pub struct RefusedJoin {
 }
 
 /// What a regularization joined and what it left alone.
+///
+/// The pairs are listed in the order they were joined. One pass can chain joins, so a `keep` of
+/// an earlier pair may be retired by a later pair of the same pass (it appears as a `drop`
+/// there): the cells that survive are the `keep`s that are never a `drop`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RegularizeReport {
     /// Face pairs joined, in the order they were joined.
@@ -282,8 +286,9 @@ fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             topo.set_carrier(e2, Carrier::Curve(new))?;
         }
         match join_edges_periodic(topo, e1, e2, periodic)? {
-            Ok(_) => {
-                rep.joined_edges.push(JoinedPair { keep: e1, drop: e2 });
+            Ok(kept) => {
+                // The kernel names the survivor (the lower id today); record what it returns.
+                rep.joined_edges.push(JoinedPair { keep: kept, drop: if kept == e1 { e2 } else { e1 } });
                 return Ok(true);
             }
             Err(e) => rep.refused.push(RefusedJoin { a: e1, b: e2, reason: e.to_string() }),

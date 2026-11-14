@@ -32,7 +32,8 @@ fn cyl_cut(r_tgt: f64, r_cut: f64) -> Result<(f64, f64), String> {
 /// frame. The cause was not the seam: `interior_point` chose a point of the annular cap that
 /// lies inside the chord sagitta of the inner circle (on the wrong side of it), so the fragment
 /// was put on the wrong side of the tool and the shells did not close. Both cut positions, and
-/// the radii around them, now give analytic volumes with the default frame.
+/// the radii around them, now give analytic volumes with the default frame. (A tool radius of
+/// 0.476 does not cross a 0.475 target; the crossing case is a 0.5 target.)
 #[test]
 fn coaxial_cylinder_cuts_at_the_failing_radii_are_exact() {
     let r_tgt = 0.475;
@@ -41,9 +42,10 @@ fn coaxial_cylinder_cuts_at_the_failing_radii_are_exact() {
         assert!((inside - PI * r_cut * r_cut).abs() < 1e-9, "inside at {r_cut}: {inside}");
         assert!((outside - PI * (r_tgt * r_tgt - r_cut * r_cut)).abs() < 1e-9, "outside at {r_cut}: {outside}");
     }
-    // 0.476 is outside the target: the tool does not cross it, the target is whole.
-    let (inside, outside) = cyl_cut(r_tgt, 0.476).unwrap();
-    assert!((inside - PI * r_tgt * r_tgt).abs() < 1e-9 && outside == 0.0, "{inside} {outside}");
+    // The other radius of the finding, 0.476, crossed for real: a 0.5 target, so the wall is 0.024.
+    let (inside, outside) = cyl_cut(0.5, 0.476).unwrap();
+    assert!((inside - PI * 0.476 * 0.476).abs() < 1e-9, "inside {inside}");
+    assert!((outside - PI * (0.25 - 0.476 * 0.476)).abs() < 1e-9, "outside {outside}");
 }
 
 /// Documented limit: a wall thinner than the sagitta of the 32-sample boundary polygon (about
@@ -134,7 +136,8 @@ fn coaxial_subtract_at_the_failing_radii_is_exact() {
 /// pin centres of pitch 1.26) is rebuilt here by a coaxial cut, and 4 x 360 x 6 points (outside
 /// at 0.2 and more, in the hole, inside the wall) are located. The deck's own ring was not
 /// reproduced: no false `In` was found with the final kernel (the cut itself fails on the old
-/// kernel), so this is a regression guard, not a proof of the cause.
+/// kernel), so this is a regression guard, not a proof of the cause: the false `In` is recorded as
+/// "not reproduced, guarded", and the CSG worker re-probes it on the deck.
 #[test]
 fn locate_point_in_the_gap_ring_at_pin_centres() {
     let (ri, ro) = (0.4096, 0.418);
@@ -192,7 +195,7 @@ fn locate_point_in_thin_annuli() {
     }
 }
 
-// ---- body tools by composition (the webcut sphere, cone and torus tools are not native yet) ----
+// ---- body tools: the native webcut tools and the composition of booleans ----
 
 #[derive(Clone, Copy, Debug)]
 enum Tool {
@@ -203,7 +206,9 @@ enum Tool {
 
 /// Splits a brick by a closed body tool with the existing booleans: the inside piece is
 /// `intersect(keep)`, the outside piece `subtract(keep)`, both inputs are then deleted and the
-/// two pieces merged. Returns (inside, outside, faces shared by both pieces).
+/// two pieces merged. Returns (inside, outside, faces shared by both pieces). The shared count
+/// is only informative: the two booleans build separate copies of the cut face, and `merge`
+/// joins them for the frustum and torus but not for the sphere (poles and seam).
 fn cut_by_body(tool: Tool, crossing: bool) -> Result<(f64, f64, usize), String> {
     use sm_boolean::ops::{Intersect, Merge};
     use sm_model::{CreateFrustum, CreateTorus, Delete};
@@ -243,11 +248,9 @@ fn cut_by_body(tool: Tool, crossing: bool) -> Result<(f64, f64, usize), String> 
     Ok((vi, vo, shared))
 }
 
-/// Spike for the sphere, cone and torus webcut tools (WEBCUT-TOOLS): the composition of the
-/// existing booleans already gives exact volumes and valid topology, but only the frustum and torus pieces
-/// share their cut face (`merge` leaves the two copies of a sphere cut surface apart). A native `CutTool` for these surfaces is not built (it stays the typed
-/// `Unsupported` of `webcut`); this pins what the composition delivers (the shared-face count
-/// is printed with `--nocapture`).
+/// The composition of the existing booleans gives exact volumes and valid topology for the
+/// three body tools. It is the cross-check of the native tools (`tests/webcut_tools.rs`), which
+/// also share their cut face for the sphere, where the composition cannot.
 #[test]
 fn body_tools_by_boolean_composition() {
     for tool in [Tool::Sphere, Tool::Frustum, Tool::Torus] {
@@ -255,21 +258,42 @@ fn body_tools_by_boolean_composition() {
             let (vi, vo, shared) = cut_by_body(tool, crossing).unwrap_or_else(|e| panic!("{tool:?} crossing={crossing}: {e}"));
             assert!((vi + vo - 216.0).abs() < 1e-9, "{tool:?} crossing={crossing}: {vi} + {vo}");
             println!("{tool:?} crossing={crossing}: inside {vi:.9} outside {vo:.9} shared faces {shared}");
-            // Not met for the sphere (shared == 0): `merge` does not join its two cut faces.
-            assert_eq!(shared == 0, matches!(tool, Tool::Sphere), "{tool:?} crossing={crossing}: {shared} shared faces");
         }
     }
 }
 
-/// The webcut tool types that are not native stay typed refusals.
+/// The native sphere tool: the same split as the composition, with the cut face shared (the
+/// temporary `shared == 0` pin of the composition is gone).
 #[test]
-fn webcut_with_a_sphere_tool_is_a_typed_unsupported() {
+fn native_sphere_tool_shares_its_cut_face() {
     use sm_boolean::{CutTool, WebcutOptions, webcut};
     use sm_geom_api::{Frame, Sphere, SurfaceDef};
+    for crossing in [false, true] {
+        let mut r = Rig::cc();
+        let z0 = if crossing { 0.0 } else { -3.0 };
+        let b = r.brick([6.0; 3], [0.0, 0.0, z0 + 3.0]);
+        let sph = Sphere::new(Frame::from_z(Point3::new(0.0, 0.0, 0.0), sm_core::Vector3::new(0.0, 0.0, 1.0)).unwrap(), 1.5).unwrap();
+        let (host, out) = r.lib(|t| webcut(t, &[b.body], &CutTool::Surface { surface: SurfaceDef::Sphere(sph), window: None }, &WebcutOptions::default())).unwrap();
+        let t: &dyn sm_topo_api::TopologyView = &*host;
+        let faces = |bs: &[sm_core::EntityId]| -> std::collections::BTreeSet<sm_core::EntityId> { bs.iter().flat_map(|&b| t.boundary(b).iter().flat_map(|e| t.volume_faces(e.cell).to_vec()).collect::<Vec<_>>()).collect() };
+        let shared = faces(&out.negative).intersection(&faces(&out.positive)).count();
+        assert_eq!(shared, 1, "crossing={crossing}");
+        let vi: f64 = out.negative.iter().map(|&b| t.boundary(b).iter().map(|e| volume_of(t, e.cell)).sum::<f64>()).sum();
+        let want = if crossing { 2.0 / 3.0 * PI * 1.5f64.powi(3) } else { 4.0 / 3.0 * PI * 1.5f64.powi(3) };
+        assert!((vi - want).abs() < 1e-9, "crossing={crossing}: {vi}");
+    }
+}
+
+/// Surfaces without a closed-solid form stay typed refusals.
+#[test]
+fn webcut_with_an_implicit_tool_is_a_typed_unsupported() {
+    use sm_boolean::{CutTool, WebcutOptions, webcut};
+    use sm_geom_api::{Frame, ImplicitDef, Quadric, SurfaceDef};
     let mut r = Rig::cc();
     let b = r.brick([6.0; 3], [0.0; 3]);
-    let sph = Sphere::new(Frame::from_z(Point3::new(0.0, 0.0, 0.0), sm_core::Vector3::new(0.0, 0.0, 1.0)).unwrap(), 1.5).unwrap();
-    let res = r.lib(|t| webcut(t, &[b.body], &CutTool::Surface { surface: SurfaceDef::Sphere(sph), window: None }, &WebcutOptions::default()));
+    let f = Frame::from_z(Point3::new(0.0, 0.0, 0.0), sm_core::Vector3::new(0.0, 0.0, 1.0)).unwrap();
+    let q = Quadric::from_local(&f, [1.0, 1.0, 1.0], [0.0; 3], -1.0);
+    let res = r.lib(|t| webcut(t, &[b.body], &CutTool::Surface { surface: SurfaceDef::Implicit(ImplicitDef::Quadric(q)), window: None }, &WebcutOptions::default()));
     let e = res.err().expect("refused");
-    assert!(e.contains("webcut supports plane and cylinder tools"), "{e}");
+    assert!(e.contains("webcut supports plane, cylinder, sphere"), "{e}");
 }

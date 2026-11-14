@@ -373,10 +373,10 @@ fn webcut_probe_report() {
     let text = report.join("\n");
     assert!(!text.contains("PANIC"), "a case panicked:\n{text}");
     // Pinned outcome: everything passes except the Implicit tool, a typed `Unsupported` today
-    // (webcut takes plane and cylinder tools only; WEBCUT-TOOLS extends it).
+    // (webcut closes a quadric tool into a solid; an implicit-only surface has no such form).
     for l in &report {
         if l.starts_with("3 ") {
-            assert!(l.contains("FAIL  unsupported: webcut supports plane and cylinder tools"), "{l}");
+            assert!(l.contains("FAIL  unsupported: webcut supports plane, cylinder, sphere, cone, torus and elliptic tools"), "{l}");
         } else {
             assert!(l.contains(" pass  "), "{l}");
         }
