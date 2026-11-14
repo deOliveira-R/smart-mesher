@@ -191,7 +191,7 @@ fn partition_face_by_a_chord_gives_two_triangles_and_a_chord() {
     let (a, b) = (vertex_at(&s, [0., 0., 2.]), vertex_at(&s, [2., 2., 2.]));
     let (c, e) = (vertex_at(&s, [2., 0., 2.]), vertex_at(&s, [0., 2., 2.]));
     let top = face_with_vertices(&s, &[a, b, c, e]);
-    let d = go(&mut s, &PartitionFace { face: top, from: a, to: b });
+    let d = go(&mut s, &PartitionFace { face: top, start: a, end: b });
     let kids = d.outputs["faces"].clone();
     let chord = d.outputs["chord"][0];
     assert_eq!(kids.len(), 2);
@@ -208,8 +208,8 @@ fn partition_face_by_a_chord_gives_two_triangles_and_a_chord() {
     assert!(kids.iter().all(|&k| t.boundary(k).iter().any(|l| l.cell == chord)));
     // A degenerate chord is refused, state untouched; a wrong kind is a typed error.
     let hash = s.state().hash();
-    assert!(try_go(&mut s, &PartitionFace { face: kids[0], from: a, to: a }).is_err());
-    assert!(try_go(&mut s, &PartitionFace { face: a, from: a, to: b }).is_err());
+    assert!(try_go(&mut s, &PartitionFace { face: kids[0], start: a, end: a }).is_err());
+    assert!(try_go(&mut s, &PartitionFace { face: a, start: a, end: b }).is_err());
     assert_eq!(s.state().hash(), hash);
 }
 
@@ -226,7 +226,7 @@ fn outline_area(s: &Session, f: EntityId) -> f64 {
 
 fn assert_refused_untouched(s: &mut Session, face: EntityId, from: EntityId, to: EntityId) -> String {
     let hash = s.state().hash();
-    let e = try_go(s, &PartitionFace { face, from, to }).unwrap_err().to_string();
+    let e = try_go(s, &PartitionFace { face, start: from, end: to }).unwrap_err().to_string();
     assert!(e.contains(&face.to_string()), "{e}");
     assert_eq!(s.state().hash(), hash, "a refused op leaves the state as it was");
     e
@@ -248,7 +248,7 @@ fn partition_face_refuses_a_chord_that_leaves_an_l_shaped_face() {
     assert!(e.contains("leaves the face") || e.contains("boundary"), "{e}");
     assert_refused_untouched(&mut s, top, corners[1], corners[4]);
     // An interior diagonal of the lower-left square is accepted and splits the area exactly.
-    let kids = go(&mut s, &PartitionFace { face: top, from: corners[0], to: corners[3] }).outputs["faces"].clone();
+    let kids = go(&mut s, &PartitionFace { face: top, start: corners[0], end: corners[3] }).outputs["faces"].clone();
     assert_eq!(kids.len(), 2);
     let total: f64 = kids.iter().map(|&k| outline_area(&s, k)).sum();
     assert!((total - 3.0).abs() < 1e-12, "{total}");
@@ -276,7 +276,7 @@ fn partition_face_refuses_a_chord_along_an_existing_edge_but_accepts_one_across_
     let ztop = t.cells(Dim::Vertex).iter().map(|&v| vertex_point(t, v).z).fold(f64::MIN, f64::max);
     let (o, px, py) = (vertex_at(&s, [0., 0., ztop]), vertex_at(&s, [1., 0., ztop]), vertex_at(&s, [0., 1., ztop]));
     let quarter = face_with_vertices(&s, &[o, px, py]);
-    let kids = go(&mut s, &PartitionFace { face: quarter, from: px, to: py }).outputs["faces"].clone();
+    let kids = go(&mut s, &PartitionFace { face: quarter, start: px, end: py }).outputs["faces"].clone();
     assert_eq!(kids.len(), 2);
     assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
 }
@@ -294,7 +294,7 @@ fn partition_face_accepts_a_coplanar_composite_and_the_children_cover_it() {
     assert_ne!(left, right);
     let (p0, p1) = (v(0., 0.), v(2., 2.));
     let comp = go(&mut s, &CompositeFaces { faces: vec![left, right] }).outputs["face"][0];
-    let kids = go(&mut s, &PartitionFace { face: comp, from: p0, to: p1 }).outputs["faces"].clone();
+    let kids = go(&mut s, &PartitionFace { face: comp, start: p0, end: p1 }).outputs["faces"].clone();
     assert_eq!(kids.len(), 2);
     let areas: Vec<f64> = kids.iter().map(|&k| outline_area(&s, k)).collect();
     assert!(areas.iter().all(|a| (a - 2.0).abs() < 1e-12), "{areas:?}");
@@ -309,7 +309,7 @@ fn partition_face_refuses_a_curved_face_with_its_id() {
     assert_eq!(lat.len(), 1);
     let vs = list(&s, "TopoVertex");
     let hash = s.state().hash();
-    let e = try_go(&mut s, &PartitionFace { face: lat[0], from: vs[0], to: vs[1] }).unwrap_err().to_string();
+    let e = try_go(&mut s, &PartitionFace { face: lat[0], start: vs[0], end: vs[1] }).unwrap_err().to_string();
     assert!(e.contains(&lat[0].to_string()) && e.contains("not planar"), "{e}");
     assert_eq!(s.state().hash(), hash, "a refused op leaves the state as it was");
 }
@@ -323,7 +323,7 @@ fn partition_face_refuses_bent_and_curved_composites_with_the_id() {
     let comp = go(&mut s, &CompositeFaces { faces: vec![top, front] }).outputs["face"][0];
     let (a, b) = (vertex_at(&s, [0., 2., 2.]), vertex_at(&s, [2., 0., 0.]));
     let hash = s.state().hash();
-    let e = try_go(&mut s, &PartitionFace { face: comp, from: a, to: b }).unwrap_err().to_string();
+    let e = try_go(&mut s, &PartitionFace { face: comp, start: a, end: b }).unwrap_err().to_string();
     assert!(e.contains(&comp.to_string()) && e.contains("not planar"), "{e}");
     assert_eq!(s.state().hash(), hash, "a refused op leaves the state as it was");
 
@@ -335,7 +335,7 @@ fn partition_face_refuses_bent_and_curved_composites_with_the_id() {
     let comp = go(&mut s, &CompositeFaces { faces: lat }).outputs["face"][0];
     let vs = list(&s, "TopoVertex");
     let hash = s.state().hash();
-    let e = try_go(&mut s, &PartitionFace { face: comp, from: vs[0], to: vs[1] }).unwrap_err().to_string();
+    let e = try_go(&mut s, &PartitionFace { face: comp, start: vs[0], end: vs[1] }).unwrap_err().to_string();
     assert!(e.contains(&comp.to_string()) && e.contains("not planar"), "{e}");
     assert_eq!(s.state().hash(), hash);
 }
@@ -611,7 +611,7 @@ proptest! {
                     let Carrier::Curve(cc) = view.carrier(e).clone() else { continue };
                     Box::new(PartitionEdge { edge: e, param: cc.range.lo + t * (cc.range.hi - cc.range.lo) })
                 }
-                1 => Box::new(PartitionFace { face: pick(Dim::Face, i), from: pick(Dim::Vertex, i + j), to: pick(Dim::Vertex, j) }),
+                1 => Box::new(PartitionFace { face: pick(Dim::Face, i), start: pick(Dim::Vertex, i + j), end: pick(Dim::Vertex, j) }),
                 2 => Box::new(CompositeFaces { faces: vec![pick(Dim::Face, i), pick(Dim::Face, j)] }),
                 _ => {
                     let inf = info(&s, None);
@@ -682,7 +682,7 @@ fn plain_virtual_ops_refuse_the_cells_of_a_realized_split() {
     assert!(tried >= 8, "{tried}");
     // Partition of the cut face and of a cut edge.
     let cut_face = cc.faces[0];
-    let e = try_go(&mut s, &PartitionFace { face: cut_face, from: cc.vertices[0], to: cc.vertices[2] }).unwrap_err().to_string();
+    let e = try_go(&mut s, &PartitionFace { face: cut_face, start: cc.vertices[0], end: cc.vertices[2] }).unwrap_err().to_string();
     assert!(e.contains("unsplit_realized"), "{e}");
     assert_eq!(s.state().hash(), hash);
     let cut_edge = cc.edges[0];
@@ -750,7 +750,7 @@ fn model_list_of_a_real_kind_excludes_virtual_cells() {
     go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
     let (a, b) = (vertex_at(&s, [0., 0., 2.]), vertex_at(&s, [2., 2., 2.]));
     let top = face_with_vertices(&s, &[a, b, vertex_at(&s, [2., 0., 2.])]);
-    let kids = go(&mut s, &PartitionFace { face: top, from: a, to: b }).outputs["faces"].clone();
+    let kids = go(&mut s, &PartitionFace { face: top, start: a, end: b }).outputs["faces"].clone();
     assert!(list(&s, "TopoFace").iter().all(|f| f.kind() == EntityKind::TopoFace));
     assert_eq!(list(&s, "TopoFace").len(), 5);
     assert_eq!(list(&s, "PartitionFace"), kids);
@@ -769,7 +769,7 @@ fn chord_checks_use_the_exact_arc_of_a_concave_notch() {
     assert_refused_untouched(&mut s, top, p1, p3);
     // A chord from a notch end back into the notch crosses the arc: refused. One away from it is fine.
     assert_refused_untouched(&mut s, top, p1, p6);
-    let kids = go(&mut s, &PartitionFace { face: top, from: p1, to: p5 }).outputs["faces"].clone();
+    let kids = go(&mut s, &PartitionFace { face: top, start: p1, end: p5 }).outputs["faces"].clone();
     assert_eq!(kids.len(), 2);
     assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
 }
