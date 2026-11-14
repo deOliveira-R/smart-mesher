@@ -30,7 +30,7 @@ use sm_protocol::{
     ScriptRecordResult, ScriptResult, StatusResult,
 };
 
-pub use args::{Cli, Command, Format, Global, QualityProfile};
+pub use args::{Cli, Command, Format, Global, OverlapArg, QualityProfile, SourceArg};
 
 /// The `smesh --version` line.
 pub fn version_line() -> String {
@@ -53,6 +53,8 @@ pub fn usage() -> &'static str {
      \x20 fork <name> [--at hash]       branch and switch\n\
      \x20 undo | redo                   step through the timeline\n\
      \x20 export <file> [--mesh id]     write .smsh, .vtu, .exo, .h5m, .msh, .smrt or (--format openfoam) a case dir\n\
+     \x20 import-openmc <geometry.xml> [--materials f] [--overlap p]\n\
+     \x20                               import an OpenMC deck as B-rep volumes\n\
      \x20 stage <file>                  store a file in the input store: {sha256, bytes}\n\
      \x20 validate [--mesh id]          check a mesh (exit 1 when invalid)\n\
      \x20 quality [--mesh id] [--profile p] [--worst n]\n\
@@ -391,6 +393,26 @@ fn mesh_query(
     )
 }
 
+/// Stage a file through `session.stage` (a script line, so any endpoint can do it): `{sha256, bytes}`.
+fn stage_file(ep: &mut dyn Endpoint, file: &Path) -> Res<Value> {
+    let full = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+    let quoted = lang_string(&path_str(&full))?;
+    let v = call(
+        ep,
+        Request::ScriptRun {
+            text: format!("session.stage({quoted})\n"),
+            path: None,
+            includes: BTreeMap::new(),
+        },
+    )?;
+    v["events"]
+        .as_array()
+        .and_then(|e| e.iter().find(|e| e["event"] == "session"))
+        .map(|e| e["result"].clone())
+        .filter(|r| r["sha256"].is_string())
+        .ok_or_else(|| Failure::local("malformed `session.stage` reply"))
+}
+
 /// A path as a command-language string literal.
 fn lang_string(s: &str) -> Res<String> {
     if s.chars().any(char::is_control) {
@@ -609,6 +631,8 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             empty_patch,
             wedge_patch,
             option,
+            source,
+            regions,
         } => {
             let format = match format {
                 Some(Format::Smsh) => ExportFormat::Smsh,
@@ -634,18 +658,33 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 },
             };
             let mesh = parse_mesh(mesh.as_deref())?;
+            let mut options = parse_options(option)?;
+            if !regions.is_empty() {
+                let opts = options.get_or_insert_with(|| Value::Object(Default::default()));
+                if let Value::Object(map) = opts {
+                    if map.contains_key("regions") {
+                        return Err(Failure::usage("--regions and --option regions=... both given"));
+                    }
+                    map.insert("regions".to_owned(), serde_json::json!({ "split": regions }));
+                } else {
+                    return Err(Failure::usage("--regions needs --option values given as KEY=VALUE pairs"));
+                }
+            }
             let req = Request::Export {
                 path: Some(path_str(file)),
                 format: Some(format),
                 mesh,
                 provenance: *provenance,
                 inline: false,
-                options: parse_options(option)?,
+                options,
                 split_small_determinant: no_split_small_determinant.then_some(false),
                 empty_patches: empty_patch.clone(),
                 wedge_patches: wedge_patch.clone(),
                 split_warped_faces: *split_warped_faces,
-                source: ExportSource::Mesh,
+                source: match source {
+                    Some(SourceArg::Model) => ExportSource::Model,
+                    Some(SourceArg::Mesh) | None => ExportSource::Mesh,
+                },
             };
             let v = call(ep, req)?;
             let r: ExportResult = typed(v.clone(), "session.export")?;
@@ -653,23 +692,50 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             Ok(())
         }
         Command::Stage { file } => {
-            let full = std::path::absolute(file).unwrap_or_else(|_| file.clone());
-            let quoted = lang_string(&path_str(&full))?;
+            let staged = stage_file(ep, file)?;
+            render::staged(io, json, file, &staged);
+            Ok(())
+        }
+        Command::ImportOpenmc {
+            geometry,
+            materials,
+            overlap,
+            max_cells,
+            no_reuse_lattices,
+        } => {
+            let by_hash = |ep: &mut dyn Endpoint, f: &Path| -> Res<Value> {
+                let r = stage_file(ep, f)?;
+                Ok(serde_json::json!({ "sha256": r["sha256"] }))
+            };
+            let mut params = serde_json::Map::new();
+            params.insert("geometry".to_owned(), by_hash(ep, geometry)?);
+            if let Some(m) = materials {
+                params.insert("materials".to_owned(), by_hash(ep, m)?);
+            }
+            let mut opts = serde_json::Map::new();
+            if let Some(o) = overlap {
+                opts.insert("overlap".to_owned(), Value::from(o.name()));
+            }
+            if let Some(n) = max_cells {
+                opts.insert("max_cells".to_owned(), Value::from(*n));
+            }
+            if *no_reuse_lattices {
+                opts.insert("reuse_lattices".to_owned(), Value::Bool(false));
+            }
+            if !opts.is_empty() {
+                params.insert("options".to_owned(), Value::Object(opts));
+            }
+            let op = "model.import_openmc";
             let v = call(
                 ep,
-                Request::ScriptRun {
-                    text: format!("session.stage({quoted})\n"),
-                    path: None,
-                    includes: BTreeMap::new(),
+                Request::Apply {
+                    op: op.to_owned(),
+                    params: Value::Object(params),
+                    version: None,
                 },
             )?;
-            let staged = v["events"]
-                .as_array()
-                .and_then(|e| e.iter().find(|e| e["event"] == "session"))
-                .map(|e| e["result"].clone())
-                .filter(|r| r["sha256"].is_string())
-                .ok_or_else(|| Failure::local("malformed `session.stage` reply"))?;
-            render::staged(io, json, file, &staged);
+            let r: ApplyResult = typed(v.clone(), "apply")?;
+            render::apply(io, json, op, &r, &v);
             Ok(())
         }
         Command::Validate { mesh } => {

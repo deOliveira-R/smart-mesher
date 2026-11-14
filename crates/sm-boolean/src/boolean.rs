@@ -85,7 +85,7 @@ const NO_TOUCH: &str = "bodies do not touch";
 const CONTACT_ONLY: &str = "the operands touch only along an edge or at isolated points, so their union would not be a manifold solid";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Class {
+pub(crate) enum Class {
     In,
     Out,
     OnSame,
@@ -278,19 +278,22 @@ fn copy_all<E: TopologyEdit + ?Sized>(topo: &mut E, vols: &[EntityId]) -> Result
     Ok(out)
 }
 
-fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, vb: EntityId, o: &BoolOptions) -> Result<Stage, BooleanError> {
+/// The imprinted and classified fragments of two volumes (steps 1-5 of [`fuse2`]).
+pub(crate) struct Imprinted {
+    pub fa_now: Vec<EntityId>,
+    pub fb_now: Vec<EntityId>,
+    pub class_a: Vec<(EntityId, Class, Point3, Vector3)>,
+    pub class_b: Vec<(EntityId, Class, Point3, Vector3)>,
+    /// The two boundaries have no intersection curve.
+    pub no_pieces: bool,
+    pub cache: faceclass::FaceCache,
+}
+
+/// Imprint the boundaries of `va` and `vb` on each other, then classify each fragment against
+/// the other volume.
+pub(crate) fn imprint_classify<E: TopologyEdit + ?Sized>(topo: &mut E, va: EntityId, vb: EntityId) -> Result<Imprinted, BooleanError> {
     let tol = *topo.tolerance();
     let lin = tol.linear;
-    let body_of = |t: &E, v: EntityId| -> Option<EntityId> { t.coboundary(v).iter().find(|e| t.dim_of(e.cell) == Some(Dim::Body)).map(|e| e.cell) };
-    let (body_a, body_b) = (body_of(&*topo, va), body_of(&*topo, vb));
-    for (b, v) in [(body_a, va), (body_b, vb)] {
-        if let Some(b) = b {
-            let members: Vec<EntityId> = topo.boundary(b).iter().map(|e| e.cell).collect();
-            if members.iter().any(|m| *m != v) {
-                return Err(BooleanError::Unsupported("a boolean operand shares its body with other cells: separate them first"));
-            }
-        }
-    }
     // 1-4. Imprint the boundaries on each other.
     let fa: Vec<EntityId> = topo.volume_faces(va).to_vec();
     let fb: Vec<EntityId> = topo.volume_faces(vb).to_vec();
@@ -324,8 +327,27 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
         let (c, p, n) = classify_frag(&*topo, &cache, f, vb, va, &uses_a)?;
         class_b.push((f, c, p, n));
     }
+    Ok(Imprinted { fa_now, fb_now, class_a, class_b, no_pieces: computed.pieces.is_empty(), cache })
+}
+
+fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, vb: EntityId, o: &BoolOptions) -> Result<Stage, BooleanError> {
+    let tol = *topo.tolerance();
+    let lin = tol.linear;
+    let body_of = |t: &E, v: EntityId| -> Option<EntityId> { t.coboundary(v).iter().find(|e| t.dim_of(e.cell) == Some(Dim::Body)).map(|e| e.cell) };
+    let (body_a, body_b) = (body_of(&*topo, va), body_of(&*topo, vb));
+    for (b, v) in [(body_a, va), (body_b, vb)] {
+        if let Some(b) = b {
+            let members: Vec<EntityId> = topo.boundary(b).iter().map(|e| e.cell).collect();
+            if members.iter().any(|m| *m != v) {
+                return Err(BooleanError::Unsupported("a boolean operand shares its body with other cells: separate them first"));
+            }
+        }
+    }
+    // 1-5. Imprint the boundaries on each other and classify every fragment.
+    let Imprinted { fa_now, fb_now, class_a, class_b, no_pieces, cache } = imprint_classify(topo, va, vb)?;
+    let contact_only = BooleanError::TangentContact { entity: va, detail: CONTACT_ONLY };
     let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
-    if all_out && computed.pieces.is_empty() {
+    if all_out && no_pieces {
         match rule {
             BoolRule::Unite => {
                 // Edge or vertex contact is not "far apart": the union would not be a manifold
@@ -429,7 +451,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     }
     // 11. Regularize.
     if o.regularize {
-        crate::regularize::regularize(topo, &new_volumes)?;
+        crate::regularize::regularize(topo, &new_volumes, false)?;
     }
     // Pcurves of the new and moved coedges on curved faces.
     let mut result_faces: BTreeSet<EntityId> = BTreeSet::new();

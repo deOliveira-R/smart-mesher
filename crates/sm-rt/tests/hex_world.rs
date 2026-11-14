@@ -1,0 +1,1169 @@
+//! W4-RT-HEX: hexagonal lattices (both orientations) in the world walker.
+//!
+//! The reference is analytic and independent of the tracker's cube rounding: for every element the
+//! ray is clipped against the six half-planes of its hexagonal prism and the pin cylinder, and the
+//! per-element intervals are sorted along the ray. Element centres come from the public
+//! `Lattice::element_center`.
+#[path = "common/csg.rs"]
+mod csg;
+#[path = "common/hex.rs"]
+mod hex;
+
+use csg::*;
+use sm_core::{Point3, Transform};
+use sm_geom_api::HalfSpace;
+use sm_rt::{MeshTrackerBuilder, WorldTracker};
+use sm_rt_api::{
+    BoundarySpec, BuildInput, BuildOptions, CellId, ComplementPolicy, ComponentId, ComponentKind,
+    CsgLeafInput, Flow, HierInput, InstancePolicy, Lattice, LatticeKind, LeafInput, RtError,
+    Placement, Scratch, Segment, StepEnd, TraceEnd, TraceOptions, Tracker, WorldSpec,
+};
+
+/// `(cell, chord length)` of a segment.
+type Seg = (u32, f64);
+
+const P: f64 = 1.5;
+const RF: f64 = 0.4;
+const ZH: f64 = 2.0;
+use hex::S3;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Or {
+    X,
+    Y,
+}
+
+fn kind(o: Or, z_pitch: f64) -> LatticeKind {
+    match o {
+        Or::X => LatticeKind::Hex { pitch: P, z_pitch },
+        Or::Y => LatticeKind::HexYRows { pitch: P, z_pitch },
+    }
+}
+
+fn flats(o: Or) -> [[f64; 2]; 6] {
+    hex::flats(o == Or::X)
+}
+
+/// A pin in a hexagonal prism of flat-to-flat `pitch` (fuel radius `RF`, z in `[-ZH, ZH]`).
+fn hex_pin(o: Or, pitch: f64, name: &str) -> Fx {
+    hex::hex_pin(o == Or::X, pitch, RF, ZH, name)
+}
+
+fn build(spec: &WorldSpec, leaves: &[&Fx]) -> Result<WorldTracker, RtError> {
+    let bnd = BoundarySpec::default();
+    let ins: Vec<LeafInput<'_>> = leaves
+        .iter()
+        .map(|f| {
+            LeafInput::Csg(CsgLeafInput::new(
+                &f.store,
+                &f.cells,
+                f.bounds,
+                &f.complement,
+            ))
+        })
+        .collect();
+    let h = HierInput::new(spec, &ins, &bnd);
+    MeshTrackerBuilder
+        .build_world(&BuildInput::Hier(h), &BuildOptions::default())
+        .map(|r| r.0)
+}
+
+/// An `n x n x nz` rhombus of the pin, element `(0, 0, 0)` centred at `origin`.
+fn lattice_spec(o: Or, n: u32, nz: u32, origin: Point3) -> WorldSpec {
+    let zp = 2.0 * ZH;
+    let fills = vec![ComponentId(0); (n * n * nz) as usize];
+    WorldSpec::new(
+        vec![
+            ComponentKind::Leaf { input: 0 },
+            ComponentKind::Lattice(Lattice::new(kind(o, zp), origin, [n, n, nz], fills, None)),
+        ],
+        ComponentId(1),
+        InstancePolicy::Auto,
+    )
+}
+
+fn world(o: Or, n: u32, nz: u32, origin: Point3) -> (WorldTracker, Lattice) {
+    let spec = lattice_spec(o, n, nz, origin);
+    let ComponentKind::Lattice(l) = &spec.components[1] else {
+        unreachable!()
+    };
+    let l = l.clone();
+    let w = build(&spec, &[&hex_pin(o, P, "")]).expect("hex world builds");
+    (w, l)
+}
+
+/// `(cell, length)` of the segments of one trace from `o` along `d`, and how it ended.
+fn trace(
+    w: &dyn Tracker,
+    o: Point3,
+    d: sm_core::Vector3,
+) -> Option<(Vec<(u32, f64)>, &'static str)> {
+    let mut sc = Scratch::new();
+    let mut st = w.init_state(o, d, None, &mut sc).ok()?;
+    if st.cell.is_none() {
+        return None;
+    }
+    let mut segs = Vec::new();
+    let end = w
+        .trace(
+            &mut st,
+            &TraceOptions::default(),
+            &mut |s: &Segment| {
+                segs.push((s.cell.0, s.length));
+                Flow::Continue
+            },
+            &mut sc,
+        )
+        .expect("trace");
+    Some((
+        segs,
+        match end {
+            TraceEnd::Boundary { .. } => "boundary",
+            TraceEnd::LeftModel => "left",
+            TraceEnd::Limit => "limit",
+            TraceEnd::Lost(_) => "lost",
+            _ => "other",
+        },
+    ))
+}
+
+/// Clip `[t0, t1]` by the slab `lo <= a + b t <= hi`.
+fn clip(t0: f64, t1: f64, a: f64, b: f64, lo: f64, hi: f64) -> Option<(f64, f64)> {
+    if b.abs() < 1e-300 {
+        return (a >= lo && a <= hi).then_some((t0, t1));
+    }
+    let (x, y) = ((lo - a) / b, (hi - a) / b);
+    let (s0, s1) = (t0.max(x.min(y)), t1.min(x.max(y)));
+    (s0 < s1).then_some((s0, s1))
+}
+
+/// Analytic `(element lin, region 0 fuel / 1 mod, t0, t1)` of the ray, `t >= 0`, per element.
+fn reference(o: Or, l: &Lattice, org: Point3, d: [f64; 3]) -> Vec<(usize, u32, f64, f64)> {
+    let mut out = Vec::new();
+    let n = l.dims[0] as usize;
+    let nl = flats(o);
+    for lin in 0..l.element_count().unwrap() {
+        let idx = [
+            (lin % n) as i32,
+            ((lin / n) % l.dims[1] as usize) as i32,
+            (lin / (n * l.dims[1] as usize)) as i32,
+        ];
+        let c = l.element_center(idx);
+        let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
+        let mut ok = true;
+        for f in &nl {
+            let a = (org.x - c.x) * f[0] + (org.y - c.y) * f[1];
+            let b = d[0] * f[0] + d[1] * f[1];
+            match clip(t0, t1, a, b, -0.5 * P, 0.5 * P) {
+                Some((a, b)) => (t0, t1) = (a, b),
+                None => ok = false,
+            }
+        }
+        match clip(t0, t1, org.z - c.z, d[2], -ZH, ZH) {
+            Some((a, b)) => (t0, t1) = (a, b),
+            None => ok = false,
+        }
+        if !ok || t1 - t0 < 1e-13 {
+            continue;
+        }
+        // Fuel: the infinite cylinder of radius RF about the element axis.
+        let (ox, oy) = (org.x - c.x, org.y - c.y);
+        let (a2, b2, c2) = (
+            d[0] * d[0] + d[1] * d[1],
+            2.0 * (ox * d[0] + oy * d[1]),
+            ox * ox + oy * oy - RF * RF,
+        );
+        let disc = b2 * b2 - 4.0 * a2 * c2;
+        let fuel = (a2 > 1e-300 && disc > 0.0).then(|| {
+            (
+                (-b2 - disc.sqrt()) / (2.0 * a2),
+                (-b2 + disc.sqrt()) / (2.0 * a2),
+            )
+        });
+        let fuel = if a2 <= 1e-300 && c2 < 0.0 {
+            Some((f64::NEG_INFINITY, f64::INFINITY))
+        } else {
+            fuel
+        };
+        match fuel {
+            Some((f0, f1)) if f1 > t0 && f0 < t1 => {
+                let (f0, f1) = (f0.max(t0), f1.min(t1));
+                if f0 - t0 > 1e-13 {
+                    out.push((lin, 1, t0, f0));
+                }
+                out.push((lin, 0, f0, f1));
+                if t1 - f1 > 1e-13 {
+                    out.push((lin, 1, f1, t1));
+                }
+            }
+            _ => out.push((lin, 1, t0, t1)),
+        }
+    }
+    out.sort_by(|a, b| a.2.total_cmp(&b.2));
+    // A start outside every element has no run.
+    if out.first().is_none_or(|s| s.2 > 1e-9) {
+        return Vec::new();
+    }
+    // Keep the run from t = 0 that has no gap: the tracker stops where it leaves the lattice.
+    let mut run = Vec::new();
+    let mut end = 0.0;
+    for s in out {
+        if !run.is_empty() && s.2 > end + 1e-9 {
+            break;
+        }
+        end = s.3;
+        run.push(s);
+    }
+    run
+}
+
+fn check_ray(
+    o: Or,
+    w: &WorldTracker,
+    l: &Lattice,
+    org: Point3,
+    d: sm_core::Vector3,
+    what: &str,
+) -> usize {
+    let da = [d.x, d.y, d.z];
+    let want = reference(o, l, org, da);
+    let Some((got, end)) = trace(w, org, d) else {
+        assert!(
+            want.is_empty(),
+            "{what}: the tracker found no cell, the reference has {} segments",
+            want.len()
+        );
+        return 0;
+    };
+    assert_ne!(end, "lost", "{what}");
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{what}: segment count\n{got:?}\n{want:?}"
+    );
+    for (g, r) in got.iter().zip(&want) {
+        assert_eq!(
+            u64::from(g.0),
+            2 * r.0 as u64 + u64::from(r.1),
+            "{what}: cell"
+        );
+        assert!(
+            (g.1 - (r.3 - r.2)).abs() < 1e-12,
+            "{what}: chord {} vs {}",
+            g.1,
+            r.3 - r.2
+        );
+    }
+    got.len()
+}
+
+const ORIGIN: fn() -> Point3 = || p3(0.3, -0.2, 0.1);
+
+#[test]
+fn chords_along_the_three_lattice_directions_are_the_analytic_ones() {
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 5, 1, ORIGIN());
+        // A row of elements along each lattice direction: the neighbours of element (2, 2) at
+        // +-(1,0), +-(0,1), +-(1,-1) lie on the line through (2, 2) with that direction.
+        for (dq, dr) in [(1, 0), (0, 1), (1, -1)] {
+            let (c0, c1) = (
+                l.element_center([2 - 2 * dq, 2 - 2 * dr, 0]),
+                l.element_center([2 + 2 * dq, 2 + 2 * dr, 0]),
+            );
+            let len = ((c1.x - c0.x).powi(2) + (c1.y - c0.y).powi(2)).sqrt();
+            let d = v3((c1.x - c0.x) / len, (c1.y - c0.y) / len, 0.0);
+            // Start at the centre of the first element: fuel RF, then per element mod, fuel, mod.
+            let (got, end) = trace(&w, c0, d).unwrap();
+            assert_eq!(end, "boundary", "{o:?} ({dq},{dr})");
+            assert_eq!(got.len(), 2 + 3 * 4 + 1 - 1, "{o:?} ({dq},{dr}): {got:?}");
+            let (fuel, md): (Vec<&Seg>, Vec<&Seg>) = got.iter().partition(|g| g.0 % 2 == 0);
+            assert_eq!(fuel.len(), 5);
+            // 5 elements, centre of the first to the flat of the last: 4.5 pitches.
+            let total: f64 = got.iter().map(|g| g.1).sum();
+            assert!(
+                (total - 4.5 * P).abs() < 1e-12,
+                "{o:?} ({dq},{dr}) total {total}"
+            );
+            let sf: f64 = fuel.iter().map(|g| g.1).sum();
+            assert!(
+                (sf - (4.0 * 2.0 * RF + RF)).abs() < 1e-12,
+                "{o:?} fuel {sf}"
+            );
+            let sm: f64 = md.iter().map(|g| g.1).sum();
+            assert!((sm - (4.5 * P - 9.0 * RF)).abs() < 1e-12);
+            // Every element on the row is visited once, in order.
+            let cells: Vec<u32> = got.iter().map(|g| g.0 / 2).collect();
+            let want: Vec<u32> = (0..5)
+                .map(|k| (2 + (k - 2) * dq + 5 * (2 + (k - 2) * dr)) as u32)
+                .collect();
+            let mut dedup = cells.clone();
+            dedup.dedup();
+            assert_eq!(dedup, want, "{o:?} ({dq},{dr})");
+            check_ray(o, &w, &l, c0, d, "row");
+        }
+    }
+}
+
+#[test]
+fn seeded_random_rays_cross_elements_at_the_analytic_distances() {
+    let mut total = 0usize;
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 6, 1, ORIGIN());
+        let mut r = rng(&format!("hex-world-rays-{o:?}"));
+        let (mut k, mut done) = (0usize, 0usize);
+        while done < 1000 {
+            k += 1;
+            assert!(k < 20_000);
+            // A start inside the array: the centre of a random element plus an offset.
+            let lin = ((0.5 * (r.unit() + 1.0)) * 36.0).floor().min(35.0) as i32;
+            let c = l.element_center([lin % 6, lin / 6, 0]);
+            let org = p3(
+                c.x + 0.45 * P * r.unit(),
+                c.y + 0.45 * P * r.unit(),
+                (0.9 * ZH) * r.unit(),
+            );
+            let d = random_dir(&mut r);
+            let n = check_ray(o, &w, &l, org, d, &format!("{o:?} ray {k}"));
+            if n > 0 {
+                done += 1;
+                total += n;
+            }
+        }
+    }
+    assert!(total > 8000, "{total} segments");
+}
+
+#[test]
+fn locate_names_the_element_and_the_layer() {
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 4, 3, ORIGIN());
+        let mut sc = Scratch::new();
+        let n = 4;
+        for lin in 0..4 * 4 * 3 {
+            let idx = [lin % n, (lin / n) % n, lin / (n * n)];
+            let c = l.element_center(idx);
+            let loc = w.locate(p3(c.x, c.y, c.z), None, None, &mut sc).unwrap();
+            assert_eq!(loc.cell, CellId::new(2 * lin as usize), "{o:?} {idx:?}");
+            let lv = &loc.levels[0];
+            assert_eq!((lv.lattice, lv.instance.get()), (idx, lin as usize));
+            // A point in the moderator corner of the hexagon (r > RF) of the same element.
+            let f = flats(o)[0];
+            let q = w
+                .locate(
+                    p3(c.x + 0.45 * P * f[0], c.y + 0.45 * P * f[1], c.z + 0.2),
+                    None,
+                    None,
+                    &mut sc,
+                )
+                .unwrap();
+            assert_eq!(q.cell, CellId::new(2 * lin as usize + 1));
+        }
+        // Layer centres are `origin.z + k z_pitch`: the z walls are at half pitches.
+        let zp = 2.0 * ZH;
+        let c = l.element_center([1, 1, 1]);
+        let (up, dn) = (
+            w.locate(p3(c.x, c.y, c.z + 0.5 * zp - 0.01), None, None, &mut sc)
+                .unwrap(),
+            w.locate(p3(c.x, c.y, c.z - 0.5 * zp + 0.01), None, None, &mut sc)
+                .unwrap(),
+        );
+        assert_eq!(
+            (up.levels[0].lattice, dn.levels[0].lattice),
+            ([1, 1, 1], [1, 1, 1])
+        );
+        // Outside the stack in z, outside the rhombus in the plane.
+        assert!(
+            w.locate(
+                p3(c.x, c.y, ORIGIN().z + 2.0 * zp + 0.5 * zp + 0.2),
+                None,
+                None,
+                &mut sc
+            )
+            .unwrap()
+            .cell
+            .is_none()
+        );
+        assert!(
+            w.locate(p3(-3.0 * P, -3.0 * P, 0.0), None, None, &mut sc)
+                .unwrap()
+                .cell
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn a_ray_down_the_stack_changes_layer_at_the_z_walls() {
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 3, 3, ORIGIN());
+        let c = l.element_center([1, 2, 0]);
+        let start = p3(c.x + 0.7 * RF, c.y, c.z - ZH + 0.25);
+        let (got, end) = trace(&w, start, v3(0.0, 0.0, 1.0)).unwrap();
+        assert_eq!(end, "boundary");
+        assert_eq!(got.len(), 3, "{got:?}");
+        let n = 3u32;
+        let cells: Vec<u32> = got.iter().map(|g| g.0).collect();
+        let e = |k: u32| 2 * (1 + 2 * n + k * n * n);
+        assert_eq!(cells, vec![e(0), e(1), e(2)], "{o:?}");
+        let lens: Vec<f64> = got.iter().map(|g| g.1).collect();
+        assert!(
+            (lens[0] - (2.0 * ZH - 0.25)).abs() < 1e-12
+                && (lens[1] - 2.0 * ZH).abs() < 1e-12
+                && (lens[2] - 2.0 * ZH).abs() < 1e-12,
+            "{lens:?}"
+        );
+    }
+}
+
+/// Vertex rule: at a point where three elements meet, `locate` returns the element the direction
+/// enters (nearest centre of `p + 4 tol dir`); on an edge between two, the one entered; along the
+/// shared face it is a tie, tried highest linear index first and settled by the leaf's rule for a
+/// point on its flat (deterministic).
+#[test]
+fn vertex_ties_follow_the_documented_rule() {
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 5, 1, ORIGIN());
+        let mut sc = Scratch::new();
+        let el = |i: i32, j: i32| l.element_center([i, j, 0]);
+        let (a, b, c) = (el(2, 2), el(3, 2), el(2, 3));
+        let lin = |i: i32, j: i32| CellId::new(2 * (i + 5 * j) as usize);
+        let cell_of = |loc: sm_rt_api::Located| CellId::new(loc.cell.0 as usize & !1);
+        // The vertex shared by the three: the circumcentre of their centres.
+        let v = p3((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0, 0.1);
+        for ((i, j), ce) in [((2, 2), a), ((3, 2), b), ((2, 3), c)] {
+            let d = v3(ce.x - v.x, ce.y - v.y, 0.0);
+            let n = d.x.hypot(d.y);
+            let loc = w
+                .locate(v, Some(v3(d.x / n, d.y / n, 0.0)), None, &mut sc)
+                .unwrap();
+            assert_eq!(cell_of(loc), lin(i, j), "{o:?}: heading into ({i},{j})");
+        }
+        // An edge midpoint between (2,2) and (3,2): the entered side leads.
+        let m = p3(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.1);
+        let (dab, dba) = (v3(b.x - a.x, b.y - a.y, 0.0), v3(a.x - b.x, a.y - b.y, 0.0));
+        assert_eq!(
+            cell_of(w.locate(m, Some(dab), None, &mut sc).unwrap()),
+            lin(3, 2),
+            "{o:?}"
+        );
+        assert_eq!(
+            cell_of(w.locate(m, Some(dba), None, &mut sc).unwrap()),
+            lin(2, 2),
+            "{o:?}"
+        );
+        // Along the shared face: either element or neither (each leaf rules on its own flat with a
+        // hashed direction of its local point, as for a Cartesian wall), and the same each time.
+        let along = v3(-dab.y, dab.x, 0.0);
+        let first = cell_of(w.locate(m, Some(along), None, &mut sc).unwrap());
+        assert!(
+            first == lin(2, 2)
+                || first == lin(3, 2)
+                || first == CellId::new(CellId::NONE.0 as usize & !1),
+            "{o:?}: {first:?}"
+        );
+        assert_eq!(
+            first,
+            cell_of(w.locate(m, Some(along), None, &mut sc).unwrap())
+        );
+        // A walk from a centre through the vertex is carried along the shared face (not lost, not
+        // ended mid-lattice: `rays_along_or_near_shared_faces_reach_the_lattice_boundary` has the
+        // closed-form totals), and repeats exactly.
+        let d = v3(v.x - a.x, v.y - a.y, 0.0);
+        let n = d.x.hypot(d.y);
+        let d = v3(d.x / n, d.y / n, 0.0);
+        let org = p3(a.x, a.y, 0.1);
+        let (got, end) = trace(&w, org, d).unwrap();
+        assert_ne!(end, "lost", "{o:?}");
+        let into_first: f64 = got
+            .iter()
+            .filter(|g| g.0 / 2 == (2 + 5 * 2) as u32)
+            .map(|g| g.1)
+            .sum();
+        assert!((into_first - P / S3).abs() < 1e-12, "{o:?}: {into_first}");
+        assert_eq!(trace(&w, org, d).unwrap().0, got);
+    }
+}
+
+#[test]
+fn fit_oversize_fills_are_refused_and_exact_prisms_accepted() {
+    for o in [Or::X, Or::Y] {
+        // A prism of pitch 1.05 P in lattice pitch P pokes through the flats: the box test passes
+        // for one axis but the probe outside the flats finds cells (CSG fill).
+        let spec = lattice_spec(o, 2, 1, ORIGIN());
+        let e = build(&spec, &[&hex_pin(o, 1.05 * P, "")]).expect_err("oversize refused");
+        match e {
+            RtError::Build(v) => assert!(v.iter().any(|i| i.code == "world.lattice_fit"), "{v:?}"),
+            other => panic!("{other:?}"),
+        }
+        // Exact fill: accepted.
+        assert!(build(&spec, &[&hex_pin(o, P, "")]).is_ok());
+        // A box fill the size of the flats (square) pokes out of the corners: refused. (Probe.)
+        let mut sq = Fx::new(10.0);
+        sq.complement = ComplementPolicy::Outside;
+        sq.bounds = None;
+        let b = sq.box_planes(p3(-0.5 * P, -0.5 * P, -ZH), p3(0.5 * P, 0.5 * P, ZH));
+        let sides: Vec<HalfSpace> = b.iter().map(|&s| hs(s, true)).collect();
+        sq.cell1("sq", &sides);
+        assert!(build(&spec, &[&sq]).is_err(), "{o:?}");
+    }
+    // `outer` stays refused.
+    let mut spec = lattice_spec(Or::X, 2, 1, ORIGIN());
+    if let ComponentKind::Lattice(l) = &mut spec.components[1] {
+        l.outer = Some(ComponentId(0));
+    }
+    assert!(matches!(
+        build(&spec, &[&hex_pin(Or::X, P, "")]),
+        Err(RtError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn the_two_orientations_and_two_builds_hash_differently_and_repeatably() {
+    let h = |o: Or| world(o, 3, 1, ORIGIN()).0.info().structure_hash;
+    assert_eq!(h(Or::X), h(Or::X));
+    assert_eq!(h(Or::Y), h(Or::Y));
+    assert_ne!(h(Or::X), h(Or::Y));
+}
+
+#[test]
+fn hex_traces_are_bit_identical_for_one_thread_and_many() {
+    let (w, l) = world(Or::Y, 5, 2, ORIGIN());
+    let mut r = rng("hex-world-det");
+    let rays: Vec<sm_geom_api::Ray> = (0..800)
+        .map(|_| {
+            let c = l.element_center([2, 2, 0]);
+            sm_geom_api::Ray {
+                origin: p3(c.x + 2.0 * r.unit(), c.y + 2.0 * r.unit(), 2.0 * r.unit()),
+                dir: random_dir(&mut r),
+            }
+        })
+        .collect();
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let b = w.trace_bundle(&rays, &TraceOptions::default()).unwrap();
+            let mut bits: Vec<u64> = b.length.iter().map(|x| x.to_bits()).collect();
+            bits.extend(b.cell.iter().map(|&c| u64::from(c)));
+            bits.extend(b.region.iter().map(|&c| u64::from(c)));
+            bits.extend(b.end.iter().map(|e| format!("{e:?}").len() as u64));
+            bits
+        })
+    };
+    let base = sm_testkit::determinism::check(2, 4, run).unwrap();
+    assert!(base.len() > 1000);
+}
+
+#[test]
+fn slot_changes_count_the_elements_visited() {
+    let (w, l) = world(Or::X, 5, 1, ORIGIN());
+    let (c0, c1) = (l.element_center([0, 2, 0]), l.element_center([4, 2, 0]));
+    let mut sc = Scratch::new();
+    let d = v3(c1.x - c0.x, c1.y - c0.y, 0.0);
+    let d = v3(d.x / d.x.hypot(d.y), d.y / d.x.hypot(d.y), 0.0);
+    let mut st = w.init_state(c0, d, None, &mut sc).unwrap();
+    let mut changes = 0;
+    for _ in 0..100 {
+        match w.step(&mut st, f64::INFINITY, &mut sc).unwrap().end {
+            StepEnd::SlotChange { .. } => changes += 1,
+            StepEnd::CellFace { .. } | StepEnd::RegionBoundary { .. } => {}
+            _ => break,
+        }
+    }
+    assert_eq!(changes, 4);
+}
+
+/// Closed-form `(lo, hi)` lengths from `org` along `d` of the chain of closed hexagons (slack
+/// `slack`, zero-width along-face runs included) that starts at `t = 0`. `hi` is where the ray
+/// leaves the lattice footprint; `lo` is where it first runs along an outer flat (only one element
+/// holds the run), where ending is as legitimate as continuing, as along a Cartesian wall. Without
+/// such a run `lo == hi`.
+fn footprint_run(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> (f64, f64) {
+    footprint_run_with(o, l, org, d, slack, true)
+}
+
+/// Where the ray leaves the footprint (slack `slack`); no search for the outer-flat run (cheap).
+fn footprint_end(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> f64 {
+    footprint_run_with(o, l, org, d, slack, false).1
+}
+
+fn footprint_run_with(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64, with_lo: bool) -> (f64, f64) {
+    let nl = flats(o);
+    let n = l.dims[0] as usize;
+    let centres: Vec<Point3> = (0..l.element_count().unwrap())
+        .map(|lin| l.element_center([(lin % n) as i32, ((lin / n) % l.dims[1] as usize) as i32, 0]))
+        .collect();
+    let mut ivs: Vec<(f64, f64)> = Vec::new();
+    for c in &centres {
+        let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
+        let mut ok = true;
+        for f in &nl {
+            let a = (org.x - c.x) * f[0] + (org.y - c.y) * f[1];
+            let b = d[0] * f[0] + d[1] * f[1];
+            match clip(t0, t1, a, b, -0.5 * P - slack, 0.5 * P + slack) {
+                Some((x, y)) => (t0, t1) = (x, y),
+                None => ok = false,
+            }
+        }
+        if ok {
+            ivs.push((t0, t1));
+        }
+    }
+    ivs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let sd = |c: &Point3, t: f64| {
+        nl.iter()
+            .map(|f| ((org.x + t * d[0] - c.x) * f[0] + (org.y + t * d[1] - c.y) * f[1]).abs())
+            .fold(0.0, f64::max)
+            - 0.5 * P
+    };
+    let (mut end, mut lo) = (0.0, f64::INFINITY);
+    for (a, b) in ivs {
+        if a > end + 1e-9 {
+            break;
+        }
+        // The first place where only one element holds the ray and it is on that element's flat.
+        let on_outer1 = |t: f64| {
+            let h: Vec<&Point3> = centres.iter().filter(|c| sd(c, t) <= slack).collect();
+            h.len() == 1 && sd(h[0], t) >= -slack
+        };
+        // A run, not a grazing pass of a vertex: it holds over the next 0.05 as well.
+        let on_outer = |t: f64| on_outer1(t) && on_outer1(t + 0.05);
+        let steps = ((b - a) / 1e-2).ceil() as usize + 1;
+        if with_lo
+            && let Some(k) = (0..=steps).find(|&k| on_outer((a + 1e-2 * k as f64).min(b)))
+        {
+            let (mut u, mut v) = (
+                (a + 1e-2 * (k as f64 - 1.0)).max(a),
+                (a + 1e-2 * k as f64).min(b),
+            );
+            for _ in 0..60 {
+                let m = 0.5 * (u + v);
+                if on_outer(m) { v = m } else { u = m }
+            }
+            lo = lo.min(v);
+        }
+        end = end.max(b);
+    }
+    (lo.min(end), end)
+}
+
+/// Rays from interior element centres along the six vertex directions and a band of directions
+/// around them leave at the outer boundary of the lattice, never through a `Boundary` mid-lattice.
+#[test]
+fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
+    let mut exact = 0;
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 1, ORIGIN());
+        let base = if o == Or::X { 30.0f64 } else { 0.0 };
+        for (ci, cj) in (0..7).flat_map(|i| (0..7).map(move |j| (i, j))) {
+            let c = l.element_center([ci, cj, 0]);
+            let org = p3(c.x, c.y, 0.1);
+            for k in 0..6 {
+                for eps in [
+                    0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-9, -1e-9, 1e-7, -1e-7, 1e-6, -1e-6,
+                ] {
+                    let a = (base + 60.0 * f64::from(k)).to_radians() + eps;
+                    let d = [a.cos(), a.sin()];
+                    let what = format!("{o:?} centre ({ci},{cj}) dir {k} eps {eps:e}");
+                    // A run within 1e-7 of an outer flat is ambiguous (the tolerance band
+                    // blurs where a ray along a flat is judged to leave it): ending there or
+                    // continuing along it are both fine, truncating before it is not.
+                    let (lo, wide) = footprint_run(o, &l, org, d, 1e-7);
+                    assert!(lo > 0.5, "{what}: closed form {lo}");
+                    let (got, end) = trace(&w, org, v3(d[0], d[1], 0.0)).unwrap();
+                    assert_ne!(end, "lost", "{what}");
+                    assert_eq!(end, "boundary", "{what}");
+                    let total: f64 = got.iter().map(|g| g.1).sum();
+                    // No overrun: carried no further than the run within the tolerance band
+                    // (tol = 1e-6) of the lattice footprint.
+                    if total > wide + 1e-6 {
+                        let band = footprint_run(o, &l, org, d, 1e-6).1;
+                        assert!(
+                            total <= band + 1e-6,
+                            "{what}: overrun, total {total} vs {band}"
+                        );
+                    }
+                    if lo < wide - 1e-6 {
+                        assert!(
+                            total >= lo - 1e-6 && total <= wide + 1e-6,
+                            "{what}: total {total} outside [{lo}, {wide}]"
+                        );
+                    } else {
+                        // The tolerance band also blurs the exit of a ray 1e-9 rad off a flat.
+                        let tight = footprint_run(o, &l, org, d, 1e-12).1;
+                        let tol = if eps.abs() >= 1e-9 {
+                            2e-8_f64.max(10.0 * eps.abs())
+                        } else {
+                            2e-9
+                        };
+                        assert!(
+                            (total - tight).abs() < tol,
+                            "{what}: total {total} vs closed form {tight}"
+                        );
+                        exact += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Most rays have no ambiguity at all: those must match the closed form.
+    assert!(exact > 1000, "{exact}");
+}
+
+/// Rays in the plane between two layers of a stacked hex lattice (`dz = 0`, on the z-wall), in
+/// generic directions and along shared flats, both orientations: never lost, ended at the
+/// lattice footprint like a single layer, as the Rect lattice does.
+#[test]
+fn rays_on_the_layer_interface_reach_the_lattice_boundary() {
+    let mut checked = 0;
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 2, ORIGIN());
+        checked += zwall_rays(o, &w, &l, &[0.0, 1e-12, 5e-10, 1e-9], 150);
+    }
+    assert!(checked > 4 * 2 * 250, "{checked}");
+}
+
+/// Rays on the z-wall with `dz` just above `tol.angular` stay within `tol.linear` of the wall
+/// over a run of one element: none lost (600 rays per kind, as the reviewed probe). Slow in a
+/// debug build: `cargo test --release -p sm-rt --test hex_world -- --ignored`.
+#[test]
+#[ignore = "slow in debug; run with --release"]
+fn rays_on_the_layer_interface_with_small_dz_reach_the_lattice_boundary() {
+    let mut dzs = Vec::new();
+    for m in [1.001e-9, 1e-8, 1e-7] {
+        dzs.extend([m, -m]);
+    }
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 2, ORIGIN());
+        let n = zwall_rays(o, &w, &l, &dzs, 600);
+        assert!(n > 6 * 1000, "{n}");
+    }
+}
+
+/// The same z-wall rays on a world built with a wider angular tolerance: the band the fix covers
+/// follows it.
+#[test]
+fn rays_on_the_layer_interface_with_a_wide_angular_tolerance() {
+    for ang in [1e-7, 1e-6] {
+        for o in [Or::X, Or::Y] {
+            let spec = lattice_spec(o, 7, 2, ORIGIN());
+            let ComponentKind::Lattice(l) = &spec.components[1] else {
+                unreachable!()
+            };
+            let l = l.clone();
+            let f = hex_pin(o, P, "");
+            let ins = [LeafInput::Csg(CsgLeafInput::new(
+                &f.store,
+                &f.cells,
+                f.bounds,
+                &f.complement,
+            ))];
+            let bnd = BoundarySpec::default();
+            let h = HierInput::new(&spec, &ins, &bnd);
+            let mut opts = BuildOptions::default();
+            opts.tol.angular = ang;
+            let w = MeshTrackerBuilder
+                .build_world(&BuildInput::Hier(h), &opts)
+                .map(|r| r.0)
+                .expect("builds");
+            let n = zwall_rays(o, &w, &l, &[0.0, 0.5 * ang, ang], 100);
+            assert!(n > 3 * 150, "{n}");
+        }
+    }
+}
+
+/// Trace rays along the z-wall (generic and along a shared flat) with `dz` from `dzs`; none may be
+/// lost. Returns the number checked.
+fn zwall_rays(o: Or, w: &WorldTracker, l: &Lattice, dzs: &[f64], per: usize) -> usize {
+    let mut checked = 0;
+    {
+        let zw = ORIGIN().z + ZH;
+        let mut r = rng(&format!("hex-zwall-{o:?}"));
+        let base = if o == Or::X { 30.0f64 } else { 0.0 };
+        let mut rays: Vec<(Point3, [f64; 2], String)> = Vec::new();
+        // Generic rays from random interior points of the wall.
+        for k in 0..per {
+            let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
+            let c = l.element_center([lin % 7, lin / 7, 0]);
+            let org = p3(c.x + 0.45 * P * r.unit(), c.y + 0.45 * P * r.unit(), zw);
+            let a = std::f64::consts::PI * r.unit();
+            rays.push((org, [a.cos(), a.sin()], format!("{o:?} generic {k}")));
+        }
+        // Along a shared flat: from a point of a flat of a random element, along the flat (the
+        // six vertex directions), exactly and a hair off it.
+        for k in 0..per {
+            let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
+            let c = l.element_center([lin % 7, lin / 7, 0]);
+            let a = (base + 60.0 * (k % 6) as f64).to_radians();
+            let na = a + 90f64.to_radians();
+            let s = 0.5 * 0.5774 * P * r.unit();
+            let org = p3(
+                c.x + 0.5 * P * na.cos() + s * a.cos(),
+                c.y + 0.5 * P * na.sin() + s * a.sin(),
+                zw,
+            );
+            let eps = [0.0, 1e-13, -1e-9][k / 6 % 3];
+            let a = a + eps;
+            rays.push((
+                org,
+                [a.cos(), a.sin()],
+                format!("{o:?} flat {k} eps {eps:e}"),
+            ));
+        }
+        for (org, d, what) in rays {
+            for &dz in dzs {
+                let what = format!("{what} dz {dz:e}");
+                let Some((got, end)) = trace(w, org, v3(d[0], d[1], dz)) else {
+                    continue;
+                };
+                assert_ne!(end, "lost", "{what}: from {org:?} dir {d:?}");
+                assert_eq!(end, "boundary", "{what}");
+                let total: f64 = got.iter().map(|g| g.1).sum();
+                // Never short of the strict footprint (slack 1e-7) unless it stopped within the
+                // tolerance band of the lattice outline (a false boundary is a stop strictly inside),
+                // and not beyond the tolerance band (a grazing exit blurs it by tol / sin).
+                let strict = footprint_end(o, l, org, d, 1e-7);
+                let pe = [org.x + total * d[0], org.y + total * d[1]];
+                if total < strict - 1e-6 && interior_point(o, l, pe, org.z + total * dz) {
+                    let lo = footprint_run(o, l, org, d, 1e-7).0;
+                    assert!(total >= lo - 1e-6, "{what}: from {org:?} dir {d:?} stopped strictly inside the lattice at {total}, strict footprint {lo}");
+                }
+                if total > strict + 1e-6 {
+                    let band = footprint_end(o, l, org, d, 1e-6);
+                    assert!(total <= band + 1e-6, "{what}: from {org:?} dir {d:?} total {total} beyond the band {band}");
+                }
+                checked += 1;
+            }
+        }
+    }
+    checked
+}
+// ---------------------------------------------------------------- grazing-ray probe grid
+
+/// The same lattice with every element filled by a union of one identity placement of the leaf:
+/// the fill is not a bare leaf.
+fn world_union(o: Or, n: u32, nz: u32, origin: Point3) -> (WorldTracker, Lattice) {
+    let zp = 2.0 * ZH;
+    let fills = vec![ComponentId(1); (n * n * nz) as usize];
+    let lat = Lattice::new(kind(o, zp), origin, [n, n, nz], fills, None);
+    let spec = WorldSpec::new(
+        vec![
+            ComponentKind::Leaf { input: 0 },
+            ComponentKind::Union {
+                placements: vec![Placement::new(ComponentId(0), Transform::IDENTITY)],
+            },
+            ComponentKind::Lattice(lat.clone()),
+        ],
+        ComponentId(2),
+        InstancePolicy::Auto,
+    );
+    (build(&spec, &[&hex_pin(o, P, "")]).expect("builds"), lat)
+}
+
+/// Is the point `pe` strictly inside the lattice footprint: the ring of radius `1e-5` about it is
+/// covered by closed hexagons of in-range elements (and `z` is inside the stack by more than that)?
+fn interior_point(o: Or, l: &Lattice, pe: [f64; 2], z: f64) -> bool {
+    let nl = flats(o);
+    let zlo = l.element_center([0, 0, 0]).z - ZH;
+    let zhi = l.element_center([0, 0, l.dims[2] as i32 - 1]).z + ZH;
+    if z < zlo + 1e-5 || z > zhi - 1e-5 {
+        return false;
+    }
+    (0..16).all(|k| {
+        let a = std::f64::consts::PI * f64::from(k) / 8.0;
+        let q = [pe[0] + 1e-5 * a.cos(), pe[1] + 1e-5 * a.sin()];
+        (0..l.dims[0] as i32).any(|i| {
+            (0..l.dims[1] as i32).any(|j| {
+                let c = l.element_center([i, j, 0]);
+                nl.iter()
+                    .map(|f| ((q[0] - c.x) * f[0] + (q[1] - c.y) * f[1]).abs())
+                    .fold(0.0, f64::max)
+                    <= 0.5 * P
+            })
+        })
+    })
+}
+
+#[derive(Default)]
+struct Stats {
+    n: usize,
+    /// Ended `Lost` with a typed, located cause.
+    typed: Vec<String>,
+    /// Ended `Lost` any other way, or not at a boundary at all.
+    bad: Vec<String>,
+    /// Ended at a `Boundary` strictly inside the lattice footprint (a false vacuum).
+    short: Vec<String>,
+    /// Carried past the footprint band.
+    over: Vec<String>,
+}
+
+impl Stats {
+    fn merge(&mut self, o: Stats) {
+        self.n += o.n;
+        self.typed.extend(o.typed);
+        self.bad.extend(o.bad);
+        self.short.extend(o.short);
+        self.over.extend(o.over);
+    }
+    /// Panic unless no ray was lost without a type, ended mid-lattice or overran; typed errors
+    /// are allowed up to `typed_max`.
+    fn check(&self, name: &str, typed_max: usize) {
+        eprintln!(
+            "{name}: n {} typed-lost {} bad {} false-boundary {} overrun {}",
+            self.n,
+            self.typed.len(),
+            self.bad.len(),
+            self.short.len(),
+            self.over.len()
+        );
+        for (tag, v) in [("typed", &self.typed), ("bad", &self.bad), ("short", &self.short), ("over", &self.over)] {
+            for x in v.iter().take(6) {
+                eprintln!("   {tag}: {x}");
+            }
+        }
+        assert!(self.bad.is_empty(), "{name}: {} rays ended badly, first {:?}", self.bad.len(), self.bad.first());
+        assert!(self.short.is_empty(), "{name}: {} false boundaries, first {:?}", self.short.len(), self.short.first());
+        assert!(self.over.is_empty(), "{name}: {} overruns, first {:?}", self.over.len(), self.over.first());
+        assert!(self.typed.len() <= typed_max, "{name}: {} typed losses (> {typed_max}), first {:?}", self.typed.len(), self.typed.first());
+    }
+}
+
+/// One ray (any direction, normalised here): it must reach the footprint end, or end in a typed,
+/// located `Lost` after few steps. Never `Boundary` strictly inside the lattice, never a run away.
+fn probe_one(o: Or, w: &WorldTracker, l: &Lattice, org: Point3, d3: [f64; 3], what: &str, s: &mut Stats) {
+    let n = (d3[0] * d3[0] + d3[1] * d3[1] + d3[2] * d3[2]).sqrt();
+    let d3 = [d3[0] / n, d3[1] / n, d3[2] / n];
+    let mut sc = Scratch::new();
+    let Ok(mut st) = w.init_state(org, v3(d3[0], d3[1], d3[2]), None, &mut sc) else { return };
+    if st.cell.is_none() {
+        return;
+    }
+    s.n += 1;
+    let mut segs: Vec<f64> = Vec::new();
+    let mut opts = TraceOptions::default();
+    opts.max_steps = 5000;
+    let end = w
+        .trace(
+            &mut st,
+            &opts,
+            &mut |g: &Segment| {
+                segs.push(g.length);
+                Flow::Continue
+            },
+            &mut sc,
+        )
+        .expect("trace");
+    let tag = format!("{what} org {org:?} d {d3:?}");
+    match end {
+        TraceEnd::Lost(li) => {
+            let located = li.pos.x.is_finite() && !li.last_cell.is_none();
+            if li.cause == sm_rt_api::LostCause::RecoveryFailed && located {
+                s.typed.push(tag);
+            } else {
+                s.bad.push(format!("{tag}: lost {:?}", li.cause));
+            }
+        }
+        TraceEnd::Boundary { .. } => {
+            let h = (d3[0] * d3[0] + d3[1] * d3[1]).sqrt();
+            let d = [d3[0] / h, d3[1] / h];
+            let total: f64 = segs.iter().sum::<f64>() * h;
+            let strict = footprint_end(o, l, org, d, 1e-7);
+            let pe = [org.x + total * d[0], org.y + total * d[1]];
+            let ze = org.z + total * d3[2] / h;
+            if total < strict - 1e-6 && interior_point(o, l, pe, ze) {
+                let lo = footprint_run(o, l, org, d, 1e-7).0;
+                if total < lo - 1e-6 {
+                    s.short.push(format!("{tag}: total {total} < {lo}"));
+                }
+            }
+            if total > strict + 1e-6 {
+                let band = footprint_end(o, l, org, d, 2e-6);
+                if total > band + 1e-6 {
+                    s.over.push(format!("{tag}: total {total} > band {band}"));
+                }
+            }
+        }
+        other => s.bad.push(format!("{tag}: ended {other:?}")),
+    }
+}
+
+/// Rays along the six flat directions of two elements, offset from the shared flat by `delta`,
+/// rotated by `eps`, both senses, at each `z`, with each `dz`.
+fn faces_family(o: Or, w: &WorldTracker, l: &Lattice, zs: &[f64], dzs: &[f64], full: bool, tag: &str) -> Stats {
+    let mut s = Stats::default();
+    let base = if o == Or::X { 30.0f64 } else { 0.0 };
+    let mut r = rng(&format!("probe-faces-{o:?}-{tag}"));
+    let elems: &[(i32, i32)] = if full { &[(3, 3), (1, 5)] } else { &[(3, 3)] };
+    let deltas: &[f64] = if full { &[0.0, 1e-12, -1e-9, 9.99e-7, -9.99e-7, 1.01e-6, -3e-6] } else { &[0.0, -9.99e-7, 9.99e-7, 1.01e-6] };
+    let epss: &[f64] = if full { &[0.0, 1e-15, -1e-12, 1e-9, -1e-8] } else { &[0.0, 1e-9, -1e-8] };
+    for &(ci, cj) in elems {
+        let c = l.element_center([ci, cj, 0]);
+        for k in 0..6 {
+            let a = (base + 60.0 * f64::from(k)).to_radians();
+            let na = a + 90f64.to_radians();
+            for &delta in deltas {
+                for &eps in epss {
+                    for &z in zs {
+                        for &dz in dzs {
+                            let f = 0.5 * 0.5774 * P * r.unit();
+                            let org = p3(
+                                c.x + (0.5 * P + delta) * na.cos() + f * a.cos(),
+                                c.y + (0.5 * P + delta) * na.sin() + f * a.sin(),
+                                z,
+                            );
+                            for back in [false, true] {
+                                let aa = a + eps + if back { std::f64::consts::PI } else { 0.0 };
+                                let what = format!("{tag} face ({ci},{cj}) k{k} delta {delta:e} eps {eps:e} z {z} dz {dz:e} back {back}");
+                                probe_one(o, w, l, org, [aa.cos(), aa.sin(), dz], &what, &mut s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    s
+}
+
+/// Rays from the vertices of an element (and just off them), along the six flat directions and
+/// random ones, plus random rays through a vertex.
+fn vertex_family(o: Or, w: &WorldTracker, l: &Lattice, zs: &[f64], full: bool, tag: &str) -> Stats {
+    let mut s = Stats::default();
+    let base = if o == Or::X { 30.0f64 } else { 0.0 } + 30.0;
+    let mut r = rng(&format!("probe-vert-{o:?}-{tag}"));
+    let c = l.element_center([3, 3, 0]);
+    let rad = P / 3f64.sqrt();
+    for k in 0..6 {
+        let va = (base + 60.0 * f64::from(k)).to_radians();
+        for &off in if full { &[0.0, 1e-12, 1e-7][..] } else { &[0.0, 1e-7][..] } {
+            let (vx, vy) = (c.x + (rad + off) * va.cos(), c.y + (rad + off) * va.sin());
+            let mut dirs: Vec<f64> = (0..6).map(|m| va + (60.0 * f64::from(m)).to_radians()).collect();
+            for _ in 0..if full { 8 } else { 2 } {
+                dirs.push(std::f64::consts::PI * r.unit());
+            }
+            for &z in zs {
+                for a in &dirs {
+                    for &eps in if full { &[0.0, 1e-13, -1e-9][..] } else { &[0.0, -1e-9][..] } {
+                        for &dz in if full { &[0.0, 1e-9, -1e-7, 1e-4][..] } else { &[0.0, -1e-7][..] } {
+                            let aa = a + eps;
+                            let what = format!("{tag} vert k{k} off {off:e} a {a} eps {eps:e} z {z} dz {dz:e}");
+                            probe_one(o, w, l, p3(vx, vy, z), [aa.cos(), aa.sin(), dz], &what, &mut s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for k in 0..if full { 400 } else { 60 } {
+        let va = (base + 60.0 * (k % 6) as f64).to_radians();
+        let v = [c.x + rad * va.cos(), c.y + rad * va.sin()];
+        let a = std::f64::consts::PI * r.unit();
+        let back = 0.3 + 2.0 * (0.5 * (r.unit() + 1.0));
+        let org = p3(v[0] - back * a.cos(), v[1] - back * a.sin(), zs[k % zs.len()]);
+        probe_one(o, w, l, org, [a.cos(), a.sin(), 0.0], &format!("{tag} through-vertex {k}"), &mut s);
+    }
+    s
+}
+
+/// The probe grid for both orientations on one kind of world; returns the merged stats.
+fn grid(union: bool, full: bool, dzs: &[f64], wall_zs: &[f64]) -> Stats {
+    let mut all = Stats::default();
+    let zw = ORIGIN().z + ZH;
+    let wall: Vec<f64> = wall_zs.iter().map(|d| zw + d).collect();
+    for o in [Or::X, Or::Y] {
+        let (w, l) = if union { world_union(o, 7, 2, ORIGIN()) } else { world(o, 7, 2, ORIGIN()) };
+        let t = if union { "u" } else { "d" };
+        all.merge(faces_family(o, &w, &l, &[0.1], dzs, full, &format!("{t}-mid")));
+        all.merge(faces_family(o, &w, &l, &wall, dzs, full, &format!("{t}-wall")));
+        all.merge(vertex_family(o, &w, &l, &[0.1, zw], full, &format!("{t}-vert")));
+    }
+    all
+}
+
+const DZS_SHORT: [f64; 4] = [0.0, 3.34e-7, -4e-7, 1e-3];
+const DZS_FULL: [f64; 27] = [
+    3.34e-7, -3.34e-7, 4e-7, -4e-7, 6e-7, -6e-7, 2e-6, -2e-6, 0.0, 5e-10, -5e-10, 1e-9, -1e-9, 1.001e-9,
+    -1.001e-9, 1e-8, -1e-8, 3.3e-7, -3.3e-7, 3.4e-7, -3.4e-7, 1e-6, -1e-6, 1e-5, -1e-5, 1e-3, -1e-3,
+];
+
+/// Grazing rays (all six flat directions, offsets across the tolerance, rotations, `dz` across the
+/// angular tolerance and the parallel limit, mid-layer and on the z-wall, from vertices and through
+/// them, both orientations) on the bare-leaf fill: carried to the footprint end, or a typed error.
+#[test]
+fn grazing_rays_direct_leaf() {
+    grid(false, false, &DZS_SHORT, &[0.0]).check("direct short", 0);
+}
+
+/// The same on a fill wrapped in a union.
+#[test]
+fn grazing_rays_union_fill() {
+    grid(true, false, &DZS_SHORT, &[0.0]).check("union short", 0);
+}
+
+/// Full grid: `cargo test --release -p sm-rt --test hex_world -- --ignored`.
+#[test]
+#[ignore = "slow in debug; run with --release"]
+fn grazing_rays_direct_leaf_full() {
+    grid(false, true, &DZS_FULL, &[0.0, 5e-7, -9e-7]).check("direct full", 0);
+}
+
+/// Full grid on the union fill.
+#[test]
+#[ignore = "slow in debug; run with --release"]
+fn grazing_rays_union_fill_full() {
+    grid(true, true, &DZS_FULL, &[0.0, 5e-7, -9e-7]).check("union full", 0);
+}
+
+/// Review repro: a ray 9.99e-7 off a shared flat, drifting 1e-9 rad, stopped at a vertex mid-lattice.
+#[test]
+fn a_grazing_ray_is_not_ended_at_a_mid_lattice_vertex() {
+    let (w, l) = world(Or::X, 7, 2, ORIGIN());
+    let a = 30f64.to_radians() + 1e-9;
+    let mut s = Stats::default();
+    let org = p3(6.601139852063665, 4.303989040029037, 0.1);
+    probe_one(Or::X, &w, &l, org, [a.cos(), a.sin(), 0.0], "review repro", &mut s);
+    s.check("false boundary", 0);
+    let (got, end) = trace(&w, org, v3(a.cos(), a.sin(), 0.0)).unwrap();
+    assert_eq!(end, "boundary");
+    let total: f64 = got.iter().map(|g| g.1).sum();
+    // Past the vertex (2.2503), at one of two outcomes: the outer corner of the lattice (7.446502),
+    // where the ray runs 9.97e-7 inside an outer flat of (6,6) that its leaf judges it to be leaving
+    // (it drifts out at 1e-9 rad), or one edge further (8.312529, as at eps 0 and -1e-9).
+    assert!((total - 7.446502).abs() < 1e-5 || (total - 8.312529).abs() < 1e-5, "{total}");
+}
+
+/// Review repro: on the z-wall just outside the parallel band, at a hex vertex.
+#[test]
+fn a_grazing_ray_on_the_z_wall_is_not_lost_at_a_vertex() {
+    let (w, l) = world(Or::X, 7, 2, ORIGIN());
+    let a = 30f64.to_radians() + 1e-9;
+    let mut s = Stats::default();
+    let org = p3(6.601139852063665, 4.303989040029037, 2.1);
+    for dz in [3.3e-7, 3.34e-7, 3.4e-7, 6e-7, -3.34e-7, -3.4e-7] {
+        probe_one(Or::X, &w, &l, org, [a.cos(), a.sin(), dz], &format!("zwall dz {dz:e}"), &mut s);
+    }
+    s.check("z-wall vertex", 0);
+}
+
+/// Review repro: a union-wrapped fill, rays exactly along a flat of (3,3) on the z-wall.
+#[test]
+fn rays_along_a_flat_on_the_z_wall_of_a_union_fill_reach_the_end() {
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world_union(o, 7, 2, ORIGIN());
+        let base = if o == Or::X { 30.0f64 } else { 0.0 };
+        let c = l.element_center([3, 3, 0]);
+        let zw = ORIGIN().z + ZH;
+        let mut s = Stats::default();
+        for k in 0..6 {
+            let a = (base + 60.0 * f64::from(k)).to_radians();
+            let na = a + 90f64.to_radians();
+            for f in [-0.3, -0.1, 0.0, 0.1, 0.25] {
+                let org = p3(c.x + 0.5 * P * na.cos() + f * P * a.cos(), c.y + 0.5 * P * na.sin() + f * P * a.sin(), zw);
+                probe_one(o, &w, &l, org, [a.cos(), a.sin(), 0.0], &format!("{o:?} union flat k{k} f {f}"), &mut s);
+            }
+        }
+        s.check("union flat on the wall", 0);
+    }
+}

@@ -19,6 +19,7 @@ sm-mesh = { path = "../sm-mesh" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["schemars"] }
 sm-op-api = { path = "../sm-op-api" }
 sm-decomp = { path = "../sm-decomp" }
+sm-poly = { path = "../sm-poly" }
 sm-layer-api = { path = "../sm-layer-api" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

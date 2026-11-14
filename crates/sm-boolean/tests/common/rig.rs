@@ -64,6 +64,12 @@ impl Rig {
         self.s.apply(op, Meta::new("test", "", ""), &q.control()).map(|(_, d)| d)
     }
 
+    /// Run a registered query on the current state.
+    pub fn query(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value, String> {
+        let q = QuietControl::new();
+        self.s.engine().run_query(self.s.state(), name, &input, &q.control()).map_err(|e| e.to_string())
+    }
+
     pub fn topo(&self) -> &dyn TopologyView {
         self.s.state().layer::<ModelLayer>().expect("model layer").topo()
     }

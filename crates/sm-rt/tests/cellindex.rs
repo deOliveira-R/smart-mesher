@@ -363,3 +363,87 @@ proptest! {
         check_rays(&ix, &or, 19.0, 20, &format!("cellindex-prop-rays-{seed}"));
     }
 }
+
+/// Locate candidates and segments of the seeded rays on `pin_assembly(n)`, by where the ray starts:
+/// in a cell, in the complement, or with no cell (outside the leaf bounds).
+fn p2_candidates(n: usize, rays: usize) -> [(u64, u64); 3] {
+    let fix = pin_assembly(n, 1.26, 0.4096, 0.475, 100.0).unwrap();
+    let w = csg_world(&fix.model, &fix.complex, &CsgWorldOptions { complement: Some("out".into()), ..CsgWorldOptions::default() }).unwrap();
+    let ix = w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
+    let mut r = rng("cellindex-candidates");
+    let half = 1.26 * n as f64 / 2.0 + 1.0;
+    let mut per = [(0u64, 0u64); 3];
+    for _ in 0..rays {
+        let o = p3(half * (2.0 * u01(&mut r) - 1.0), half * (2.0 * u01(&mut r) - 1.0), 40.0 + 20.0 * u01(&mut r));
+        let d = random_dir(&mut r);
+        let mut sc = Scratch::new();
+        let Ok(mut st) = ix.init_state(o, d, None, &mut sc) else { continue };
+        let pop = if st.cell.is_none() { 2 } else { usize::from(st.cell == CellId::COMPLEMENT) };
+        let mut segs = 0u64;
+        for _ in 0..400 {
+            let Ok(s) = ix.step(&mut st, 1e9, &mut sc) else { break };
+            segs += 1;
+            if matches!(s.end, StepEnd::Boundary { .. } | StepEnd::Lost(_)) {
+                break;
+            }
+        }
+        per[pop].0 += sc.counters.locate_candidates;
+        per[pop].1 += segs.max(1);
+    }
+    per
+}
+
+/// Print the populations and return the per-segment mean over all of them.
+fn p2_report(label: &str, per: [(u64, u64); 3]) -> f64 {
+    let f = |c: u64, s: u64| c as f64 / s.max(1) as f64;
+    for (name, (c, s)) in ["start in a cell", "start in the complement", "start with no cell"].iter().zip(per) {
+        eprintln!("{label} {name}: {:.2} locate candidates per segment over {s} segments", f(c, s));
+    }
+    let (c, s) = per.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    eprintln!("{label} all: {:.2} locate candidates per segment over {s} segments", f(c, s));
+    f(c, s)
+}
+
+/// Reduced P2: the concentric path and the root-box fallback must not list every cell as a candidate.
+#[test]
+fn p2_candidates_per_segment_stay_small() {
+    let per = p2_report("P2 reduced (n=3)", p2_candidates(3, 300));
+    assert!(per < 25.0, "{per}");
+}
+
+/// Full-scale P2: was 1176 candidates per segment before W4-RT-HEX (about 977 in the a2 population).
+#[test]
+#[ignore = "full-scale P2: cargo test --release -p sm-rt --test cellindex -- --ignored"]
+fn p2_full_candidates_per_segment_stay_small() {
+    let per = p2_report("P2 full (n=17)", p2_candidates(17, 200));
+    assert!(per < 25.0, "{per}");
+}
+
+/// Shared planes (the `g^3` grid): a surface lists far more than 32 cells, so `across` takes the
+/// tile list. Events, the entry from outside and the candidate count against the oracle.
+#[test]
+fn shared_planes_and_entries_from_outside_agree_with_the_oracle() {
+    let fx = random_model("cellindex-shared", 5, 0);
+    let (ix, or) = pair(&fx);
+    let mut r = rng("cellindex-shared-rays");
+    let (mut sc_i, mut sc_o) = (Scratch::new(), Scratch::new());
+    let (mut entered, mut cand_i, mut cand_o) = (0, 0u64, 0u64);
+    for k in 0..400 {
+        // From outside the grid box, toward it.
+        let o = p3(30.0 * r.unit(), 30.0 * r.unit(), 30.0 * r.unit());
+        let d = random_dir(&mut r);
+        let (a, b) = (ix.entry_from_outside(o, d, 200.0, true, &mut sc_i), ix.entry_from_outside(o, d, 200.0, false, &mut sc_o));
+        assert_eq!(a, b, "entry {k}");
+        entered += usize::from(a.is_some());
+        // Events from inside.
+        let q = p3(14.0 * r.unit(), 14.0 * r.unit(), 14.0 * r.unit());
+        assert_eq!(run(&ix, q, d, &mut Scratch::new()), run(&or, q, d, &mut Scratch::new()), "events {k}");
+        for (t, c) in [(&ix, &mut cand_i), (&or, &mut cand_o)] {
+            let mut sc = Scratch::new();
+            run(t, q, d, &mut sc);
+            *c += sc.counters.locate_candidates;
+        }
+    }
+    assert!(entered > 100, "{entered} entries");
+    assert!(cand_i < cand_o, "candidates: index {cand_i}, oracle {cand_o}");
+}

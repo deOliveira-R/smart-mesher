@@ -1,19 +1,24 @@
-//! Webcut: split volumes with a plane or a cylinder.
+//! Webcut: split volumes with a plane, a cylinder, or a sphere, cone, torus or elliptic surface.
 //!
 //! The tool is a bare surface. Each target volume's faces are cut along the intersection with the
 //! tool (the same kernel as the booleans), the cut edges are chained into closed loops, the loops
 //! become the cap face(s) on the tool surface, and `split_volume` separates the volume. Every
 //! piece becomes its own body; the caps are shared (merged) by the two pieces unless `merge` is
 //! off, in which case each piece gets its own cap (`unmerge_face`, Cubit `nomerge`).
+//!
+//! Sphere, cone, torus and elliptic tools cannot be capped loop by loop (poles, two seams,
+//! nappes), so the surface is closed into a temporary solid (`toolbody`) and the volume is split
+//! against it once: the part inside is the negative piece, the part outside the positive one,
+//! and both use the same fragment of the tool surface as their cut face.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3, Vector3};
-use sm_geom_api::{Cylinder, Frame, Interval, Line, Plane, SurfaceDef};
+use sm_geom_api::{Cylinder, Frame, Interval, Line, Plane, Sphere, SurfaceDef};
 use sm_topo_api::CurveCarrier;
-use sm_topo_api::{CoedgeSpec, Dim, Sense, Side, SurfaceCarrier, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CoedgeSpec, Dim, Sense, Side, SurfaceCarrier, TopologyEdit, TopologyView, TopologyViewExt};
 
 use crate::arrange;
 use crate::bodies;
@@ -46,9 +51,12 @@ pub enum CutTool {
         /// The normal (need not be unit); the positive side is where it points.
         normal: Vector3,
     },
-    /// A surface: a plane or a cylinder (a cylinder's positive side is its outside). `window` is a
-    /// world box `[xmin, ymin, zmin, xmax, ymax, zmax]` that bounds the tool; it must contain the
-    /// targets (`None` takes the targets' box).
+    /// A surface: a plane, cylinder, sphere, cone (one nappe), torus, elliptic cylinder or
+    /// elliptic cone. The positive side is where the surface normal points: the outside of a
+    /// cylinder, sphere, torus or elliptic cylinder, and the outside of the solid cone (its
+    /// negative side) for a nappe. `window` is a world box `[xmin, ymin, zmin, xmax, ymax, zmax]`
+    /// that bounds the tool (cones and elliptic cylinders are cut off beyond it); it must contain
+    /// the targets (`None` takes the targets' box).
     Surface {
         /// The surface definition.
         surface: SurfaceDef,
@@ -106,9 +114,12 @@ fn unit_or(v: Vector3) -> Result<Vector3, BooleanError> {
 /// bricks along their interface; callers that need a real cut check that both roles are non-empty.
 ///
 /// # Errors
-/// `Unsupported` for non-manifold targets, for tools other than planes and cylinders, for
-/// `imprint`, and when the cut curves do not form simple closed loops; `Topo(CutDoesNotSeparate)`
-/// when the tool does not split a volume in two.
+/// `Unsupported` for non-manifold targets, for tool surfaces without a closed form (NURBS,
+/// implicit), for `imprint`, and when the cut curves do not form simple closed loops (plane and
+/// cylinder tools); `Topo(CutDoesNotSeparate)` when the tool does not split a volume in two.
+/// A closed tool (sphere, torus) wholly inside a target splits it into the inside piece and the
+/// outside piece with a cavity; one that does not touch the target, or contains it, leaves it
+/// whole on the side it lies on. `ResultInvalid` if a piece is not a closed positive solid.
 pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool: &CutTool, o: &WebcutOptions) -> Result<WebcutOutcome, BooleanError> {
     if o.imprint {
         return Err(BooleanError::Unsupported("webcut with imprint is not available yet"));
@@ -127,10 +138,15 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
         }
         CutTool::Surface { surface, .. } => surface.clone(),
     };
-    match &tool_def {
-        SurfaceDef::Plane(_) | SurfaceDef::Cylinder(_) => {}
-        _ => return Err(BooleanError::Unsupported("webcut supports plane and cylinder tools")),
-    }
+    let closed = match &tool_def {
+        SurfaceDef::Plane(_) | SurfaceDef::Cylinder(_) => false,
+        SurfaceDef::Sphere(_) | SurfaceDef::Cone(_) | SurfaceDef::Torus(_) | SurfaceDef::EllipticCylinder(_) | SurfaceDef::EllipticCone(_) => true,
+        _ => return Err(BooleanError::Unsupported("webcut supports plane, cylinder, sphere, cone, torus and elliptic tools")),
+    };
+    let window = match tool {
+        CutTool::Surface { window, .. } => *window,
+        CutTool::Plane { .. } => None,
+    };
     // Every target body must be entirely made of target volumes.
     let target_set: BTreeSet<EntityId> = vols.iter().copied().collect();
     let mut old_bodies: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
@@ -159,6 +175,17 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
     let mut untouched: Vec<(EntityId, bool)> = Vec::new();
     let mut cut_faces: Vec<EntityId> = Vec::new();
     for &v in &vols {
+        if closed {
+            let body = old_bodies.iter().find(|(_, vs)| vs.contains(&v)).map(|(b, _)| *b);
+            match split_closed(topo, v, &tool_def, tool_handle, window)? {
+                Closed::Untouched(positive) => untouched.push((v, positive)),
+                Closed::Split { pieces, caps } => {
+                    per_body.entry(body.unwrap_or(v)).or_default().extend(pieces.into_iter().map(|(volume, positive)| Child { volume, positive }));
+                    cut_faces.extend(caps);
+                }
+            }
+            continue;
+        }
         let faces: Vec<EntityId> = topo.volume_faces(v).to_vec();
         let pairs: Vec<PairSpec> = faces.iter().map(|&f| PairSpec { a: f, b: Other::Surface(tool_def.clone()) }).collect();
         let computed = pieces::compute(&*topo, &pairs, Share::Shared, &|_| 0, 10.0 * topo.tolerance().linear_max)?;
@@ -330,6 +357,220 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
     out.volumes.retain(|v| topo.is_alive(*v));
     out.volumes.sort();
     Ok(out)
+}
+
+/// A frame for the sphere `s` whose poles lie away from the circles that the planes and spheres
+/// among the faces of `v` cut on it.
+///
+/// A sphere is the same surface in any frame, but its seam and poles sit where the frame puts
+/// them. A small circle that passes near a pole makes the moment quadrature of the pieces
+/// inaccurate (the error is 1e-9 at about 25 degrees from the pole, 1e-4 at 3 degrees, 3 % on
+/// the pole), and a cut loop that straddles the seam is the hardest case of the arrangement.
+/// Axes along the circle normals turn those circles into latitudes (exact, one seam crossing);
+/// great circles along a meridian are exact too. Candidates, in order: the circle normals, the
+/// frame's own axis, a fixed fibonacci set. The first with an angular margin of 0.5 rad to every
+/// circle wins, else the one with the best margin, so the choice is deterministic. Without
+/// circles the frame of `s` is kept.
+fn sphere_frame<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> Frame {
+    let (c, r) = (s.frame.origin, s.radius);
+    // (unit direction of the circle's axis from the centre, angular radius)
+    let mut circles: Vec<(Vector3, f64)> = Vec::new();
+    for &f in view.volume_faces(v) {
+        let Carrier::Surface(sc) = view.carrier(f) else { continue };
+        let (n, h) = match view.shapes().surface_def(sc.surface) {
+            Some(SurfaceDef::Plane(p)) => (p.frame.z, p.frame.z.dot(p.frame.origin - c)),
+            Some(SurfaceDef::Sphere(o)) => {
+                let d = o.frame.origin - c;
+                let dist = d.norm();
+                if dist <= 1e-12 * r {
+                    continue;
+                }
+                (d * (1.0 / dist), (dist * dist + r * r - o.radius * o.radius) / (2.0 * dist))
+            }
+            _ => continue,
+        };
+        if h.abs() < r * (1.0 - 1e-9) {
+            circles.push((n, (h / r).acos()));
+        }
+    }
+    if circles.is_empty() {
+        return s.frame;
+    }
+    let half_pi = core::f64::consts::FRAC_PI_2;
+    let margin = |p: Vector3| -> f64 {
+        circles
+            .iter()
+            .map(|&(n, rho)| {
+                let th = p.dot(n).clamp(-1.0, 1.0).acos();
+                // A great circle along a meridian (axis in its plane) is exact in the parameters.
+                if (th - half_pi).abs() < 1e-9 && (rho - half_pi).abs() < 1e-9 {
+                    return half_pi;
+                }
+                (th - rho).abs().min((core::f64::consts::PI - th - rho).abs())
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // Axes along the circle normals first (the circles become latitudes), then the user's axis,
+    // then a fixed fibonacci set.
+    let mut cands: Vec<Vector3> = circles.iter().map(|c| c.0).collect();
+    cands.push(s.frame.z);
+    const N: usize = 64;
+    for i in 0..N {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
+        let rad = (1.0 - z * z).sqrt();
+        let a = i as f64 * 2.399_963_229_728_653;
+        cands.push(Vector3::new(rad * a.cos(), rad * a.sin(), z));
+    }
+    // A margin of 0.5 rad (about 28 degrees) is good enough: take the first such axis.
+    const ENOUGH: f64 = 0.5;
+    let mut best = (cands[0], margin(cands[0]));
+    for &p in &cands {
+        let m = margin(p);
+        if m >= ENOUGH {
+            best = (p, m);
+            break;
+        }
+        if m > best.1 + 1e-3 {
+            best = (p, m);
+        }
+    }
+    Frame::from_z(c, best.0).unwrap_or(s.frame)
+}
+
+/// What [`split_closed`] did to one volume.
+enum Closed {
+    /// The tool does not cross the volume; it lies on the positive side (`true`) or the negative.
+    Untouched(bool),
+    /// The volume was split: its pieces with their side, and the cut faces they share.
+    Split { pieces: Vec<(EntityId, bool)>, caps: Vec<EntityId> },
+}
+
+/// Split `v` with a sphere, cone, torus or elliptic tool: close the surface into a solid, imprint
+/// it on the volume, and take the part of the volume inside it and the part outside as two
+/// pieces that share the tool fragments (the cut faces). The inside is the negative side.
+fn split_closed<E: TopologyEdit + ?Sized>(topo: &mut E, v: EntityId, def: &SurfaceDef, handle: EntityId, window: Option<[f64; 6]>) -> Result<Closed, BooleanError> {
+    use crate::boolean::{Class, imprint_classify};
+    // A sphere is the same surface in any frame: put its poles where no cut circle comes near
+    // (see `sphere_frame`), under a handle of its own.
+    let (def, handle) = match def {
+        SurfaceDef::Sphere(s) => {
+            let f = sphere_frame(&*topo, v, s);
+            let d = SurfaceDef::Sphere(Sphere::new(f, s.radius)?);
+            let h = topo.shapes_mut()?.add_surface(d.clone())?;
+            (d, h)
+        }
+        _ => (def.clone(), handle),
+    };
+    let def = &def;
+    let mut bounds = sm_core::Aabb::empty();
+    match window {
+        Some(w) => {
+            bounds.extend(Point3::new(w[0], w[1], w[2]));
+            bounds.extend(Point3::new(w[3], w[4], w[5]));
+        }
+        None => {
+            for &f in topo.volume_faces(v) {
+                let b = geo::face_aabb(&*topo, f, 0.0);
+                if !b.is_empty() {
+                    bounds.extend(b.lo);
+                    bounds.extend(b.hi);
+                }
+            }
+        }
+    }
+    let Some(tb) = crate::toolbody::build(topo, def, handle, &bounds)? else { return Ok(Closed::Untouched(true)) };
+    let im = imprint_classify(topo, v, tb.volume)?;
+    let all = |c: &[(EntityId, Class, Point3, Vector3)], k: Class| c.iter().all(|x| x.1 == k);
+    if im.no_pieces && ((all(&im.class_a, Class::Out) && all(&im.class_b, Class::Out)) || all(&im.class_a, Class::In)) {
+        // Disjoint, or the volume lies wholly inside the tool.
+        let positive = all(&im.class_a, Class::Out);
+        topo.kill_cascade(tb.body)?;
+        return Ok(Closed::Untouched(positive));
+    }
+    // Inside piece: the target inside the tool, plus the tool fragments inside the target.
+    // Outside piece: the target outside the tool, plus the same tool fragments, reversed.
+    let mut inside: Vec<(EntityId, Point3, Vector3)> = Vec::new();
+    let mut outside: Vec<(EntityId, Point3, Vector3)> = Vec::new();
+    for &(f, c, pt, n) in &im.class_a {
+        match c {
+            Class::In | Class::OnSame => inside.push((f, pt, n)),
+            Class::Out | Class::OnOpposite => outside.push((f, pt, n)),
+        }
+    }
+    let mut caps: BTreeSet<EntityId> = BTreeSet::new();
+    for &(f, c, pt, n) in &im.class_b {
+        if c == Class::In {
+            inside.push((f, pt, n));
+            outside.push((f, pt, n * -1.0));
+            caps.insert(f);
+        }
+    }
+    if inside.is_empty() || outside.is_empty() || caps.is_empty() {
+        return Err(BooleanError::Unsupported("the tool surface coincides with the boundary of the volume"));
+    }
+    let kept: BTreeSet<EntityId> = inside.iter().chain(&outside).map(|k| k.0).collect();
+    // Take the operands apart.
+    for &x in &[v, tb.volume] {
+        let fs: Vec<EntityId> = topo.volume_faces(x).to_vec();
+        for f in fs {
+            topo.remove_face_use(x, f, Side::Both)?;
+        }
+    }
+    topo.kill(v)?;
+    topo.kill(tb.volume)?;
+    for &f in im.fa_now.iter().chain(&im.fb_now) {
+        if !kept.contains(&f) && topo.is_alive(f) && topo.coboundary(f).iter().all(|e| topo.dim_of(e.cell) != Some(Dim::Volume)) {
+            topo.kill_cascade(f)?;
+        }
+    }
+    let scope: Vec<EntityId> = kept.iter().copied().collect();
+    let opts = crate::merge::MergeOptions { tol: None, kinds: crate::merge::MergeKinds { vertex: true, edge: true, face: false } };
+    crate::merge::merge(topo, &scope, &[], &opts)?;
+    if topo.is_alive(tb.body) {
+        topo.kill(tb.body)?;
+    }
+    // Sides from the current orientation of each face.
+    let uses_of = |t: &E, list: &[(EntityId, Point3, Vector3)]| -> Result<Vec<(EntityId, Side)>, BooleanError> {
+        let mut out = Vec::with_capacity(list.len());
+        for &(f, pt, n) in list {
+            let (nf, _, _) = geo::face_normal_near(t, f, pt).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+            out.push((f, if nf.dot(n) > 0.0 { Side::Left } else { Side::Right }));
+        }
+        Ok(out)
+    };
+    let (in_uses, out_uses) = (uses_of(&*topo, &inside)?, uses_of(&*topo, &outside)?);
+    let mut groups: Vec<(bool, crate::assemble::ShellGroup)> = Vec::new();
+    for g in crate::assemble::group_shells(&*topo, &in_uses, v, "webcut")? {
+        groups.push((false, g));
+    }
+    for g in crate::assemble::group_shells(&*topo, &out_uses, v, "webcut")? {
+        groups.push((true, g));
+    }
+    groups.sort_by_key(|(_, g)| g.outer.iter().map(|u| u.0).min());
+    let mut pieces: Vec<(EntityId, bool)> = Vec::new();
+    for (positive, g) in &groups {
+        let vol = crate::assemble::make_volumes(topo, std::slice::from_ref(g))?[0];
+        pieces.push((vol, *positive));
+    }
+    let mut child_faces: BTreeSet<EntityId> = BTreeSet::new();
+    for &(cv, _) in &pieces {
+        child_faces.extend(topo.volume_faces(cv).iter().copied());
+    }
+    let cf: Vec<EntityId> = child_faces.into_iter().collect();
+    crate::pcurves::fix_faces(topo, &cf)?;
+    let child_vols: Vec<EntityId> = pieces.iter().map(|p| p.0).collect();
+    topo.record_split(v, &child_vols)?;
+    for &(cv, _) in &pieces {
+        let m = topo.volume_moments(cv)?;
+        if m.volume.is_nan() || m.volume <= 0.0 {
+            return Err(BooleanError::ResultInvalid { volume: cv, rule: "webcut" });
+        }
+    }
+    let caps: Vec<EntityId> = caps.into_iter().filter(|&c| topo.is_alive(c)).collect();
+    for &c in &caps {
+        topo.record_generated(c, handle)?;
+    }
+    Ok(Closed::Split { pieces, caps })
 }
 
 /// True if the tool's positive side holds the volume (by the side of a face interior point).
@@ -667,11 +908,16 @@ fn unmerge_cap<E: TopologyEdit + ?Sized>(topo: &mut E, cap: EntityId, right_volu
         Some(sm_topo_api::Region::Volume(v)) => Some(v),
         _ => None,
     };
-    let cap_edges: Vec<EntityId> = topo.face_edges(cap).iter().copied().filter(|&e| !geo::is_degenerate(&*topo, e)).collect();
+    let mut cap_edges: Vec<EntityId> = topo.face_edges(cap).to_vec();
+    cap_edges.sort();
+    cap_edges.dedup();
     let new = topo.unmerge_face(cap, Side::Right)?;
     let pos_faces: BTreeSet<EntityId> = topo.volume_faces(right_volume).iter().copied().collect();
     for &e in &cap_edges {
-        let users: Vec<EntityId> = topo.coboundary(e).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face) && pos_faces.contains(&i.cell)).map(|i| i.cell).collect();
+        let mut users: Vec<EntityId> = topo.coboundary(e).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face) && pos_faces.contains(&i.cell)).map(|i| i.cell).collect();
+        // A seam is used twice by one face.
+        users.sort();
+        users.dedup();
         if !users.is_empty() {
             topo.unmerge_edge(e, &users)?;
         }

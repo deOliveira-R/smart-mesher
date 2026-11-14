@@ -251,7 +251,11 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
         }
         d
     };
-    let mut best: Option<(f64, Point3)> = None;
+    // Grid candidates, deepest (by sample distance) first. The sampled polygon is inscribed in
+    // curved boundaries, so a deep-by-samples point can lie within the chord sagitta of the true
+    // boundary, even on the wrong side of it. The pick is therefore checked against the true
+    // boundary distance and passed over when that is under half the sampled depth.
+    let mut cands: Vec<(f64, Point3)> = Vec::new();
     const N: usize = 13;
     for i in 1..N {
         for j in 1..N {
@@ -261,10 +265,52 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
             }
             let p = surf.eval(uv);
             let d = depth(p);
-            if d > lin && best.is_none_or(|b| d > b.0) {
-                best = Some((d, p));
+            if d > lin {
+                cands.push((d, p));
             }
         }
     }
-    Ok(best.map(|b| b.1))
+    // Stable sort keeps grid order among equal depths; the first strict maximum wins as before.
+    let mut order: Vec<usize> = (0..cands.len()).collect();
+    order.sort_by(|&x, &y| cands[y].0.total_cmp(&cands[x].0).then(x.cmp(&y)));
+    for &k in order.iter().take(8) {
+        let (d, p) = cands[k];
+        if boundary_distance(view, f, p) >= 0.5 * d {
+            return Ok(Some(p));
+        }
+    }
+    // The coarse grid misses a face thinner than its cell (a thin annulus or strip): step inward
+    // from the boundary instead, on a decade ladder of depths.
+    let np: usize = m.polys.iter().map(Vec::len).sum();
+    let stride = (np / 96).max(1);
+    let extent = m.pts.iter().fold(0.0f64, |a, q| a.max(geo::dist(*q, m.pts[0])));
+    let mut found: Option<(f64, Point3)> = None;
+    for lp in &m.polys {
+        let n = lp.len();
+        for i in (0..n).step_by(stride) {
+            let (a, b) = (lp[i], lp[(i + 1) % n]);
+            let mid = Uv::new(0.5 * (a.u + b.u), 0.5 * (a.v + b.v));
+            let jet = surf.jet(mid);
+            let nrm = jet.du.cross(jet.dv);
+            let t = surf.eval(b) - surf.eval(a);
+            let Some(inward) = geo::unit(nrm.cross(t)) else { continue };
+            let p0 = surf.eval(mid);
+            let mut delta = 0.1 * extent;
+            while delta > 10.0 * lin {
+                for sgn in [1.0, -1.0] {
+                    let q = Point3::new(p0.x + sgn * delta * inward.x, p0.y + sgn * delta * inward.y, p0.z + sgn * delta * inward.z);
+                    let Ok(pr) = surf.project(q, Some(mid)) else { continue };
+                    if pr.distance > 1e-3 * delta.max(lin) || !inside(&m.polys, &m.dom, pr.uv) {
+                        continue;
+                    }
+                    let d = boundary_distance(view, f, pr.point);
+                    if d > lin && d >= 0.5 * delta && found.is_none_or(|b| d > b.0) {
+                        found = Some((d, pr.point));
+                    }
+                }
+                delta /= 10.0;
+            }
+        }
+    }
+    Ok(found.map(|b| b.1))
 }

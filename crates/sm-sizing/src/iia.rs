@@ -22,6 +22,9 @@
 //! * a class with a `Hard` [`IntervalConstraint::Fixed`] is fixed and contributes no term;
 //! * else, if any edge of the class has a `Soft` fixed count, one term per soft count (a soft
 //!   request beats a default goal, as in `Firmness`; there is no extra weight);
+//! * else, if any [`IntervalConstraint::Goal`] comes from a scheme preference
+//!   (`Origin::Preference`, `IntervalSink::prefer`), one term: the mean of the preferences (a
+//!   preference replaces the default goals of its class but never a soft or hard count);
 //! * else one term per [`IntervalConstraint::Goal`] and default-firmness `Fixed` count;
 //! * else the single implicit term `g = 1`.
 //!
@@ -91,8 +94,8 @@
 use rayon::prelude::*;
 use sm_core::EntityId;
 use sm_scheme_api::{
-    ConstraintId, Firmness, Infeasible, IntervalConstraint, IntervalSolver, Record,
-    ReferenceIntervalSolver, Rel,
+    ConstraintId, Firmness, Infeasible, IntervalConstraint, IntervalSolver, Origin,
+    Record, ReferenceIntervalSolver, Rel,
 };
 
 /// Scale of the integer deviation keys: `2^40`.
@@ -1730,6 +1733,7 @@ impl IntervalSolver for IiaSolver {
         let mut hi: Vec<i64> = vec![COUNT_MAX; nc];
         let mut soft: Vec<(u32, f64)> = Vec::new();
         let mut dflt: Vec<(u32, f64)> = Vec::new();
+        let mut pref: Vec<(u32, f64)> = Vec::new();
         for r in constraints {
             match &r.item {
                 IntervalConstraint::Fixed { edge, count, firmness } => {
@@ -1757,7 +1761,11 @@ impl IntervalSolver for IiaSolver {
                 }
                 IntervalConstraint::Goal { edge, goal } => {
                     let c = prob.class_of[ix(edge, r.id)?];
-                    dflt.push((c, *goal));
+                    if matches!(r.origin, Origin::Preference { .. }) {
+                        pref.push((c, *goal));
+                    } else {
+                        dflt.push((c, *goal));
+                    }
                 }
                 IntervalConstraint::Range { edge, min, max } => {
                     let c = prob.class_of[ix(edge, r.id)?] as usize;
@@ -1787,18 +1795,27 @@ impl IntervalSolver for IiaSolver {
         let valid = |g: f64| g.is_finite() && g > 0.0;
         soft.retain(|x| valid(x.1));
         dflt.retain(|x| valid(x.1));
+        pref.retain(|x| valid(x.1));
         soft.sort_by_key(|x| x.0);
         dflt.sort_by_key(|x| x.0);
-        let (mut si, mut di) = (0usize, 0usize);
+        // Sorted by class and value, so the mean does not depend on contribution order.
+        pref.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let (mut si, mut di, mut pi) = (0usize, 0usize, 0usize);
+        let pref_mean = |s: &[(u32, f64)]| s.iter().map(|x| x.1).sum::<f64>() / s.len() as f64;
         let mut t_off: Vec<usize> = Vec::with_capacity(nc + 1);
         let mut goals: Vec<f64> = Vec::new();
         for c in 0..nc as u32 {
             t_off.push(goals.len());
             let s_end = si + soft[si..].iter().take_while(|x| x.0 == c).count();
             let d_end = di + dflt[di..].iter().take_while(|x| x.0 == c).count();
+            let p_end = pi + pref[pi..].iter().take_while(|x| x.0 == c).count();
             if hard[c as usize] == 0 {
+                let mean;
                 let pick = if s_end > si {
                     &soft[si..s_end]
+                } else if p_end > pi {
+                    mean = [(c, pref_mean(&pref[pi..p_end]))];
+                    &mean[..]
                 } else if d_end > di {
                     &dflt[di..d_end]
                 } else {
@@ -1808,6 +1825,7 @@ impl IntervalSolver for IiaSolver {
             }
             si = s_end;
             di = d_end;
+            pi = p_end;
         }
         t_off.push(goals.len());
 

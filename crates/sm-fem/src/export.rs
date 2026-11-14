@@ -5,6 +5,8 @@ use std::io::Write;
 use sm_core::EntityId;
 use sm_exodus::{ExodusOptions, write_exodus};
 use sm_layer_api::{MeshLayer, ModelLayer};
+use sm_mesh_api::{LevelMap, MeshCatalog};
+use sm_meshio::select::Select;
 use sm_meshio::foam::{FoamOptions, FoamPatchType, build_polymesh};
 use sm_meshio::{LossReport, SmshWriter, VtuOptions, vtu_loss_report, write_vtu};
 use sm_op_api::State;
@@ -12,6 +14,7 @@ use sm_op_api::State;
 use crate::error::FemError;
 use crate::layer::FemLayer;
 use crate::lower::{Lowered, SetSummary, lower};
+use crate::select::{check_select, select_lowered};
 
 /// Output file format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +69,11 @@ pub struct ExportRequest {
     /// checkMesh's concave-cell check fail on warped hex meshes, see `FOAM_FORMAT.md` section 12).
     /// Planar meshes export byte for byte as without the pass.
     pub split_warped_faces: bool,
+    /// Export only part of the mesh (`.smsh`, VTU and Exodus; see [`sm_meshio::select`]).
+    /// `None` and a selection that keeps everything write the same bytes as before. A real
+    /// selection writes a new mesh, so the level maps of the mesh layer are left out of a `.smsh`
+    /// (`export.select_levelmap_dropped`). OpenFOAM refuses it.
+    pub select: Option<Select>,
 }
 
 impl ExportRequest {
@@ -79,6 +87,7 @@ impl ExportRequest {
             empty_patches: Vec::new(),
             wedge_patches: Vec::new(),
             split_warped_faces: false,
+            select: None,
         }
     }
 
@@ -108,6 +117,13 @@ impl ExportRequest {
     #[must_use]
     pub fn provenance(mut self, hash: impl Into<String>) -> Self {
         self.provenance = Some(hash.into());
+        self
+    }
+
+    /// Export only the part of the mesh `select` names.
+    #[must_use]
+    pub fn select(mut self, select: Select) -> Self {
+        self.select = Some(select);
         self
     }
 
@@ -189,8 +205,31 @@ impl Write for Counting<'_> {
     }
 }
 
-/// Select the mesh of `req` and lower the model onto it.
-fn prepare(state: &State, req: &ExportRequest) -> Result<(EntityId, Lowered), FemError> {
+/// A lowered mesh ready to write: the mesh id of the state, the lowering (after the selection),
+/// the notes of the selection and whether the selection cut the mesh.
+struct Prepared {
+    id: EntityId,
+    lowered: Lowered,
+    notes: Vec<String>,
+    cut: bool,
+}
+
+/// The level maps a `.smsh` of `prep` carries, and the note when a cut mesh has to leave them
+/// out (it is a new mesh: the maps name the whole one).
+fn maps_for<'a>(state: &'a State, prep: &Prepared) -> (Vec<&'a LevelMap>, Option<String>) {
+    let maps = level_maps_of(state, prep.id);
+    if prep.cut && !maps.is_empty() {
+        let note = format!(
+            "export.select_levelmap_dropped: level maps of the whole mesh do not apply to the selected one x{}",
+            maps.len()
+        );
+        return (Vec::new(), Some(note));
+    }
+    (maps, None)
+}
+
+/// Pick the mesh of `req`, lower the model onto it and apply the selection.
+fn prepare(state: &State, req: &ExportRequest) -> Result<Prepared, FemError> {
     let layer = state.layer::<MeshLayer>().ok_or(FemError::NoMeshLayer)?;
     let (id, entry) = match req.mesh {
         Some(id) => (id, layer.get(id).ok_or(FemError::UnknownMesh(id))?),
@@ -214,7 +253,57 @@ fn prepare(state: &State, req: &ExportRequest) -> Result<(EntityId, Lowered), Fe
         }
         None => Lowered::identity(entry),
     };
-    Ok((id, lowered))
+    let Some(sel) = &req.select else {
+        return Ok(Prepared { id, lowered, notes: Vec::new(), cut: false });
+    };
+    if req.format.is_multi_file() {
+        return Err(FemError::Unsupported(format!(
+            "`select` does not apply to {} (it keeps its patches and zones)",
+            req.format.name()
+        )));
+    }
+    let cut = !sel.keeps_all_cells_and_sets();
+    if !cut {
+        check_select(&lowered, sel)?;
+        return Ok(Prepared { id, lowered, notes: Vec::new(), cut });
+    }
+    let (lowered, notes) = select_lowered(lowered, sel)?;
+    Ok(Prepared { id, lowered, notes, cut })
+}
+
+/// The level maps of the mesh layer that name mesh `id` (as fine mesh first, then as coarse
+/// mesh), in ascending order of the other mesh. A `.smsh` of that mesh carries them, so the
+/// hierarchy reaches disk.
+pub fn level_maps_of(state: &State, id: EntityId) -> Vec<&LevelMap> {
+    let Some(layer) = state.layer::<MeshLayer>() else {
+        return Vec::new();
+    };
+    let mut maps: Vec<&LevelMap> = layer.maps_from(id).into_iter().map(|(_, m)| m).collect();
+    maps.extend(layer.maps_to(id).into_iter().map(|(_, m)| m));
+    maps
+}
+
+/// The `.smsh` writer of a lowered mesh: provenance, deck records, declared element types and
+/// the level maps `maps` (see [`level_maps_of`]; every map must be current for the mesh).
+pub fn smsh_writer<'a>(
+    lowered: &'a Lowered,
+    provenance: Option<&str>,
+    maps: &[&'a LevelMap],
+) -> SmshWriter<'a> {
+    let mut writer = SmshWriter::new((*lowered.mesh).as_read());
+    if let Some(p) = provenance {
+        writer = writer.provenance(p);
+    }
+    for d in &lowered.decks {
+        writer = writer.deck(d.clone());
+    }
+    for (set, ty) in &lowered.block_types {
+        writer = writer.element_type(set.clone(), ty.name());
+    }
+    for m in maps {
+        writer = writer.level_map(m);
+    }
+    writer
 }
 
 /// Write `lowered` in a single-stream format; returns the loss notes.
@@ -222,23 +311,14 @@ fn write_stream<W: Write>(
     format: ExportFormat,
     provenance: Option<&String>,
     lowered: &Lowered,
+    maps: &[&LevelMap],
     out: &mut W,
 ) -> Result<Vec<String>, FemError> {
     let mesh = (*lowered.mesh).as_read();
     let mut notes = Vec::new();
     match format {
         ExportFormat::Smsh => {
-            let mut writer = SmshWriter::new(mesh);
-            if let Some(p) = provenance {
-                writer = writer.provenance(p.clone());
-            }
-            for d in &lowered.decks {
-                writer = writer.deck(d.clone());
-            }
-            for (set, ty) in &lowered.block_types {
-                writer = writer.element_type(set.clone(), ty.name());
-            }
-            writer.write_to(out)?;
+            smsh_writer(lowered, provenance.map(String::as_str), maps).write_to(out)?;
         }
         ExportFormat::Vtu => {
             let opts = VtuOptions::default();
@@ -287,15 +367,20 @@ pub fn export(
     if req.format.is_multi_file() {
         return Err(FemError::MultiFile(req.format.name()));
     }
-    let (id, lowered) = prepare(state, req)?;
+    let prep = prepare(state, req)?;
     let mut out = Counting { inner: w, n: 0 };
-    let notes = write_stream(req.format, req.provenance.as_ref(), &lowered, &mut out)?;
+    let (maps, dropped) = maps_for(state, &prep);
+    let mut notes = prep.notes.clone();
+    if req.format == ExportFormat::Smsh {
+        notes.extend(dropped);
+    }
+    notes.extend(write_stream(req.format, req.provenance.as_ref(), &prep.lowered, &maps, &mut out)?);
     out.flush()?;
     Ok(ExportReport {
         format: req.format,
-        mesh: id,
+        mesh: prep.id,
         bytes: out.n,
-        sets: lowered.sets,
+        sets: prep.lowered.sets.clone(),
         notes,
     })
 }
@@ -310,7 +395,8 @@ pub fn export(
 /// # Errors
 /// As [`export`], minus `MultiFile`, plus writer failures of the OpenFOAM path.
 pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, FemError> {
-    let (id, lowered) = prepare(state, req)?;
+    let prep = prepare(state, req)?;
+    let (id, lowered) = (prep.id, &prep.lowered);
     let (files, notes) = match req.format {
         ExportFormat::OpenFoam => {
             let mut opts = FoamOptions::new()
@@ -337,7 +423,12 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
         }
         f => {
             let mut bytes = Vec::new();
-            let notes = write_stream(f, req.provenance.as_ref(), &lowered, &mut bytes)?;
+            let (maps, dropped) = maps_for(state, &prep);
+            let mut notes = prep.notes.clone();
+            if f == ExportFormat::Smsh {
+                notes.extend(dropped);
+            }
+            notes.extend(write_stream(f, req.provenance.as_ref(), lowered, &maps, &mut bytes)?);
             let name = match f {
                 ExportFormat::Smsh => "mesh.smsh",
                 ExportFormat::Vtu => "mesh.vtu",
@@ -357,7 +448,7 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
     Ok(ExportBundle {
         mesh: id,
         files,
-        sets: lowered.sets,
+        sets: prep.lowered.sets.clone(),
         notes,
     })
 }

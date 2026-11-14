@@ -223,7 +223,7 @@ mesh prototype, all deliberate:
 * *No complement region, no partition.* The world is the boundary of the cells; a bridged world with
   a complement region is refused by `CsgWorld::world_tracker` (use `analytic_tracker`);
   `partition.enabled` with a CSG leaf is `Unsupported("majorant partition of a CSG leaf")`.
-  `safety_distance` of a CSG leaf is `Unsupported`. Hex lattices stay refused (W4-RT-HEX).
+  `safety_distance` of a CSG leaf is `Unsupported`. Hex lattices are built by the world walker (W4-RT-HEX, "Hexagonal lattices").
 * *Caps:* `HIERARCHY | ANALYTIC` (no `EXACT_PLANAR`, which names planar facets).
 * *Dispatch:* a world whose root is one bare CSG leaf is still the `AnalyticTracker` (same cache key);
   any other world with a CSG leaf is a `WorldTracker` (kind `World`).
@@ -243,8 +243,8 @@ binary search per level. The total must stay below `u32::MAX - 1`.
 index)`. The leaf is the child of the last entry (a bare leaf root has no levels). A step rebuilds
 the instance frame from the levels (composed global-to-leaf map, no cache, no allocation up to
 `LEVEL_INLINE`). Placements must be rigid (`R^T R = I` within 1e-12, mirrors allowed), else
-`world.nonrigid`; lattices are rectangular with `outer: None` (hex lattices, outer fills, per-surface
-boundary rules and periodic world boundaries are `Unsupported`; hex is stretch S1, not done).
+`world.nonrigid`; lattices are rectangular or hexagonal with `outer: None` (outer fills, per-surface
+boundary rules and periodic world boundaries are `Unsupported`).
 `InstancePolicy` is ignored (the contract says it never changes results).
 
 **Lattices.** An element's fill lives in the element frame (origin at the element centre, as
@@ -256,6 +256,103 @@ decides, preferring the slab the direction enters). The walls come from the prot
 which coincide with the element walls: there is no separate Amanatides-Woo march, because a fill
 that fits and a particle that leaves it need only the neighbour lookup; edge and corner exits fall
 out of the candidate product (diagonal neighbour first when the direction enters it).
+
+**Hexagonal lattices (W4-RT-HEX).** `LatticeKind::Hex` (rows along x, pointy-top, flats at `x = +-p/2`)
+and `LatticeKind::HexYRows` (rows along y, flat-top, flats at `y = +-p/2`) are built by the world
+walker. `p` is the flat-to-flat pitch, which is also the neighbour centre distance. Element `(q, r, k)`
+is centred at `origin + p (q + r/2, sqrt(3)/2 r)` (x) or `origin + p (sqrt(3)/2 q, r + q/2)` (y), at
+`origin.z + k z_pitch` (no half offset, unlike the Cartesian lattice; a single layer ignores `z_pitch`,
+which need not be valid). `dims = [d0, d1, d2]` is the rhombus `q in 0..d0`, `r in 0..d1`; a hexagon of
+rings is a sub-set of it and the other elements need a (possibly empty-looking) fill; `outer` stays
+`Unsupported`. The geometry is `hexlat.rs`; cell ids, `levels` and the hash follow the Cartesian lattice
+(index 0 fastest; a Cartesian world hashes as before, a hex lattice adds its orientation tag).
+
+* **No separate DDA loop**, as for the Cartesian lattice: an element change is the leaf's `Boundary` at
+  the fill's outer face, followed by a locate of the exit point from the root that excludes the
+  instance just left. The hex part is the locate.
+* **Locate.** Cube rounding of the axial coordinates gives the nearest centre, whose hexagon holds the
+  point. If the point is within `tol` of the hexagon boundary (`max_k |u . n_k| - p/2`, `n_k` the three
+  flat normals), the six neighbours are tested the same way: one candidate strictly inside, two on a
+  flat, three at a vertex. z layers are the outer loop (a wall within `tol` gives two layers).
+* **Vertex-tie rule (three elements meet).** Candidates are ordered by the distance of `u + 4 tol dir` to
+  their centres: the element the direction enters comes first. Elements within `1e-12 p^2` of each other
+  (a direction along the shared face) are ordered by descending `(r, q)`, the descending linear index. With
+  `dir = 0` (`find_instance_with_face`) the point itself orders them. The first candidate whose leaf
+  claims the point wins. A point on a flat moving along it is ruled on by each leaf's own tangential rule
+  (a hashed direction of the local point), so the first pass can find no claimant. The point is then
+  still inside the lattice footprint, so a second pass takes the first non-excluded in-range candidate in
+  the same order and asks its leaf with the direction nudged toward the candidate's centre (the particle's
+  direction is unchanged), provided the distance outside each flat within `tol` of the point plus the outward drift over one
+  edge (`p / sqrt 3`, the longest run along a flat) stays within `tol` (a ray leaving at a vertex, however
+  grazing, is not carried into it). After a zero-length exit of a leaf (a step of at most `tol` ending at
+  its outer face) this pass goes first, so two leaves that each give a tangential point back cannot hand it
+  to each other; the leaf the pass picks gets the flat the ray runs along as its entry face, and a leaf
+  keeps a ray on its side of its entry plane while the ray is tangential to it (no hashed tie ends the run). So a ray along a shared face, which every ray from an
+  element centre through a vertex does for one run, is carried along it and never ends with a
+  `Boundary` (vacuum) inside the lattice; a ray that runs along an outer flat of the lattice may end there
+  or continue (tolerance-ambiguous, as along a Cartesian wall). Cartesian lattices are unchanged. Tested:
+  `tests/hex_world.rs::rays_along_or_near_shared_faces_reach_the_lattice_boundary` (both orientations, every
+  element centre of a 7x7, six vertex directions and +-1e-15..1e-6 rad off them, closed-form totals, no
+  ray lost or carried beyond the footprint) and
+  `tests/hex_world.rs::vertex_ties_follow_the_documented_rule` (the ordering).
+* **z-wall of a stack.** A ray with `|dz| <= 1e-9` on the wall between two layers is in both, and each
+  leaf's tie on its z plane is a hashed direction. Two rules keep it in one layer: the locate rules on
+  the point with the direction nudged (`dz = 1e-8`) into the candidate's layer, so the first candidate in
+  order takes it; and a point on a hex flat of the column just left is not handed to the other layer of
+  that column (which holds it only within `tol` and would hand it straight back). A crossing of the pin
+  surface at the wall (the point inside the hexagon) still moves to the next layer. Tested:
+  `tests/hex_world.rs::rays_on_the_layer_interface_reach_the_lattice_boundary` (7x7x2, both orientations,
+  generic rays and rays along shared flats, closed-form footprint totals, none lost).
+* **Grazing traps: a ray is carried, or ends in a typed, located error.** Whatever the tolerance rules
+  of the leaves, two nets stand behind them (structural, not another band):
+  The nets apply to worlds with a hex lattice only (other worlds run the provided loops unchanged).
+  1. *No vacuum inside the lattice.* When the exit point of a leaf finds no instance (`Boundary` from the
+     root locate) but lies inside a hex lattice of the path by more than `10 tol` on the ideal hexagons
+     (and inside its z range), and the model holds the 26 points of the sphere of radius `10 tol` about it
+     (a gap in a fill, or the top of a leaf, is a boundary), the stop is no boundary of the model: the
+     state is nudged along the ray by `tol 2^k` (`k < 6`, the first point the model holds, located from the
+     root with nothing excluded) and the step ends `SlotChange` with the nudge added to its length (a chord
+     error of a few `tol`, which the leaves' own bands already allow). If no nudge is held the step ends
+     `Lost` with `LostCause::RecoveryFailed`, located at the exit point.
+  2. *Bounded hand-backs.* `WorldTracker::trace` and `fire` count consecutive steps of at most `tol`
+     (instances handing the ray back and forth; a vertex legitimately gives two or three). After 8 they
+     nudge the ray on the same way (at most 4 times per trace, the hop recorded as a chord of the cell
+     the ray was in); a trap that cannot be left ends `Lost` with `RecoveryFailed`, never the million
+     steps of `TraceOptions::default().max_steps`.
+  The z-wall rules follow the path, not the leaf: the inward nudge of the direction is applied for a hex
+  stack at any level of the path (a fill wrapped in a union; nested lattices and mesh leaves are not probed), mapped to the leaf frame,
+  and the flat the ray runs along is found in the leaf frame of the carried instance. A carried candidate
+  is not given a layer the ray leaves through the z-wall (`|dz|` beyond the parallel limit, outward). Tested
+  by `tests/hex_world.rs::grazing_rays_direct_leaf` and `grazing_rays_union_fill` (debug-size grids) and
+  their `_full` twins (`--release --ignored`): all six flat directions, perpendicular offsets
+  `0, 1e-12, -1e-9, +-9.99e-7, 1.01e-6, -3e-6`, rotations `0, 1e-15, -1e-12, 1e-9, -1e-8`, `dz` across the
+  angular tolerance and the parallel limit, z mid-layer and on or near the wall, vertex starts and rays
+  through vertices, both orientations, a bare-leaf and a union-wrapped fill. The oracle is the strict
+  footprint (slack `1e-7`) with an interior-stop check (a `Boundary` whose `1e-5` disk is covered by
+  in-range hexagons is a false vacuum). Before the nets: 18 (bare leaf) and 97 (union) false vacuums in
+  the debug grid (n = 3960), 8 and 7 rays lost (bare-leaf full grid: 734 and 182); after: none, and no typed
+  error either (the nets fired for about 0.5% of the rays of the larger grids this was first measured on, always at the
+  first nudge, so the `RecoveryFailed` path itself is not exercised by any test).
+* **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
+  circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh
+  fill lies in the hexagon; a leaf fill has no cell at 12 probe points just outside the six flats and
+  six corners (mid-height). A CSG fill that pokes through its hexagon by less than the probe sees at
+  other places is not detected (the Cartesian check is the box alone); give the leaf `bounds` (the term
+  boxes of oblique planes are not bounded).
+* **Index map to OpenMC 0.16.0** (confirmed by `tests/openmc_hex.rs` against
+  `tests/fixtures/openmc_hex/{hex_x,hex_y}/oracle.json`, generated by `gen_hex.py`): OpenMC
+  `orientation='x'` is `LatticeKind::Hex`, `'y'` is `LatticeKind::HexYRows`. OpenMC's path indices of an
+  element, `l50(a,b)` in `determine_paths` (centred axial coordinates, `-(n-1)..=n-1` for `n` rings), are
+  sm-rt's `(q, r) = (a, b)`; the sm-rt array is the `(2n-1)^2` rhombus with `(i, j) = (a + n - 1, b + n - 1)`
+  and element `(0, 0)` centred at `center + c(-(n-1), -(n-1))`. OpenMC's ring order (outermost ring first,
+  clockwise, from the +x flat-to-flat axis for `x` and from the top for `y`) is: ring 0 position 0 is
+  `(a, b) = (n-1, 0)` for `x` and `(0, n-1)` for `y`; the oracle records every element's ring, position and
+  `(a, b)`. The rhombus corners outside the rings are pad elements; OpenMC's `outer` universe covers
+  them. At 1200 points per orientation (600 uniform, 600 within 5e-3 of a face or vertex) the element and
+  the region equal `find_cell`'s, except points within twice the model resolution of a face, where the
+  direction decides (skipped, at most a few); the exchanged pairing fails more than 200 points.
+* A lattice of Cartesian elements keeps its Rect byte stream: `flat_golden` and the W3b `h_*` hashes do
+  not move. The model bridge still refuses hex layouts (`bridge.rs`; W4-CSG-HEX owns the import).
 
 **Step.** The prototype's own `step` runs in the instance frame (distances are preserved by the
 rigid maps; the global position is advanced as `o + d t`, never mapped back). A prototype face
@@ -380,9 +477,15 @@ Users: `locate_cold` (after the concentric fast path), the `across` full-leaf fa
 (`locate_scan`, same answer as `locate_all`), and the complement step, which walks the tiles
 along the ray front to back, tests only their surfaces and takes the first valid event at or
 before the tile exit (`sc.counters.surface_evals` counts per tile). A point outside the root box
-falls back to the full scan. Not indexed: `on_face_any` (a complement point reports the lowest
-surface of the whole leaf within the band, including the plane of a distant cell), `enter_from_outside`
-and the `Wrap` neighbour search (CSR). Known limit: two surfaces with identical geometry that
+has as candidates only the cells with an infinite box side (a list kept for it), not every cell
+(W4-RT-HEX; before it every locate outside the root box tested every cell). `across` (also the `Wrap`
+neighbour search) intersects a `surface -> cells` list longer than 32 with the tile list; `enter_from_outside` walks
+the tiles front to back and stops at an event strictly before the tile exit (`entry_from_outside(.., indexed)` is
+the public oracle pair). The concentric fast path is kept only when no shell lists more than 16 cells or a quarter
+of the leaf (the first cylinder of a lattice of pins has one pin's two radii: every shell listed all other cells).
+Not indexed: `on_face_any` (a complement point reports the lowest surface of the whole leaf within the band,
+including the plane of a distant cell; restricting it to the tile would change the reported face, so it stays
+O(surfaces) and is called only by `locate`). Known limit: two surfaces with identical geometry that
 only one cell names can pick a different surface id for the same event than the oracle (the
 distance and the next cell are equal).
 
@@ -392,6 +495,19 @@ P2 (`pin_assembly(3)` flattened: 81 pins, 162 cells, 324 surfaces) 22 against 32
 tiles, index build about 3 ms) 24.7 against 10406.8 (re-measured 25.3 against 10406.8).
 `slow_locates` per segment: 0 indexed against 0.22 to 0.26 for the oracle, with 0 mismatched
 event sequences.
+
+`locate_candidates` per segment (W4-RT-HEX, `tests/cellindex.rs::p2_candidates_per_segment_stay_small` and
+its ignored full-scale twin; seeded rays from a box around the assembly, all steps, release), before and after,
+by where the ray starts. P2 full (n=17): start in a cell 99.88 to 3.00 (1447 segments), start in the complement
+127.51 to 2.97 (1209), start with no cell (outside the leaf bounds) 20800 to 0 (144), all 1176.39 to 2.83 (2800
+segments). P2 reduced (n=3): 16.49 to 3.62, 17.30 to 3.37, 640 to 0, all 108.63 to 2.99. The surface evaluations
+per complement step are unchanged (21.8 and 25.3) and every event sequence equals the oracle's. The cause was not
+the shared z-planes (the flattened P2 has per-pin planes, longest `surface -> cells` list 2) but (1) the concentric
+path, enabled by one pin's two radii and listing every other cell in each shell (about 160 candidates per locate),
+and (2) a start outside the root box falling back to a full scan (`slow_locates`, four full scans per ray). The
+long-list case of shared planes is fixed too and tested on the shared-plane `g^3` model. The `slow_locates` figure
+above (0.22 to 0.26 for the oracle) is the no-index oracle's and is unchanged; the oracle also no longer takes the
+concentric path on P2.
 
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
@@ -641,7 +757,6 @@ more memory and did not change the large case, so it was dropped.
 
 ## Deferred (W3b) and not done
 
-hex lattices (W4-RT-HEX),
 `closest` lower bound for general quadrics,
 `Brep` and `World` inputs (`Unsupported`), region jump and facet or CSG leaves in flown worlds, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,

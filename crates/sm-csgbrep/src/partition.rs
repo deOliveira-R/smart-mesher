@@ -453,7 +453,10 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
                 }
                 topo.kill_cascade(piece.body).map_err(topo_err)?;
             }
-            [c] => keep.entry(*c).or_default().push(piece.body),
+            [c] => {
+                check_piece(topo, placed, vol, cells[*c])?;
+                keep.entry(*c).or_default().push(piece.body);
+            }
             [] if in_array => {
                 topo.kill_cascade(piece.body).map_err(topo_err)?;
             }
@@ -473,6 +476,7 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
                     OverlapPolicy::Report => out.notes.push(Note { code: "import.overlap", message: format!("cells {na} and {nb} overlap in a piece of volume {:e}; kept by the first", moments.volume) }),
                     OverlapPolicy::FirstWins => {}
                 }
+                check_piece(topo, placed, vol, cells[*a])?;
                 keep.entry(*a).or_default().push(piece.body);
             }
         }
@@ -523,6 +527,20 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
     Ok(out)
 }
 
+/// Refuse a piece with a vertex outside the region of the cell it was given to: a cut by a deck
+/// surface did not split it (a kernel defect), and the import must not return that geometry.
+fn check_piece(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, cell: &PCell) -> Result<(), CsgbrepError> {
+    match vertex_outside(topo, placed, vol, &cell.expr) {
+        None => Ok(()),
+        Some(q) => {
+            let mut ids = BTreeSet::new();
+            surfaces_in(&cell.expr, &mut ids);
+            let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).collect();
+            Err(CsgbrepError::Kernel(format!("a piece given to cell {} has a vertex at {q:?} outside its region: a cut by one of its deck surface ids {deck:?} left the piece unsplit (kernel defect, the geometry is refused instead of imported wrong)", cell.origin)))
+        }
+    }
+}
+
 /// Exterior faces of `vols` on boundary-flagged surfaces: vacuum, reflective and white
 /// (ascending). A face is exterior when exactly one volume uses it, so call this after the
 /// copies of a lattice are merged.
@@ -560,9 +578,8 @@ pub fn origin_of<'a>(placed: &'a Placed, v: &Vol) -> &'a Origin {
     &placed.cells[v.cell].origin
 }
 
-/// True when the point `p` is in the region `e` (every surface it uses must be a plane or a
-/// cylinder; on a surface counts as the negative side).
-pub(crate) fn contains(placed: &Placed, e: &Expr, p: [f64; 3]) -> bool {
+/// Signs of the surfaces of `e` at `p`; a surface within `tol` of `p` is left out (undecided).
+fn signs_at(placed: &Placed, e: &Expr, p: [f64; 3], tol: f64) -> Signs {
     let mut ids = BTreeSet::new();
     surfaces_in(e, &mut ids);
     let mut signs = Signs::new();
@@ -579,11 +596,44 @@ pub(crate) fn contains(placed: &Placed, e: &Expr, p: [f64; 3]) -> bool {
                 let r = [d[0] - t * z.x, d[1] - t * z.y, d[2] - t * z.z];
                 (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt() - c.radius
             }
-            _ => 0.0,
+            _ => continue,
         };
-        signs.insert(s, v > 0.0);
+        if v.abs() > tol {
+            signs.insert(s, v > 0.0);
+        }
     }
-    eval(e, &signs) == Tri::T
+    signs
+}
+
+/// True when the point `p` is in the region `e` (every surface it uses must be a plane or a
+/// cylinder; on a surface counts as the negative side).
+pub(crate) fn contains(placed: &Placed, e: &Expr, p: [f64; 3]) -> bool {
+    eval(e, &signs_at(placed, e, p, -1.0)) == Tri::T
+}
+
+/// The first vertex of the volume `vol` that lies strictly outside the region `e` of the cell that
+/// owns it (a vertex within `1e-6` of a surface of `e` is not judged). A piece the cuts classified
+/// into a cell lies in the closure of its region, so a vertex outside means a cut left the piece
+/// unsplit.
+fn vertex_outside(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, e: &Expr) -> Option<[f64; 3]> {
+    let mut seen = BTreeSet::new();
+    for &f in topo.volume_faces(vol) {
+        for &edge in topo.face_edges(f) {
+            let Some((a, b)) = topo.edge_ends(edge) else { continue };
+            for v in [a, b] {
+                if !seen.insert(v) {
+                    continue;
+                }
+                if let Carrier::Point(p) = topo.carrier(v) {
+                    let q = [p.x, p.y, p.z];
+                    if eval(e, &signs_at(placed, e, q, 1e-6)) == Tri::F {
+                        return Some(q);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

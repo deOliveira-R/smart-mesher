@@ -27,6 +27,7 @@ mod intent_layer;
 mod intent_ops;
 mod mesh_ops;
 mod plan_query;
+mod polyscheme;
 mod volfit;
 
 pub use auto::{
@@ -38,10 +39,11 @@ pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
+pub use polyscheme::POLYHEDRON;
 pub use volfit::MeshPreserveVolume;
 pub use info::{MeshInfo, MeshInfoQuery};
 pub use intent_layer::IntentLayer;
-pub use intent_ops::{FirmnessArg, MeshDefaultSize, MeshIntervals, MeshScheme, MeshSize};
+pub use intent_ops::{FirmnessArg, MeshDefaultSize, MeshIntervalRelation, MeshIntervals, MeshScheme, MeshSize, RelationArg};
 pub use mesh_ops::{MeshDelete, MeshRun};
 pub use plan_query::{
     Alternative, ElementsInfo, EntityPlan, IntervalRequestRow, IntervalWhy, MeshPlanQuery, PlanDim,
@@ -63,6 +65,7 @@ impl Plugin for MeshPlugin {
         registry.register_layer::<IntentLayer>()?;
         registry.register::<MeshSize>()?;
         registry.register::<MeshIntervals>()?;
+        registry.register::<MeshIntervalRelation>()?;
         registry.register::<MeshScheme>()?;
         registry.register::<MeshDefaultSize>()?;
         registry.register::<MeshRun>()?;
