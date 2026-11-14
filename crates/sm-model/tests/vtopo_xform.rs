@@ -84,6 +84,37 @@ fn virtual_planes(s: &Session) -> Vec<(Point3, sm_core::Vector3)> {
     out
 }
 
+fn verts_of(t: &dyn TopologyView, c: EntityId, out: &mut std::collections::BTreeSet<EntityId>) {
+    if t.dim_of(c) == Some(Dim::Vertex) {
+        out.insert(c);
+        return;
+    }
+    for i in t.boundary(c) {
+        verts_of(t, i.cell, out);
+    }
+}
+
+/// The vertex centroid of every virtual face and cell, by id: the identity of what each id names.
+fn centroids(s: &Session) -> Vec<(EntityId, Point3)> {
+    let t = layer(s).topo();
+    let mut out = Vec::new();
+    for d in [Dim::Face, Dim::Volume] {
+        for &c in t.cells(d) {
+            if matches!(c.kind(), EntityKind::PartitionFace | EntityKind::PartitionCell) {
+                let mut vs = Default::default();
+                verts_of(t, c, &mut vs);
+                let n = vs.len() as f64;
+                let sum = vs.iter().fold([0.0; 3], |a, &v| {
+                    let p = pt(t, v);
+                    [a[0] + p.x, a[1] + p.y, a[2] + p.z]
+                });
+                out.push((c, Point3::new(sum[0] / n, sum[1] / n, sum[2] / n)));
+            }
+        }
+    }
+    out
+}
+
 fn assert_clean(s: &Session, tag: &str) {
     let t = layer(s).topo();
     assert!(sm_topo_api::validate(t).is_empty(), "{tag}: validate {:?}", sm_topo_api::validate(t));
@@ -99,8 +130,16 @@ fn follows(mut s: Session, op: &dyn Op, f: &dyn Fn(Point3) -> Point3, tag: &str)
     let planes = virtual_planes(&s);
     assert!(!before.is_empty(), "{tag}: no virtual geometry to follow");
     let base = s.state().hash();
+    let ids_before = centroids(&s);
     go(&mut s, op);
     assert_clean(&s, tag);
+    // Identity: each virtual face / cell id still names the image of the geometry it named.
+    let ids_after = centroids(&s);
+    assert_eq!(ids_before.len(), ids_after.len(), "{tag}");
+    for ((ib, pb), (ia, pa)) in ids_before.iter().zip(&ids_after) {
+        assert_eq!(ib, ia, "{tag}");
+        assert!(dist(f(*pb), *pa) < 1e-9, "{tag}: {ib} should have centroid {:?}, has {pa:?}", f(*pb));
+    }
     let after = virtual_points(&s);
     assert_eq!(before.len(), after.len(), "{tag}");
     for (b, a) in before.iter().zip(&after) {
@@ -221,6 +260,11 @@ fn a_plain_face_partition_follows_a_move_a_rotation_a_scale_and_a_reflection_rep
     let t = layer(&s).topo();
     let chord = t.cells(Dim::Edge).iter().copied().find(|e| e.kind() == EntityKind::PartitionEdge).unwrap();
     assert!((t.edge_sampler(chord).unwrap().length() - 3.0 * 8f64.sqrt()).abs() < 1e-9);
+    // A reflection reverses the loop: ids must keep naming the image of the same half.
+    for factory in [cell_complex as Factory, topo_store] {
+        follows(partitioned_top(factory), &Reflect { entities: vec![body()], normal: [1.0, 0.0, 0.0], origin: Some([0.0, 0.0, 0.0]) }, &|p| Point3::new(-p.x, p.y, p.z), "reflect x");
+        follows(partitioned_top(factory), &Reflect { entities: vec![body()], normal: [0.0, 1.0, 1.0], origin: Some([0.0, 0.0, 0.0]) }, &|p| Point3::new(p.x, -p.z, -p.y), "reflect y+z");
+    }
     follows(partitioned_top(topo_store), &Reflect { entities: vec![body()], normal: [0.0, 0.0, 1.0], origin: Some([0.0, 0.0, 0.0]) }, &|p| Point3::new(p.x, p.y, -p.z), "reflect z");
 }
 

@@ -359,11 +359,10 @@ pub(crate) fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf
             return Err(e);
         }
     };
-    if let Some((ops, serial)) = plan {
+    if let Some(plan) = plan {
         let layer = ctx.layer_mut::<ModelLayer>()?;
         let host: std::sync::Arc<dyn sm_topo_api::TopologyView> = layer.topo_host().clone();
-        let data = sm_topo_api::OverlayData::new(host.revision(), ops, serial);
-        let ov = sm_topo_api::Overlay::from_data(host, data).map_err(|e| OpError::Failed(format!("the virtual topology cannot follow the transform: {e}")))?;
+        let ov = plan.build(host).map_err(|e| OpError::Failed(format!("the virtual topology cannot follow the transform: {e}")))?;
         layer.set_overlay(ov).or_op()?;
     }
     commit_topology(ctx, &txn, &[("volumes", &sel.volumes)])

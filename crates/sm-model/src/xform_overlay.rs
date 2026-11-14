@@ -8,17 +8,48 @@
 //! rebuilt on the transformed host.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sm_core::EntityId;
 use sm_geom_api::{CurveDef, Interval};
 use sm_layer_api::ModelLayer;
 use sm_op_api::OpError;
-use sm_topo_api::{Carrier, VirtualOp};
+use sm_topo_api::{Carrier, Overlay, OverlayData, TopoError, TopologyView, VirtualOp};
 
 use crate::xform::Xf;
 
-/// Rewritten ops and the overlay id counters.
-pub(crate) type Rewritten = (Vec<VirtualOp>, [u64; 3]);
+/// Rewritten ops, the overlay id counters, and, per rewritten face partition (by op index),
+/// the boundary edges that its first half had before the transform.
+pub(crate) struct Rewritten {
+    ops: Vec<VirtualOp>,
+    serial: [u64; 3],
+    first_half: BTreeMap<usize, BTreeSet<EntityId>>,
+}
+
+/// The edges on the boundary of a cell.
+fn edges_of(view: &dyn TopologyView, cell: EntityId) -> BTreeSet<EntityId> {
+    view.boundary(cell).iter().map(|i| i.cell).collect()
+}
+
+impl Rewritten {
+    /// Build the overlay on the transformed `host`. A face partition gives its first half the
+    /// loop arc that starts first in the host face's loop order; a transform that reverses or
+    /// rotates the loop (a reflection) can hand that arc to the other half, so ids would name
+    /// the mirror of the wrong half. Each partition is replayed and its halves swapped when the
+    /// first half no longer has the edges it had before.
+    pub(crate) fn build(mut self, host: Arc<dyn TopologyView>) -> Result<Overlay, TopoError> {
+        let rev = host.revision();
+        for (&k, want) in &self.first_half {
+            let prefix = OverlayData::new(rev, self.ops[..=k].to_vec(), self.serial);
+            let ov = Overlay::from_data(host.clone(), prefix)?;
+            let VirtualOp::PartitionFace { halves, .. } = &mut self.ops[k] else { continue };
+            if edges_of(&ov, halves[0]) != *want {
+                halves.swap(0, 1);
+            }
+        }
+        Overlay::from_data(host, OverlayData::new(rev, self.ops, self.serial))
+    }
+}
 
 /// The overlay's ops with the geometry of the ones that touch `closure` transformed by `xf`
 /// (plus the id counters), or `None` if no op touches it (the plain rebase then applies).
@@ -40,6 +71,7 @@ pub(crate) fn transformed_ops(layer: &ModelLayer, closure: &[EntityId], xf: &Xf)
     };
     let s = xf.scale;
     let mut any = false;
+    let mut first_half = BTreeMap::new();
     let mut out = Vec::with_capacity(ov.ops().len());
     for op in ov.ops() {
         let touches = match op {
@@ -73,6 +105,12 @@ pub(crate) fn transformed_ops(layer: &ModelLayer, closure: &[EntityId], xf: &Xf)
             continue;
         }
         any = true;
+        if let VirtualOp::PartitionFace { halves, .. } = op {
+            // The half's edges as they were when the op ran (later ops may hide it).
+            let prefix = OverlayData::new(ov.data().host_revision, ov.ops()[..=out.len()].to_vec(), ov.data().next_serial);
+            let before = Overlay::from_data(ov.host_arc(), prefix).map_err(|e| OpError::Failed(format!("virtual topology replay: {e}")))?;
+            first_half.insert(out.len(), edges_of(&before, halves[0]));
+        }
         moved.extend(op.created());
         out.push(match op.clone() {
             VirtualOp::PartitionEdge { edge, param, vertex, halves } => {
@@ -97,5 +135,5 @@ pub(crate) fn transformed_ops(layer: &ModelLayer, closure: &[EntityId], xf: &Xf)
             other => other,
         });
     }
-    Ok(any.then(|| (out, ov.data().next_serial)))
+    Ok(any.then(|| Rewritten { ops: out, serial: ov.data().next_serial, first_half }))
 }
