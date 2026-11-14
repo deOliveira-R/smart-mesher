@@ -31,6 +31,8 @@ pub(crate) struct FaceModel {
     /// 3D boundary samples, and the largest distance between consecutive ones.
     pub pts: Vec<Point3>,
     pub spacing: f64,
+    /// Bound on how far the sampled boundary lies from the true one (chord sagitta, 2x margin).
+    pub sag: f64,
 }
 
 /// Per-phase cache of face models and interior points.
@@ -61,6 +63,7 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
     let mut polys = Vec::new();
     let mut pts: Vec<Point3> = Vec::new();
     let mut spacing = 0.0f64;
+    let mut sag = 0.0f64;
     for lp in view.loops(f) {
         let mut poly: Vec<Uv> = Vec::new();
         let mut prev: Option<Uv> = None;
@@ -81,6 +84,7 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
             let Some(curve) = view.shapes().curve(cc.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
             let along = (cc.sense == sm_topo_api::Sense::Forward) == (key.side == Side::Left);
             let mut last3: Option<Point3> = None;
+            let mut run: Vec<Point3> = Vec::with_capacity(SAMPLES + 1);
             for k in 0..=SAMPLES {
                 let frac = k as f64 / SAMPLES as f64;
                 let t = geo::edge_param(cc, if along { frac } else { 1.0 - frac });
@@ -89,6 +93,7 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
                     spacing = spacing.max(geo::dist(l, p3));
                 }
                 last3 = Some(p3);
+                run.push(p3);
                 pts.push(p3);
                 let uv = match pc {
                     Some(pc) => pc.eval(t),
@@ -102,10 +107,18 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
                 poly.push(uv);
                 prev = Some(uv);
             }
+            // A point on the arc is 4x the chord sagitta away from the chord of its neighbours.
+            for w in run.windows(3) {
+                let ch = w[2] - w[0];
+                let cl = ch.norm();
+                if cl > 0.0 {
+                    sag = sag.max(0.5 * (w[1] - w[0]).cross(ch).norm() / cl);
+                }
+            }
         }
         polys.push(poly);
     }
-    Ok(FaceModel { polys, dom, pts, spacing })
+    Ok(FaceModel { polys, dom, pts, spacing, sag })
 }
 
 /// Winding-number test of `q` against the polygons (all loops together), trying the periodic
@@ -192,6 +205,21 @@ pub(crate) fn classify_uv<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache,
         return Ok((PointClass::On, uv));
     }
     Ok((if inside(&m.polys, &m.dom, uv) { PointClass::In } else { PointClass::Out }, uv))
+}
+
+/// True if `p` (on the surface of `f`) lies so close to a curved boundary that the sampled
+/// polygon of [`classify_uv`] may put it on the wrong side: within the chord sagitta bound of the
+/// true boundary. Straight boundaries (zero sagitta) are never doubtful.
+pub(crate) fn chord_doubtful<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId, p: Point3) -> Result<bool, BooleanError> {
+    let m = cache.model(view, f)?;
+    if m.sag <= 0.0 {
+        return Ok(false);
+    }
+    let reach = m.spacing + 2.0 * m.sag;
+    if !m.pts.iter().any(|q| geo::dist(*q, p) <= reach) {
+        return Ok(false);
+    }
+    Ok(boundary_distance(view, f, p) <= 2.0 * m.sag)
 }
 
 /// A point strictly inside the trimmed face, as far from the boundary as a coarse search finds:

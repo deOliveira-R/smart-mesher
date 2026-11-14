@@ -190,7 +190,18 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
         let pairs: Vec<PairSpec> = faces.iter().map(|&f| PairSpec { a: f, b: Other::Surface(tool_def.clone()) }).collect();
         let computed = pieces::compute(&*topo, &pairs, Share::Shared, &|_| 0, 10.0 * topo.tolerance().linear_max)?;
         let body = old_bodies.iter().find(|(_, vs)| vs.contains(&v)).map(|(b, _)| *b);
-        if computed.pieces.iter().all(|p| p.faces.is_empty()) {
+        // Pieces that only run along existing face boundaries (a neighbour was cut by the same
+        // tool first) still cut the volume when its faces lie on both sides of the tool.
+        let straddles = computed.pieces.iter().any(|p| !p.on_boundary.is_empty()) && {
+            let mut sides = BTreeSet::new();
+            for &f in &faces {
+                if let Some(s) = try_side_of_face(&*topo, f, tool_handle, lin)? {
+                    sides.insert(s);
+                }
+            }
+            sides.len() > 1
+        };
+        if !straddles && computed.pieces.iter().all(|p| p.faces.is_empty()) {
             // The tool does not cross the volume: report the side it is on.
             let Some(positive) = side_of_volume(&*topo, v, tool_handle, lin)? else {
                 return Err(BooleanError::Unsupported("cannot tell which side of the tool the volume lies on"));

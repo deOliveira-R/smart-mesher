@@ -205,6 +205,12 @@ fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::Fac
                     }
                     PointClass::In => {}
                 }
+                // The sampled boundary polygon is inscribed in a curved edge: a hit within the
+                // chord sagitta of one may be on the wrong side of it (a thin annulus).
+                if crate::faceclass::chord_doubtful(view, cache, f, h.point)? {
+                    last_ambiguous = Some(f);
+                    continue 'dirs;
+                }
                 if h.crossing == Crossing::Tangent {
                     last_ambiguous = Some(f);
                     continue 'dirs;
