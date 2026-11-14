@@ -12,7 +12,7 @@ use sm_boolean::BooleanPlugin;
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::SurfaceDef;
 use sm_layer_api::{CoreLayers, ModelLayer};
-use sm_model::{CreateBrick, CreateCylinder, ModelPlugin, Move, MoveTo, MoveTarget, PartitionEdge, PartitionFace, Reflect, Rotate, Scale, SplitRealized, UnsplitRealized};
+use sm_model::{CollapseEdge, CreateBrick, CreateCylinder, ModelPlugin, Move, MoveTo, MoveTarget, PartitionEdge, PartitionFace, Reflect, Rotate, Scale, SplitRealized, UnsplitRealized};
 use sm_op_api::{DerivedCache, Engine, Op, QuietControl, Registry, Services, Session};
 use sm_topo_api::{Carrier, Dim, TopologyView};
 
@@ -309,4 +309,40 @@ fn a_transform_of_another_body_leaves_the_overlay_alone() {
     assert!(dist(moved[0], Point3::new(pts[0].x, pts[0].y + 5.0, pts[0].z)) < 1e-9);
     assert_clean(&s, "partitioned body");
     let _ = json!(null);
+}
+
+/// A 2x2x1e-4 plate with one of its 1e-4 z-edges collapsed.
+fn collapsed_plate(factory: Factory) -> (Session, EntityId) {
+    let mut s = session_for(factory);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(1e-4), center: Some([1.0, 1.0, 0.0]) });
+    let t = layer(&s).topo();
+    let short = *t.cells(Dim::Edge).iter().find(|&&e| (t.edge_sampler(e).unwrap().length() - 1e-4).abs() < 1e-12).expect("short edge");
+    let into = t.boundary(short)[0].cell;
+    go(&mut s, &CollapseEdge { edge: short, into_vertex: into });
+    (s, short)
+}
+
+#[test]
+fn a_collapse_follows_scale_reflect_rotate_and_move() {
+    for factory in [cell_complex as Factory, topo_store] {
+        let (s, _) = collapsed_plate(factory);
+        follows(s, &Scale { entities: vec![body()], factor: 2.0, origin: None }, &|p| Point3::new(2.0 * p.x, 2.0 * p.y, 2.0 * p.z), "collapse + scale");
+        let (s, _) = collapsed_plate(factory);
+        follows(s, &Reflect { entities: vec![body()], normal: [1.0, 0.0, 0.0], origin: Some([0.0, 0.0, 0.0]) }, &|p| Point3::new(-p.x, p.y, p.z), "collapse + reflect");
+        let (s, _) = collapsed_plate(factory);
+        follows(s, &Rotate { entities: vec![body()], angle_deg: 90.0, axis: [0.0, 0.0, 1.0], origin: None }, &rot_z90, "collapse + rotate");
+        let (s, _) = collapsed_plate(factory);
+        follows(s, &Move { entities: vec![body()], delta: [3.0, 0.0, 0.0] }, &|p| Point3::new(p.x + 3.0, p.y, p.z), "collapse + move");
+    }
+}
+
+#[test]
+fn a_scale_that_pushes_a_collapse_over_the_tolerance_cap_is_refused_with_a_typed_error() {
+    let (mut s, short) = collapsed_plate(cell_complex);
+    let hash = s.state().hash();
+    let q = QuietControl::new();
+    let e = s.apply(&Scale { entities: vec![body()], factor: 1.0e4, origin: None }, meta(), &q.control()).unwrap_err().to_string();
+    assert!(e.contains(&short.to_string()) && e.contains("model.remove_virtual"), "{e}");
+    assert_eq!(s.state().hash(), hash, "refusal leaves the state untouched");
+    assert_clean(&s, "after refusal");
 }
