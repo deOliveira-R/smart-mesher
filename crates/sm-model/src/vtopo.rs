@@ -1,0 +1,315 @@
+//! Virtual-topology ops on the layer's overlay (W4 VTOPO-OPS): composites, partitions, edge
+//! collapse and realized decomposition splits.
+//!
+//! Every op goes through [`model_overlay_txn`], so the virtual ids an op mints are adopted in
+//! the entity table and the ones it drops are retired. They record into THE layer's overlay
+//! (`ModelLayer::overlay`), which is hashed, forked and replayed with the state. Meshing and
+//! queries read the overlay through `topo()`; the real geometry is untouched (`host()`).
+//!
+//! A host edit that breaks the overlay is refused by `topo_txn` as
+//! `LayerError::OverlayRebase(TopoError::Dead(id))` (the id names the dead cell); one that
+//! does not touch it is rebased. `model.remove_virtual` restores the view exactly; the state
+//! hash differs from the pre-op hash only by the overlay's id counters.
+
+use std::collections::BTreeSet;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use sm_core::{EntityId, EntityKind, Vector3};
+use sm_geom_api::{CurveDef, Interval, Line, SurfaceDef};
+use sm_layer_api::{LayerResultExt, ModelLayer, model_overlay_txn};
+use sm_model_api::{PieceRef, Plane};
+use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
+use sm_topo_api::{Carrier, Dim, Overlay, TopologyView, VirtualCut, VirtualOp};
+
+const FACE_ROLE: &[OutputRole] = &[OutputRole::new("face", &[EntityKind::PartitionFace], Cardinality::One, "The composite face.")];
+const EDGE_ROLE: &[OutputRole] = &[OutputRole::new("edge", &[EntityKind::PartitionEdge], Cardinality::One, "The composite edge.")];
+const SPLIT_EDGE_ROLES: &[OutputRole] = &[
+    OutputRole::new("vertex", &[EntityKind::PartitionVertex], Cardinality::One, "The new virtual vertex."),
+    OutputRole::new("edges", &[EntityKind::PartitionEdge], Cardinality::Many, "The two halves, in edge order."),
+];
+const SPLIT_FACE_ROLES: &[OutputRole] = &[
+    OutputRole::new("chord", &[EntityKind::PartitionEdge], Cardinality::One, "The virtual chord."),
+    OutputRole::new("faces", &[EntityKind::PartitionFace], Cardinality::Many, "The two child faces."),
+];
+const COLLAPSE_ROLES: &[OutputRole] = &[OutputRole::new("edges", &[EntityKind::PartitionEdge], Cardinality::Many, "Virtual copies of the edges that ended at the dropped vertex.")];
+const PIECE_ROLES: &[OutputRole] = &[OutputRole::new("pieces", &[EntityKind::PartitionCell], Cardinality::Many, "The two pieces `[negative, positive]`.")];
+
+fn kind_is(id: EntityId, kinds: &[EntityKind], what: &str) -> Result<(), OpError> {
+    if kinds.contains(&id.kind()) {
+        Ok(())
+    } else {
+        Err(OpError::Invalid(format!("{what}: {id} is a `{}`, expected one of {:?}", id.kind().name(), kinds.iter().map(|k| k.name()).collect::<Vec<_>>())))
+    }
+}
+
+/// `model.composite_faces {faces}`: merge host faces into one virtual face (a `PartitionFace`).
+///
+/// The faces must be live host faces, connected through shared edges, with identical parents
+/// (same volumes, sides and shells); their interior edges disappear from the overlay view. The
+/// host is untouched. Refused with a located error otherwise (see `Overlay::composite_faces`).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompositeFaces {
+    /// The host faces to merge (at least two).
+    #[schemars(extend("x-entity-kind" = ["TopoFace"]))]
+    pub faces: Vec<EntityId>,
+}
+
+impl TypedOp for CompositeFaces {
+    const NAME: &'static str = "model.composite_faces";
+    const OUTPUTS: &'static [OutputRole] = FACE_ROLE;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        for &f in &self.faces {
+            kind_is(f, &[EntityKind::TopoFace], "faces")?;
+        }
+        model_overlay_txn(ctx, |_, ov| ov.composite_faces(&self.faces).or_op(), |f, _| vec![("face", vec![*f])]).map(|_| ())
+    }
+}
+
+/// `model.composite_edges {edges}`: merge a chain of host edges, joined at degree-2 vertices,
+/// into one virtual edge (a `PartitionEdge`); the inner vertices disappear from the view.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompositeEdges {
+    /// The host edges to chain (at least two).
+    #[schemars(extend("x-entity-kind" = ["TopoEdge"]))]
+    pub edges: Vec<EntityId>,
+}
+
+impl TypedOp for CompositeEdges {
+    const NAME: &'static str = "model.composite_edges";
+    const OUTPUTS: &'static [OutputRole] = EDGE_ROLE;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        for &e in &self.edges {
+            kind_is(e, &[EntityKind::TopoEdge], "edges")?;
+        }
+        model_overlay_txn(ctx, |_, ov| ov.composite_edges(&self.edges).or_op(), |e, _| vec![("edge", vec![*e])]).map(|_| ())
+    }
+}
+
+/// `model.partition_edge {edge, param}`: add a virtual vertex on `edge` at curve parameter
+/// `param`, replacing the edge by two virtual halves in every face that uses it. The halves'
+/// lengths sum to the edge's length and the vertex lies on the curve.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartitionEdge {
+    /// The edge to split (host or virtual).
+    #[schemars(extend("x-entity-kind" = ["TopoEdge", "PartitionEdge"]))]
+    pub edge: EntityId,
+    /// Curve parameter of the new vertex, strictly inside the edge's range.
+    pub param: f64,
+}
+
+impl TypedOp for PartitionEdge {
+    const NAME: &'static str = "model.partition_edge";
+    const OUTPUTS: &'static [OutputRole] = SPLIT_EDGE_ROLES;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        kind_is(self.edge, &[EntityKind::TopoEdge, EntityKind::PartitionEdge], "edge")?;
+        if !self.param.is_finite() {
+            return Err(OpError::Invalid("`param` must be finite".into()));
+        }
+        model_overlay_txn(
+            ctx,
+            |_, ov| ov.partition_edge(self.edge, self.param).or_op(),
+            |(v, h), _| vec![("vertex", vec![*v]), ("edges", h.to_vec())],
+        )
+        .map(|_| ())
+    }
+}
+
+/// `model.partition_face {face, from, to}`: split a planar face by a straight virtual chord
+/// between two vertices of its outer loop, into two child faces `[first, second]`.
+///
+/// Only faces on a plane are accepted: a chord on a curved face would need pcurves that
+/// imported faces lack (vtopo risk R3), so a periodic or curved face is refused with the
+/// face's id.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartitionFace {
+    /// The face to split (host or virtual, one loop).
+    #[schemars(extend("x-entity-kind" = ["TopoFace", "PartitionFace"]))]
+    pub face: EntityId,
+    /// Chord start: a vertex on the face's outer loop (host or virtual).
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "PartitionVertex"]))]
+    pub from: EntityId,
+    /// Chord end: another vertex on the outer loop.
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "PartitionVertex"]))]
+    pub to: EntityId,
+}
+
+impl TypedOp for PartitionFace {
+    const NAME: &'static str = "model.partition_face";
+    const OUTPUTS: &'static [OutputRole] = SPLIT_FACE_ROLES;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        kind_is(self.face, &[EntityKind::TopoFace, EntityKind::PartitionFace], "face")?;
+        kind_is(self.from, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "from")?;
+        kind_is(self.to, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "to")?;
+        model_overlay_txn(
+            ctx,
+            |_, ov| {
+                let cut = chord(ov, self.face, self.from, self.to)?;
+                let before: BTreeSet<EntityId> = ov.cells(Dim::Edge).iter().copied().collect();
+                let halves = ov.partition_face(self.face, cut).or_op()?;
+                // The chord is the one new edge shared by the two halves.
+                let chord = ov.cells(Dim::Edge).iter().copied().find(|e| !before.contains(e) && e.kind() == EntityKind::PartitionEdge);
+                Ok((chord, halves))
+            },
+            |(c, h), _| {
+                let mut roles = vec![("faces", h.to_vec())];
+                if let Some(c) = c {
+                    roles.push(("chord", vec![*c]));
+                }
+                roles
+            },
+        )
+        .map(|_| ())
+    }
+}
+
+/// The straight chord `from -> to` as a [`VirtualCut`]; refuses a non-planar face or a vertex
+/// without a point.
+fn chord(ov: &Overlay, face: EntityId, from: EntityId, to: EntityId) -> Result<VirtualCut, OpError> {
+    let view: &dyn TopologyView = ov;
+    if !view.is_alive(face) {
+        return Err(OpError::Invalid(format!("face {face} is not live in the overlay view")));
+    }
+    if let Carrier::Surface(sc) = view.carrier(face) {
+        let planar = matches!(view.shapes().surface_def(sc.surface), Some(SurfaceDef::Plane(_)));
+        if !planar {
+            return Err(OpError::Invalid(format!("face {face} is not planar: a virtual chord on a curved face needs pcurves (not available yet)")));
+        }
+    }
+    let pt = |v: EntityId| match view.is_alive(v).then(|| view.carrier(v)) {
+        Some(Carrier::Point(p)) => Ok(*p),
+        _ => Err(OpError::Invalid(format!("vertex {v} is not a live vertex with a point"))),
+    };
+    let (a, b) = (pt(from)?, pt(to)?);
+    let d: Vector3 = b - a;
+    let len = d.norm();
+    let line = Line::new(a, d).map_err(|e| OpError::Invalid(format!("chord {from} -> {to}: {e}")))?;
+    Ok(VirtualCut { from, to, curve: CurveDef::Line(line), range: Interval::new(0.0, len) })
+}
+
+/// `model.collapse_edge {edge, into_vertex}`: collapse a short edge virtually. It disappears
+/// from the view and its end vertices become one (`into_vertex`); other edges at the dropped
+/// vertex get virtual copies. No host entity moves. The collapse gap (largest curve-end move)
+/// is reported by `model.virtual_info` and is refused above the tolerance's `linear_max`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollapseEdge {
+    /// The edge to collapse (host or virtual).
+    #[schemars(extend("x-entity-kind" = ["TopoEdge", "PartitionEdge"]))]
+    pub edge: EntityId,
+    /// The surviving end vertex of `edge`.
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "PartitionVertex"]))]
+    pub into_vertex: EntityId,
+}
+
+impl TypedOp for CollapseEdge {
+    const NAME: &'static str = "model.collapse_edge";
+    const OUTPUTS: &'static [OutputRole] = COLLAPSE_ROLES;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        kind_is(self.edge, &[EntityKind::TopoEdge, EntityKind::PartitionEdge], "edge")?;
+        kind_is(self.into_vertex, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "into_vertex")?;
+        model_overlay_txn(
+            ctx,
+            |_, ov| ov.collapse_edge(self.edge, self.into_vertex).or_op(),
+            |c, _| {
+                let copies: Vec<EntityId> = c.repointed.iter().map(|&(_, n)| n).collect();
+                if copies.is_empty() { vec![] } else { vec![("edges", copies)] }
+            },
+        )
+        .map(|_| ())
+    }
+}
+
+/// `model.remove_virtual {id}`: undo the virtual operation that created `id` (any cell it
+/// created; for a collapse also the collapsed edge). The hidden cells return and the virtual
+/// ids it minted are retired and never reused. Refused (`StillReferenced`) while a later
+/// virtual op uses one of its cells: remove those first.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveVirtual {
+    /// A virtual cell of the op to undo.
+    #[schemars(extend("x-entity-kind" = ["PartitionVertex", "PartitionEdge", "PartitionFace", "TopoEdge"]))]
+    pub id: EntityId,
+}
+
+impl TypedOp for RemoveVirtual {
+    const NAME: &'static str = "model.remove_virtual";
+    const NO_OUTPUTS: bool = true;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let known = ctx
+            .layer::<ModelLayer>()?
+            .overlay()
+            .is_some_and(|o| o.ops().iter().any(|op| op.created().contains(&self.id) || matches!(op, VirtualOp::CollapseEdge { edge, .. } if *edge == self.id)));
+        if !known {
+            return Err(OpError::Invalid(format!("{} is not part of any virtual operation of the overlay", self.id)));
+        }
+        model_overlay_txn(ctx, |_, ov| ov.remove(self.id).or_op(), |_, _| vec![])
+    }
+}
+
+fn piece_of(id: EntityId) -> Result<PieceRef, OpError> {
+    match id.kind() {
+        EntityKind::TopoVolume => Ok(PieceRef::Whole(id)),
+        EntityKind::PartitionCell => Ok(PieceRef::Cell(id)),
+        k => Err(OpError::Invalid(format!("piece: {id} is a `{}`, expected a TopoVolume or PartitionCell", k.name()))),
+    }
+}
+
+/// `model.split_realized {piece, normal, offset}`: split a decomposition piece by the plane
+/// `normal . x = offset` and realize the cut in the layer's overlay, so the persisted cut cell
+/// ids resolve in the replayed view. Returns the two pieces `[negative, positive]`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SplitRealized {
+    /// A volume (whole piece) or a `PartitionCell` made by an earlier realized split.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume", "PartitionCell"]))]
+    pub piece: EntityId,
+    /// Plane normal (any non-zero vector, normalized for you).
+    pub normal: [f64; 3],
+    /// Plane offset along the normal (rescaled with it).
+    pub offset: f64,
+}
+
+impl TypedOp for SplitRealized {
+    const NAME: &'static str = "model.split_realized";
+    const OUTPUTS: &'static [OutputRole] = PIECE_ROLES;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let piece = piece_of(self.piece)?;
+        if !self.normal.iter().chain([&self.offset]).all(|x| x.is_finite()) {
+            return Err(OpError::Invalid("`normal` and `offset` must be finite".into()));
+        }
+        let plane = Plane::new(Vector3::new(self.normal[0], self.normal[1], self.normal[2]), self.offset).or_op()?;
+        model_overlay_txn(ctx, |m, ov| m.split_realized(piece, plane, ov).or_op(), |kids, _| vec![("pieces", kids.to_vec())]).map(|_| ())
+    }
+}
+
+/// `model.unsplit_realized {piece}`: undo a realized split from either of its two pieces (both
+/// must be unsplit leaves). The overlay cells of the cut are removed and retired.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnsplitRealized {
+    /// One of the two pieces of the split.
+    #[schemars(extend("x-entity-kind" = ["PartitionCell"]))]
+    pub piece: EntityId,
+}
+
+impl TypedOp for UnsplitRealized {
+    const NAME: &'static str = "model.unsplit_realized";
+    const NO_OUTPUTS: bool = true;
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        kind_is(self.piece, &[EntityKind::PartitionCell], "piece")?;
+        model_overlay_txn(ctx, |m, ov| m.unsplit_realized(self.piece, ov).or_op(), |_, _| vec![]).map(|_| ())
+    }
+}
