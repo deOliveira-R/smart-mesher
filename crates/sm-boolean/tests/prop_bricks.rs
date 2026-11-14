@@ -24,11 +24,28 @@ fn relation(a: &[i32; 6], b: &[i32; 6]) -> ([i32; 3], bool) {
     (ov, touch)
 }
 
-fn setup(a: &[i32; 6], b: &[i32; 6]) -> (CellComplex, sm_topo_api::fixtures::BrickIds, sm_topo_api::fixtures::BrickIds) {
+fn setup(
+    a: &[i32; 6],
+    b: &[i32; 6],
+) -> (
+    CellComplex,
+    sm_topo_api::fixtures::BrickIds,
+    sm_topo_api::fixtures::BrickIds,
+) {
     let mut t = CellComplex::new();
     let f = |x: i32| x as f64;
-    let ba = brick(&mut t, 1, [f(a[0]), f(a[1]), f(a[2])], [f(a[3]), f(a[4]), f(a[5])]);
-    let bb = brick(&mut t, 2, [f(b[0]), f(b[1]), f(b[2])], [f(b[3]), f(b[4]), f(b[5])]);
+    let ba = brick(
+        &mut t,
+        1,
+        [f(a[0]), f(a[1]), f(a[2])],
+        [f(a[3]), f(a[4]), f(a[5])],
+    );
+    let bb = brick(
+        &mut t,
+        2,
+        [f(b[0]), f(b[1]), f(b[2])],
+        [f(b[3]), f(b[4]), f(b[5])],
+    );
     (t, ba, bb)
 }
 
@@ -37,7 +54,8 @@ fn vol(a: &[i32; 6]) -> f64 {
 }
 
 fn arb_brick() -> impl Strategy<Value = [i32; 6]> {
-    (0..6i32, 0..6i32, 0..6i32, 1..5i32, 1..5i32, 1..5i32).prop_map(|(x, y, z, sx, sy, sz)| [x, y, z, sx, sy, sz])
+    (0..6i32, 0..6i32, 0..6i32, 1..5i32, 1..5i32, 1..5i32)
+        .prop_map(|(x, y, z, sx, sy, sz)| [x, y, z, sx, sy, sz])
 }
 
 proptest! {

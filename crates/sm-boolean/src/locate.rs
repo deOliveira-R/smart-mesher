@@ -36,14 +36,46 @@ pub enum PointLocation {
 /// unrelated so that no ray is parallel to an axis-aligned face or passes through the lattice
 /// points where integer-coordinate geometry puts its edges.
 const DIRECTIONS: [[f64; 3]; 8] = [
-    [0.577_350_269_189_625_8, 0.707_106_781_186_547_5 + 0.131_578_947_368_421, 0.418_879_020_478_639_1],
-    [-0.360_674_301_207_912_4, 0.822_474_487_139_158_9, 0.273_861_278_752_583_1],
-    [0.264_575_131_106_459_1, -0.316_227_766_016_837_9, 0.912_870_929_175_276_8],
-    [0.801_937_735_804_838_2, 0.230_940_107_675_850_3, -0.469_041_575_982_343_1],
-    [-0.145_864_991_030_345_4, -0.755_928_946_018_454_6, 0.539_360_790_167_302_5],
-    [0.935_414_346_693_485_6, -0.188_982_236_504_613_9, -0.118_322_414_258_213_5],
-    [-0.627_647_368_240_493_8, 0.141_421_356_237_309_5, 0.693_889_411_277_062_3],
-    [0.082_199_493_652_191_2, 0.968_245_836_551_854_2, -0.345_032_779_671_177_1],
+    [
+        0.577_350_269_189_625_8,
+        0.707_106_781_186_547_5 + 0.131_578_947_368_421,
+        0.418_879_020_478_639_1,
+    ],
+    [
+        -0.360_674_301_207_912_4,
+        0.822_474_487_139_158_9,
+        0.273_861_278_752_583_1,
+    ],
+    [
+        0.264_575_131_106_459_1,
+        -0.316_227_766_016_837_9,
+        0.912_870_929_175_276_8,
+    ],
+    [
+        0.801_937_735_804_838_2,
+        0.230_940_107_675_850_3,
+        -0.469_041_575_982_343_1,
+    ],
+    [
+        -0.145_864_991_030_345_4,
+        -0.755_928_946_018_454_6,
+        0.539_360_790_167_302_5,
+    ],
+    [
+        0.935_414_346_693_485_6,
+        -0.188_982_236_504_613_9,
+        -0.118_322_414_258_213_5,
+    ],
+    [
+        -0.627_647_368_240_493_8,
+        0.141_421_356_237_309_5,
+        0.693_889_411_277_062_3,
+    ],
+    [
+        0.082_199_493_652_191_2,
+        0.968_245_836_551_854_2,
+        -0.345_032_779_671_177_1,
+    ],
 ];
 
 fn direction(k: usize) -> Vector3 {
@@ -77,7 +109,10 @@ pub(crate) struct UseIndex {
 
 /// True if the sampled box of `f` bounds the face (plane, straight edges).
 fn box_is_exact<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> bool {
-    if !matches!(crate::pieces::surface_def_of(view, f), Some(SurfaceDef::Plane(_))) {
+    if !matches!(
+        crate::pieces::surface_def_of(view, f),
+        Some(SurfaceDef::Plane(_))
+    ) {
         return false;
     }
     view.face_edges(f).iter().all(|&e| match view.carrier(e) {
@@ -103,7 +138,14 @@ impl UseIndex {
             }
         }
         let bvh = Bvh::build(&boxes);
-        UseIndex { uses: uses.to_vec(), boxes, always, bvh, bbox, pad }
+        UseIndex {
+            uses: uses.to_vec(),
+            boxes,
+            always,
+            bvh,
+            bbox,
+            pad,
+        }
     }
 
     fn finish(&self, mut v: Vec<u32>) -> Vec<u32> {
@@ -113,7 +155,10 @@ impl UseIndex {
     }
 
     fn near_point(&self, p: Point3) -> Vec<u32> {
-        let q = Aabb { lo: Point3::new(p.x - self.pad, p.y - self.pad, p.z - self.pad), hi: Point3::new(p.x + self.pad, p.y + self.pad, p.z + self.pad) };
+        let q = Aabb {
+            lo: Point3::new(p.x - self.pad, p.y - self.pad, p.z - self.pad),
+            hi: Point3::new(p.x + self.pad, p.y + self.pad, p.z + self.pad),
+        };
         let (mut v, mut st) = (Vec::new(), CandidateStats::default());
         self.bvh.overlapping(&self.boxes, &q, &mut v, &mut st);
         self.finish(v)
@@ -121,13 +166,26 @@ impl UseIndex {
 
     fn along_ray(&self, p: Point3, dir: Vector3, reach: f64) -> Vec<u32> {
         let (mut v, mut st) = (Vec::new(), CandidateStats::default());
-        self.bvh.along_ray(&self.boxes, [p.x, p.y, p.z], [dir.x, dir.y, dir.z], reach, &mut v, &mut st);
+        self.bvh.along_ray(
+            &self.boxes,
+            [p.x, p.y, p.z],
+            [dir.x, dir.y, dir.z],
+            reach,
+            &mut v,
+            &mut st,
+        );
         self.finish(v)
     }
 
     /// True if `p` is on one of the faces (within the linear tolerance); returns the first such
     /// face in use order.
-    pub(crate) fn on_which<V: TopologyView + ?Sized>(&self, view: &V, cache: &crate::faceclass::FaceCache, p: Point3, tol: f64) -> Result<Option<Use>, BooleanError> {
+    pub(crate) fn on_which<V: TopologyView + ?Sized>(
+        &self,
+        view: &V,
+        cache: &crate::faceclass::FaceCache,
+        p: Point3,
+        tol: f64,
+    ) -> Result<Option<Use>, BooleanError> {
         for i in self.near_point(p) {
             let u = self.uses[i as usize];
             if on_face(view, cache, u.0, p, tol)? {
@@ -139,16 +197,35 @@ impl UseIndex {
 }
 
 /// Locate `p` against a region given by its boundary uses.
-pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, uses: &[Use], p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &crate::faceclass::FaceCache,
+    uses: &[Use],
+    p: Point3,
+    tol: &ModelTolerance,
+) -> Result<PointLocation, BooleanError> {
     locate_impl(view, cache, uses, None, p, tol)
 }
 
 /// [`locate_in_uses`] through a prebuilt index; the result equals the unindexed scan.
-pub(crate) fn locate_indexed<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, idx: &UseIndex, p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+pub(crate) fn locate_indexed<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &crate::faceclass::FaceCache,
+    idx: &UseIndex,
+    p: Point3,
+    tol: &ModelTolerance,
+) -> Result<PointLocation, BooleanError> {
     locate_impl(view, cache, &idx.uses, Some(idx), p, tol)
 }
 
-fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, uses: &[Use], idx: Option<&UseIndex>, p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+fn locate_impl<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &crate::faceclass::FaceCache,
+    uses: &[Use],
+    idx: Option<&UseIndex>,
+    p: Point3,
+    tol: &ModelTolerance,
+) -> Result<PointLocation, BooleanError> {
     let all = |_: ()| -> Vec<u32> { (0..uses.len() as u32).collect() };
     // 1. On: distance to every face.
     let on_c = match idx {
@@ -184,10 +261,19 @@ fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::Fac
         };
         for &ui in &ray_c {
             let (f, sense) = uses[ui as usize];
-            let Some((surf, sc)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face of the volume has no surface")) };
+            let Some((surf, sc)) = geo::face_surface(view, f) else {
+                return Err(BooleanError::Unsupported(
+                    "a face of the volume has no surface",
+                ));
+            };
             let mut hits: Vec<RayHit> = Vec::new();
-            if surf.ray_hits_tol(&ray, Interval::new(0.0, reach), tol, &mut hits).is_err() {
-                return Err(BooleanError::Unsupported("ray intersection is not available for a surface of the volume"));
+            if surf
+                .ray_hits_tol(&ray, Interval::new(0.0, reach), tol, &mut hits)
+                .is_err()
+            {
+                return Err(BooleanError::Unsupported(
+                    "ray intersection is not available for a surface of the volume",
+                ));
             }
             for h in hits {
                 let uv = match h.uv {
@@ -199,7 +285,14 @@ fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::Fac
                 };
                 // Hits near a curved edge are settled on a finer boundary polygon (the coarse one is
                 // inscribed in the arc); one still inside the finer band is ambiguous.
-                match crate::faceclass::classify_hit(view, cache, f, Uv::new(uv.u, uv.v), h.point, tol.linear)? {
+                match crate::faceclass::classify_hit(
+                    view,
+                    cache,
+                    f,
+                    Uv::new(uv.u, uv.v),
+                    h.point,
+                    tol.linear,
+                )? {
                     Some(PointClass::Out) => continue,
                     Some(PointClass::In) => {}
                     Some(PointClass::On) | None => {
@@ -245,13 +338,26 @@ fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::Fac
 }
 
 /// True if `p` lies on face `f` within `tol` (on the surface and inside or on the boundary).
-pub(crate) fn on_face<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, f: EntityId, p: Point3, tol: f64) -> Result<bool, BooleanError> {
-    let Some((surf, _)) = geo::face_surface(view, f) else { return Ok(false) };
-    let Ok(pr) = surf.project(p, None) else { return Ok(false) };
+pub(crate) fn on_face<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &crate::faceclass::FaceCache,
+    f: EntityId,
+    p: Point3,
+    tol: f64,
+) -> Result<bool, BooleanError> {
+    let Some((surf, _)) = geo::face_surface(view, f) else {
+        return Ok(false);
+    };
+    let Ok(pr) = surf.project(p, None) else {
+        return Ok(false);
+    };
     if pr.distance > tol {
         return Ok(false);
     }
-    Ok(matches!(crate::faceclass::classify_uv(view, cache, f, pr.uv, tol)?.0, PointClass::In | PointClass::On))
+    Ok(matches!(
+        crate::faceclass::classify_uv(view, cache, f, pr.uv, tol)?.0,
+        PointClass::In | PointClass::On
+    ))
 }
 
 /// Where `p` is relative to `volume`: inside, on its boundary (within the model's linear
@@ -267,9 +373,15 @@ pub(crate) fn on_face<V: TopologyView + ?Sized>(view: &V, cache: &crate::facecla
 /// [`BooleanError::Ambiguous`] if every direction hits an edge or vertex or grazes a surface
 /// (perturb the point); [`BooleanError::Unsupported`] for a face without a surface or a surface
 /// without ray support; `Query` if a face cannot be classified.
-pub fn locate_point(view: &dyn TopologyView, volume: EntityId, p: Point3) -> Result<PointLocation, BooleanError> {
+pub fn locate_point(
+    view: &dyn TopologyView,
+    volume: EntityId,
+    p: Point3,
+) -> Result<PointLocation, BooleanError> {
     if !view.is_alive(volume) || view.dim_of(volume) != Some(sm_topo_api::Dim::Volume) {
-        return Err(BooleanError::Invalid(format!("{volume} is not a live volume")));
+        return Err(BooleanError::Invalid(format!(
+            "{volume} is not a live volume"
+        )));
     }
     let uses = volume_uses(view, volume);
     let tol = *view.tolerance();
@@ -281,7 +393,10 @@ pub fn locate_point(view: &dyn TopologyView, volume: EntityId, p: Point3) -> Res
 ///
 /// # Errors
 /// `Query` if the face cannot be classified.
-pub fn face_interior_point(view: &dyn TopologyView, face: EntityId) -> Result<Option<Point3>, BooleanError> {
+pub fn face_interior_point(
+    view: &dyn TopologyView,
+    face: EntityId,
+) -> Result<Option<Point3>, BooleanError> {
     crate::faceclass::interior_point(view, &crate::faceclass::FaceCache::new(), face)
 }
 
@@ -292,9 +407,14 @@ pub fn face_interior_point(view: &dyn TopologyView, face: EntityId) -> Result<Op
 ///
 /// # Errors
 /// `Invalid` if `volume` is not a live volume; `Unsupported` if no candidate was confirmed.
-pub fn volume_interior_point(view: &dyn TopologyView, volume: EntityId) -> Result<Point3, BooleanError> {
+pub fn volume_interior_point(
+    view: &dyn TopologyView,
+    volume: EntityId,
+) -> Result<Point3, BooleanError> {
     if !view.is_alive(volume) || view.dim_of(volume) != Some(sm_topo_api::Dim::Volume) {
-        return Err(BooleanError::Invalid(format!("{volume} is not a live volume")));
+        return Err(BooleanError::Invalid(format!(
+            "{volume} is not a live volume"
+        )));
     }
     let uses = volume_uses(view, volume);
     let tol = *view.tolerance();
@@ -308,22 +428,39 @@ pub fn volume_interior_point(view: &dyn TopologyView, volume: EntityId) -> Resul
             bx.extend(b.hi);
         }
     }
-    let size = if bx.is_empty() { 1.0 } else { (bx.hi - bx.lo).norm().max(tol.linear) };
+    let size = if bx.is_empty() {
+        1.0
+    } else {
+        (bx.hi - bx.lo).norm().max(tol.linear)
+    };
     for &f in &faces {
-        let Some(p) = crate::faceclass::interior_point(view, &cache, f)? else { continue };
-        let Some((n, _, _)) = geo::face_normal_near(view, f, p) else { continue };
-        let sense = view.face_use_in(f, volume).first().copied().unwrap_or(Sense::Forward);
+        let Some(p) = crate::faceclass::interior_point(view, &cache, f)? else {
+            continue;
+        };
+        let Some((n, _, _)) = geo::face_normal_near(view, f, p) else {
+            continue;
+        };
+        let sense = view
+            .face_use_in(f, volume)
+            .first()
+            .copied()
+            .unwrap_or(Sense::Forward);
         let inward = n * (-sense.sign());
         let mut d = 0.25 * size;
         while d > 100.0 * tol.linear {
             let q = p + inward * d;
-            if matches!(locate_in_uses(view, &cache, &uses, q, &tol), Ok(PointLocation::In)) {
+            if matches!(
+                locate_in_uses(view, &cache, &uses, q, &tol),
+                Ok(PointLocation::In)
+            ) {
                 return Ok(q);
             }
             d *= 0.25;
         }
     }
-    Err(BooleanError::Unsupported("no point confirmed inside the volume"))
+    Err(BooleanError::Unsupported(
+        "no point confirmed inside the volume",
+    ))
 }
 
 #[cfg(test)]

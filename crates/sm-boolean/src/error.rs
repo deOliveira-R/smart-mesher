@@ -15,17 +15,23 @@ use sm_topo_api::{QueryError, TopoError};
 #[non_exhaustive]
 pub enum BooleanError {
     /// The result has no volume (for example the intersection of disjoint bodies).
-    #[error("the result is empty: the operands share no volume; check that the bodies overlap, or use a different rule")]
+    #[error(
+        "the result is empty: the operands share no volume; check that the bodies overlap, or use a different rule"
+    )]
     EmptyResult,
     /// The inputs are valid but outside what this kernel handles.
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
     /// An input volume is not a manifold solid (baffle `Both` uses, fins, free faces).
-    #[error("{0} is not a manifold solid (baffle, fin or free face): boolean operations need closed shells; delete or detach the sheet first")]
+    #[error(
+        "{0} is not a manifold solid (baffle, fin or free face): boolean operations need closed shells; delete or detach the sheet first"
+    )]
     NonManifoldInput(EntityId),
     /// The operands touch along a line or at points only (tangent contact), which the arrangement
     /// cannot split robustly.
-    #[error("tangent contact at {entity}: {detail}; perturb the tool by more than the model tolerance (move or resize it so the contact becomes a proper overlap or a clean gap)")]
+    #[error(
+        "tangent contact at {entity}: {detail}; perturb the tool by more than the model tolerance (move or resize it so the contact becomes a proper overlap or a clean gap)"
+    )]
     TangentContact {
         /// The face (or, for point contact between whole operands, the volume) where it was found.
         entity: EntityId,
@@ -33,7 +39,9 @@ pub enum BooleanError {
         detail: &'static str,
     },
     /// Two surfaces could not be intersected.
-    #[error("intersecting the surfaces of faces {a} and {b} failed: {source}; perturb the tool or intersect fewer bodies")]
+    #[error(
+        "intersecting the surfaces of faces {a} and {b} failed: {source}; perturb the tool or intersect fewer bodies"
+    )]
     Ssi {
         /// First face.
         a: EntityId,
@@ -43,7 +51,9 @@ pub enum BooleanError {
         source: GeomError,
     },
     /// Closing a geometric gap needs a tolerance above the model maximum.
-    #[error("{entity} needs a tolerance of {needed:e}, above the model maximum {max:e}; perturb the tool or use a coarser model tolerance")]
+    #[error(
+        "{entity} needs a tolerance of {needed:e}, above the model maximum {max:e}; perturb the tool or use a coarser model tolerance"
+    )]
     Tolerance {
         /// The cell that cannot be closed.
         entity: EntityId,
@@ -61,7 +71,9 @@ pub enum BooleanError {
         point: Point3,
     },
     /// The assembled volume failed its final check.
-    #[error("the {rule} result volume {volume} is invalid (open shell, non-positive volume or failed validation); the operation was rolled back: perturb the tool or intersect fewer bodies; operands that are nearly tangent (clearance below about 1e-2 model units on a curved surface) are a known cause, so open the clearance or close it to a clean overlap")]
+    #[error(
+        "the {rule} result volume {volume} is invalid (open shell, non-positive volume or failed validation); the operation was rolled back: perturb the tool or intersect fewer bodies; operands that are nearly tangent (clearance below about 1e-2 model units on a curved surface) are a known cause, so open the clearance or close it to a clean overlap"
+    )]
     ResultInvalid {
         /// The offending volume.
         volume: EntityId,

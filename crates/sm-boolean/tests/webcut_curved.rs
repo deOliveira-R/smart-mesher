@@ -12,11 +12,22 @@ use sm_geom_api::{Cone, EllipticCone, Frame, Sphere, SurfaceDef};
 use sm_topo_api::TopologyView;
 
 fn frame(o: [f64; 3], z: [f64; 3]) -> Frame {
-    Frame::from_z(Point3::new(o[0], o[1], o[2]), Vector3::new(z[0], z[1], z[2])).unwrap()
+    Frame::from_z(
+        Point3::new(o[0], o[1], o[2]),
+        Vector3::new(z[0], z[1], z[2]),
+    )
+    .unwrap()
 }
 
 fn vol(t: &dyn TopologyView, bs: &[EntityId]) -> f64 {
-    bs.iter().map(|&b| t.boundary(b).iter().map(|e| volume_of(t, e.cell)).sum::<f64>()).sum()
+    bs.iter()
+        .map(|&b| {
+            t.boundary(b)
+                .iter()
+                .map(|e| volume_of(t, e.cell))
+                .sum::<f64>()
+        })
+        .sum()
 }
 
 /// Volume of a ball (R) centred on the axis of a cylinder (r, taller than the ball): the ball
@@ -31,9 +42,23 @@ fn cyl_cut(c: [f64; 3], z: [f64; 3]) -> Result<(f64, f64), String> {
     let mut r = Rig::cc();
     let cy = r.cylinder(4.0, 1.0, [0.0; 3]);
     let def = SurfaceDef::Sphere(Sphere::new(frame(c, z), 1.5).unwrap());
-    let (host, out) = r.lib(|t| webcut(t, &[cy.body], &CutTool::Surface { surface: def, window: None }, &WebcutOptions::default()))?;
+    let (host, out) = r.lib(|t| {
+        webcut(
+            t,
+            &[cy.body],
+            &CutTool::Surface {
+                surface: def,
+                window: None,
+            },
+            &WebcutOptions::default(),
+        )
+    })?;
     let t: &dyn TopologyView = &*host;
-    assert!(sm_topo_api::validate(t).is_empty(), "validate: {:?}", sm_topo_api::validate(t));
+    assert!(
+        sm_topo_api::validate(t).is_empty(),
+        "validate: {:?}",
+        sm_topo_api::validate(t)
+    );
     Ok((vol(t, &out.negative), vol(t, &out.positive)))
 }
 
@@ -43,11 +68,21 @@ fn cyl_cut(c: [f64; 3], z: [f64; 3]) -> Result<(f64, f64), String> {
 fn sphere_against_a_cylinder_in_any_frame() {
     let total = PI * 4.0;
     let coaxial = ball_in_cylinder(1.5, 1.0);
-    let axes: [[f64; 3]; 6] = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.3, -0.7, 0.2], [0.0, 0.2, 1.0]];
+    let axes: [[f64; 3]; 6] = [
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [0.3, -0.7, 0.2],
+        [0.0, 0.2, 1.0],
+    ];
     for z in axes {
         let (i, o) = cyl_cut([0.0; 3], z).unwrap_or_else(|e| panic!("coaxial {z:?}: {e}"));
         // Curved-on-curved pieces come from quadrature: about 4e-8 (DESIGN.md).
-        assert!((i - coaxial).abs() < 1e-7, "coaxial {z:?}: {i} vs {coaxial}");
+        assert!(
+            (i - coaxial).abs() < 1e-7,
+            "coaxial {z:?}: {i} vs {coaxial}"
+        );
         assert!((i + o - total).abs() < 1e-6, "coaxial {z:?}: sum {}", i + o);
     }
     // Offsets: no closed form here, but the pieces sum to the cylinder and the result does not
@@ -56,7 +91,11 @@ fn sphere_against_a_cylinder_in_any_frame() {
         let mut first = None;
         for z in axes {
             let (i, o) = cyl_cut(off, z).unwrap_or_else(|e| panic!("offset {off:?} {z:?}: {e}"));
-            assert!((i + o - total).abs() < 1e-5, "offset {off:?} {z:?}: sum {}", i + o);
+            assert!(
+                (i + o - total).abs() < 1e-5,
+                "offset {off:?} {z:?}: sum {}",
+                i + o
+            );
             let f = *first.get_or_insert(i);
             assert!((i - f).abs() < 1e-5, "offset {off:?} {z:?}: {i} vs {f}");
             assert!(i > 0.0 && o > 0.0);
@@ -65,12 +104,27 @@ fn sphere_against_a_cylinder_in_any_frame() {
 }
 
 /// Run `webcut` of one brick by `def` and return the typed outcome with the host.
-fn brick_cut(size: [f64; 3], def: SurfaceDef) -> (Box<dyn sm_layer_api::TopoHost>, Result<sm_boolean::WebcutOutcome, sm_boolean::BooleanError>) {
+fn brick_cut(
+    size: [f64; 3],
+    def: SurfaceDef,
+) -> (
+    Box<dyn sm_layer_api::TopoHost>,
+    Result<sm_boolean::WebcutOutcome, sm_boolean::BooleanError>,
+) {
     let mut r = Rig::cc();
     let b = r.brick(size, [0.0; 3]);
     let mut host = r.layer().topo_host().clone_host();
-    host.begin_op(sm_topo_api::OpId(r.layer().ops_run() + 1)).unwrap();
-    let out = webcut(&mut *host, &[b.body], &CutTool::Surface { surface: def, window: None }, &WebcutOptions::default());
+    host.begin_op(sm_topo_api::OpId(r.layer().ops_run() + 1))
+        .unwrap();
+    let out = webcut(
+        &mut *host,
+        &[b.body],
+        &CutTool::Surface {
+            surface: def,
+            window: None,
+        },
+        &WebcutOptions::default(),
+    );
     (host, out)
 }
 
@@ -79,12 +133,28 @@ fn brick_cut(size: [f64; 3], def: SurfaceDef) -> (Box<dyn sm_layer_api::TopoHost
 fn untouched_target_adds_no_surface() {
     // Far away: the target is outside. Around: the target is inside. Crossing: a re-framed
     // surface beside the tool's own handle (`webcut` always adds that one).
-    for (centre, rad, adds) in [([20.0, 0.0, 0.0], 1.5, 1), ([0.0; 3], 20.0, 1), ([0.0; 3], 1.5, 2)] {
+    for (centre, rad, adds) in [
+        ([20.0, 0.0, 0.0], 1.5, 1),
+        ([0.0; 3], 20.0, 1),
+        ([0.0; 3], 1.5, 2),
+    ] {
         let mut r = Rig::cc();
         let b = r.brick([6.0; 3], [0.0; 3]);
         let before = r.topo().shapes().surface_count();
         let def = SurfaceDef::Sphere(Sphere::new(frame(centre, [1.0, 0.3, 0.2]), rad).unwrap());
-        let (host, out) = r.lib(|t| webcut(t, &[b.body], &CutTool::Surface { surface: def, window: None }, &WebcutOptions::default())).unwrap();
+        let (host, out) = r
+            .lib(|t| {
+                webcut(
+                    t,
+                    &[b.body],
+                    &CutTool::Surface {
+                        surface: def,
+                        window: None,
+                    },
+                    &WebcutOptions::default(),
+                )
+            })
+            .unwrap();
         let after = host.shapes().surface_count();
         assert_eq!(after - before, adds, "centre {centre:?} R {rad}");
         assert_eq!(out.negative.len(), usize::from(rad == 20.0 || adds == 2));
@@ -97,12 +167,23 @@ fn cone_apex_on_a_target_face_is_result_invalid() {
     let cone = Cone::new(frame([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]), 0.0, 0.3).unwrap();
     let (mut host, out) = brick_cut([6.0; 3], SurfaceDef::Cone(cone));
     host.abort_op();
-    assert!(matches!(out, Err(sm_boolean::BooleanError::ResultInvalid { rule: "webcut", .. })), "{out:?}");
+    assert!(
+        matches!(
+            out,
+            Err(sm_boolean::BooleanError::ResultInvalid { rule: "webcut", .. })
+        ),
+        "{out:?}"
+    );
 }
 
 fn rot_frame(o: [f64; 3], s: f64, phi: f64) -> Frame {
     let x = Vector3::new(phi.cos(), phi.sin(), 0.0);
-    Frame { origin: Point3::new(o[0], o[1], o[2]), x, y: Vector3::new(-s * phi.sin(), s * phi.cos(), 0.0), z: Vector3::new(0.0, 0.0, s) }
+    Frame {
+        origin: Point3::new(o[0], o[1], o[2]),
+        x,
+        y: Vector3::new(-s * phi.sin(), s * phi.cos(), 0.0),
+        z: Vector3::new(0.0, 0.0, s),
+    }
 }
 
 /// Volume of a circular cone nappe `rho = k (w - wa)` between `a` and `b` along its axis.
@@ -162,4 +243,93 @@ mod prop {
             prop_assert!((vi + vo - 576.0).abs() < 1e-6);
         }
     }
+}
+
+/// Plane-cut a z-cylinder (r = 1, h = 4), then webcut both pieces by a sphere (R = 1, axis z)
+/// whose centre is `dir * (2 - delta)`: it bites the rim by `delta`, near an arc extreme.
+fn plane_then_sphere(
+    n: [f64; 2],
+    off: f64,
+    delta: f64,
+    dir: [f64; 2],
+) -> Result<f64, sm_boolean::BooleanError> {
+    type E = sm_boolean::BooleanError;
+    let mut r = Rig::cc();
+    let c = r.cylinder(4.0, 1.0, [0.0; 3]);
+    let pf = frame([off * n[0], off * n[1], 0.0], [n[0], n[1], 0.0]);
+    let mut host = r.layer().topo_host().clone_host();
+    host.begin_op(sm_topo_api::OpId(r.layer().ops_run() + 1))
+        .unwrap();
+    let res = (|| -> Result<Vec<EntityId>, E> {
+        let t = &mut *host;
+        let pl = SurfaceDef::Plane(sm_geom_api::Plane { frame: pf });
+        let o1 = webcut(
+            t,
+            &[c.body],
+            &CutTool::Surface {
+                surface: pl,
+                window: None,
+            },
+            &WebcutOptions::default(),
+        )?;
+        let bodies: Vec<EntityId> = o1.positive.iter().chain(&o1.negative).copied().collect();
+        let sf = frame(
+            [dir[0] * (2.0 - delta), dir[1] * (2.0 - delta), 0.0],
+            [0.0, 0.0, 1.0],
+        );
+        let sp = SurfaceDef::Sphere(Sphere::new(sf, 1.0).unwrap());
+        Ok(webcut(
+            t,
+            &bodies,
+            &CutTool::Surface {
+                surface: sp,
+                window: None,
+            },
+            &WebcutOptions::default(),
+        )?
+        .negative)
+    })();
+    match res {
+        Ok(v) => Ok(vol(&*host, &v)),
+        Err(e) => {
+            host.abort_op();
+            Err(e)
+        }
+    }
+}
+
+/// The sphere-vs-target box shortcut must be conservative: a sphere crossing a plane-cut
+/// cylinder near an arc extreme that the edge samples miss still cuts (never a silent no-cut).
+#[test]
+fn sphere_crossing_near_an_arc_extreme_still_cuts() {
+    let cases = [
+        ([1.0, -0.6], 0.2, 0.002, [-1.0, 0.0]),
+        ([0.3, 1.0], 0.5, 0.01, [-1.0, 0.0]),
+        ([1.0, 0.5], 0.1, 0.01, [0.0, -1.0]),
+        ([1.0, -0.6], 0.2, 0.002, [0.0, -1.0]),
+        ([0.3, 1.0], 0.5, 0.002, [0.0, -1.0]),
+        ([1.0, 0.2], -0.4, 0.002, [0.0, 1.0]),
+    ];
+    for (n, off, delta, dir) in cases {
+        match plane_then_sphere(n, off, delta, dir) {
+            Ok(v) => assert!(
+                v > 1e-9,
+                "silent no-cut for {n:?} {off} {delta} {dir:?}: inside volume {v:e}"
+            ),
+            Err(e) => eprintln!("typed refusal for {n:?} {off} {delta} {dir:?}: {e}"),
+        }
+    }
+}
+
+/// The degenerate split reaches `ResultInvalid` end to end (not the coincident-boundary text).
+#[test]
+fn degenerate_split_is_result_invalid_end_to_end() {
+    let e = plane_then_sphere([1.0, 0.37], 0.3, 0.03, [core::f64::consts::FRAC_1_SQRT_2; 2]).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            sm_boolean::BooleanError::ResultInvalid { rule: "webcut", .. }
+        ),
+        "got {e:?}"
+    );
 }

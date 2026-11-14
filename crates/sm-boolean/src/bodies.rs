@@ -9,7 +9,10 @@ use crate::error::BooleanError;
 
 /// The live volumes of `entries` (a body gives its volumes, a volume itself), ascending and
 /// distinct.
-pub(crate) fn volumes_of<V: TopologyView + ?Sized>(view: &V, entries: &[EntityId]) -> Result<Vec<EntityId>, BooleanError> {
+pub(crate) fn volumes_of<V: TopologyView + ?Sized>(
+    view: &V,
+    entries: &[EntityId],
+) -> Result<Vec<EntityId>, BooleanError> {
     let mut out: BTreeSet<EntityId> = BTreeSet::new();
     for &e in entries {
         if !view.is_alive(e) {
@@ -28,17 +31,26 @@ pub(crate) fn volumes_of<V: TopologyView + ?Sized>(view: &V, entries: &[EntityId
                     }
                 }
                 if !any {
-                    return Err(BooleanError::Invalid(format!("{e} has no volume: boolean operations need solid bodies")));
+                    return Err(BooleanError::Invalid(format!(
+                        "{e} has no volume: boolean operations need solid bodies"
+                    )));
                 }
             }
-            _ => return Err(BooleanError::Invalid(format!("{e} is neither a body nor a volume"))),
+            _ => {
+                return Err(BooleanError::Invalid(format!(
+                    "{e} is neither a body nor a volume"
+                )));
+            }
         }
     }
     Ok(out.into_iter().collect())
 }
 
 /// Refuse baffles, fins, free faces and internal shells.
-pub(crate) fn check_manifold<V: TopologyView + ?Sized>(view: &V, volume: EntityId) -> Result<(), BooleanError> {
+pub(crate) fn check_manifold<V: TopologyView + ?Sized>(
+    view: &V,
+    volume: EntityId,
+) -> Result<(), BooleanError> {
     for inc in view.boundary(volume) {
         if inc.ring == Incidence::EMBEDDED || inc.side == Side::Both {
             return Err(BooleanError::NonManifoldInput(volume));
@@ -51,13 +63,18 @@ pub(crate) fn check_manifold<V: TopologyView + ?Sized>(view: &V, volume: EntityI
         }
     }
     if view.boundary(volume).is_empty() {
-        return Err(BooleanError::Invalid(format!("{volume} has no boundary faces")));
+        return Err(BooleanError::Invalid(format!(
+            "{volume} has no boundary faces"
+        )));
     }
     Ok(())
 }
 
 /// Faces of the volumes, ascending and distinct.
-pub(crate) fn faces_of_volumes<V: TopologyView + ?Sized>(view: &V, vols: &[EntityId]) -> Vec<EntityId> {
+pub(crate) fn faces_of_volumes<V: TopologyView + ?Sized>(
+    view: &V,
+    vols: &[EntityId],
+) -> Vec<EntityId> {
     let mut s: BTreeSet<EntityId> = BTreeSet::new();
     for &v in vols {
         s.extend(view.volume_faces(v).iter().copied());

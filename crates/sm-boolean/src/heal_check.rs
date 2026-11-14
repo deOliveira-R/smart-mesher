@@ -39,7 +39,9 @@ use crate::merge::{MergeKind, MergeKinds, MergeOptions, MergeStatus, merge_check
 
 /// The kinds of finding. The declaration order is the alphabetical order of the code strings,
 /// which is the report's sort order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum HealCode {
     /// A partial cylinder tangent to both neighbours (a fillet or round).
@@ -157,7 +159,12 @@ impl HealReport {
 
     /// The distinct codes present, in code order.
     pub fn codes(&self) -> Vec<HealCode> {
-        self.findings.iter().map(|f| f.code).collect::<BTreeSet<_>>().into_iter().collect()
+        self.findings
+            .iter()
+            .map(|f| f.code)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 
@@ -175,8 +182,17 @@ struct Scope {
     faces: Vec<EntityId>,
 }
 
-fn resolve_scope(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Result<Scope, BooleanError> {
-    let pick = |cells: &BTreeSet<EntityId>, d: Dim| cells.iter().copied().filter(|c| view.dim_of(*c) == Some(d) && view.is_alive(*c)).collect::<Vec<_>>();
+fn resolve_scope(
+    view: &dyn TopologyView,
+    entities: &Option<Vec<EntityId>>,
+) -> Result<Scope, BooleanError> {
+    let pick = |cells: &BTreeSet<EntityId>, d: Dim| {
+        cells
+            .iter()
+            .copied()
+            .filter(|c| view.dim_of(*c) == Some(d) && view.is_alive(*c))
+            .collect::<Vec<_>>()
+    };
     let mut cells: BTreeSet<EntityId> = BTreeSet::new();
     match entities {
         None => {
@@ -187,43 +203,64 @@ fn resolve_scope(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> R
         Some(list) => {
             for &id in list {
                 if !view.is_alive(id) || view.dim_of(id).is_none() {
-                    return Err(BooleanError::Invalid(format!("{id} is not a live topology cell")));
+                    return Err(BooleanError::Invalid(format!(
+                        "{id} is not a live topology cell"
+                    )));
                 }
                 cells.extend(view.closure(id));
             }
         }
     }
-    Ok(Scope { edges: pick(&cells, Dim::Edge), faces: pick(&cells, Dim::Face) })
+    Ok(Scope {
+        edges: pick(&cells, Dim::Edge),
+        faces: pick(&cells, Dim::Face),
+    })
 }
 
 fn positive(name: &str, v: Option<f64>) -> Result<Option<f64>, BooleanError> {
     match v {
-        Some(x) if !(x.is_finite() && x > 0.0) => Err(BooleanError::Invalid(format!("`{name}` must be a positive finite number, got {x:e}"))),
+        Some(x) if !(x.is_finite() && x > 0.0) => Err(BooleanError::Invalid(format!(
+            "`{name}` must be a positive finite number, got {x:e}"
+        ))),
         other => Ok(other),
     }
 }
 
 fn bounding_diagonal(view: &dyn TopologyView, faces: &[EntityId]) -> f64 {
-    let boxes: Vec<Aabb> = faces.par_iter().map(|&f| geo::face_aabb(view, f, 0.0)).collect();
+    let boxes: Vec<Aabb> = faces
+        .par_iter()
+        .map(|&f| geo::face_aabb(view, f, 0.0))
+        .collect();
     let mut b = Aabb::empty();
     for fb in boxes.iter().filter(|b| !b.is_empty()) {
         b.extend(fb.lo);
         b.extend(fb.hi);
     }
-    if b.is_empty() { 0.0 } else { geo::dist(b.lo, b.hi) }
+    if b.is_empty() {
+        0.0
+    } else {
+        geo::dist(b.lo, b.hi)
+    }
 }
 
 /// Resolve the thresholds for a model of diagonal `diag`.
-fn thresholds(view: &dyn TopologyView, diag: f64, o: &HealOptions) -> Result<HealThresholds, BooleanError> {
+fn thresholds(
+    view: &dyn TopologyView,
+    diag: f64,
+    o: &HealOptions,
+) -> Result<HealThresholds, BooleanError> {
     let tol = view.tolerance();
-    let l = (0.25 * tol.linear_max).min(1e-3 * diag).max(10.0 * tol.linear);
+    let l = (0.25 * tol.linear_max)
+        .min(1e-3 * diag)
+        .max(10.0 * tol.linear);
     Ok(HealThresholds {
         diagonal: diag,
         small_edge: positive("small_edge", o.small_edge)?.unwrap_or(l),
         small_face_area: positive("small_face_area", o.small_face_area)?.unwrap_or(l * l),
         sliver_aspect: positive("sliver_aspect", o.sliver_aspect)?.unwrap_or(100.0),
         sliver_width: positive("sliver_width", o.sliver_width)?.unwrap_or(l),
-        hole_max_diameter: positive("hole_max_diameter", o.hole_max_diameter)?.unwrap_or(HOLE_FACTOR * l),
+        hole_max_diameter: positive("hole_max_diameter", o.hole_max_diameter)?
+            .unwrap_or(HOLE_FACTOR * l),
         blend_max_radius: positive("blend_max_radius", o.blend_max_radius)?.unwrap_or(0.25 * diag),
     })
 }
@@ -234,16 +271,30 @@ fn edge_length(view: &dyn TopologyView, e: EntityId) -> Option<f64> {
         return c.length(cc.range, view.tolerance().linear).ok();
     }
     let (s, t) = view.edge_ends(e)?;
-    Some(geo::dist(geo::vertex_point(view, s)?, geo::vertex_point(view, t)?))
+    Some(geo::dist(
+        geo::vertex_point(view, s)?,
+        geo::vertex_point(view, t)?,
+    ))
 }
 
 /// The faces that use `cell` (an edge, or a vertex through its edges), ascending and distinct.
 fn faces_around(view: &dyn TopologyView, cell: EntityId) -> BTreeSet<EntityId> {
-    let face_users = |e: EntityId| view.coboundary(e).iter().filter(|i| view.dim_of(i.cell) == Some(Dim::Face)).map(|i| i.cell).collect::<Vec<_>>();
+    let face_users = |e: EntityId| {
+        view.coboundary(e)
+            .iter()
+            .filter(|i| view.dim_of(i.cell) == Some(Dim::Face))
+            .map(|i| i.cell)
+            .collect::<Vec<_>>()
+    };
     match view.dim_of(cell) {
         Some(Dim::Face) => BTreeSet::from([cell]),
         Some(Dim::Edge) => face_users(cell).into_iter().collect(),
-        Some(Dim::Vertex) => view.coboundary(cell).iter().filter(|i| view.dim_of(i.cell) == Some(Dim::Edge)).flat_map(|i| face_users(i.cell)).collect(),
+        Some(Dim::Vertex) => view
+            .coboundary(cell)
+            .iter()
+            .filter(|i| view.dim_of(i.cell) == Some(Dim::Edge))
+            .flat_map(|i| face_users(i.cell))
+            .collect(),
         _ => BTreeSet::new(),
     }
 }
@@ -258,7 +309,11 @@ fn planar_shape(view: &dyn TopologyView, f: EntityId) -> Option<(f64, f64)> {
     }
     let n = geo::unit(n)?;
     // An orthonormal basis (u, v) of the plane.
-    let a = if n.x.abs() < 0.9 { Vector3::new(1.0, 0.0, 0.0) } else { Vector3::new(0.0, 1.0, 0.0) };
+    let a = if n.x.abs() < 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        Vector3::new(0.0, 1.0, 0.0)
+    };
     let u = geo::unit(a - n * a.dot(n))?;
     let v = n.cross(u);
     let m = |p: Vector3, q: Vector3| -> f64 {
@@ -282,9 +337,19 @@ fn planar_shape(view: &dyn TopologyView, f: EntityId) -> Option<(f64, f64)> {
 }
 
 /// Per-face findings: small, sliver, holes and blends.
-fn face_findings(view: &dyn TopologyView, f: EntityId, th: &HealThresholds) -> (Vec<HealFinding>, Vec<(EntityId, HealFinding)>) {
+fn face_findings(
+    view: &dyn TopologyView,
+    f: EntityId,
+    th: &HealThresholds,
+) -> (Vec<HealFinding>, Vec<(EntityId, HealFinding)>) {
     let mut out = Vec::new();
-    let one = |code, value: f64, extra: Option<f64>| HealFinding { code, entity: f, entities: vec![f], value, extra };
+    let one = |code, value: f64, extra: Option<f64>| HealFinding {
+        code,
+        entity: f,
+        entities: vec![f],
+        value,
+        extra,
+    };
     if let Ok(m) = view.face_moments(f) {
         if m.area <= th.small_face_area {
             out.push(one(HealCode::SmallFace, m.area, None));
@@ -303,12 +368,29 @@ fn face_findings(view: &dyn TopologyView, f: EntityId, th: &HealThresholds) -> (
 
 /// `(key, finding)` per small inner loop of `f`; the key is the bore face across the loop, so
 /// the two ends of a through hole collapse to one finding.
-fn holes(view: &dyn TopologyView, f: EntityId, th: &HealThresholds) -> Vec<(EntityId, HealFinding)> {
+fn holes(
+    view: &dyn TopologyView,
+    f: EntityId,
+    th: &HealThresholds,
+) -> Vec<(EntityId, HealFinding)> {
     let mut out = Vec::new();
     for lp in view.loops(f).filter(|l| l.ring > 0) {
-        let edges: Vec<EntityId> = lp.entries.iter().map(|e| e.cell).filter(|&e| !geo::is_degenerate(view, e)).collect();
-        let Some(&first) = edges.first() else { continue };
-        let pts: Vec<Point3> = edges.iter().flat_map(|&e| (0..HOLE_SAMPLES).filter_map(move |k| geo::edge_sample(view, e, k as f64 / HOLE_SAMPLES as f64))).collect();
+        let edges: Vec<EntityId> = lp
+            .entries
+            .iter()
+            .map(|e| e.cell)
+            .filter(|&e| !geo::is_degenerate(view, e))
+            .collect();
+        let Some(&first) = edges.first() else {
+            continue;
+        };
+        let pts: Vec<Point3> = edges
+            .iter()
+            .flat_map(|&e| {
+                (0..HOLE_SAMPLES)
+                    .filter_map(move |k| geo::edge_sample(view, e, k as f64 / HOLE_SAMPLES as f64))
+            })
+            .collect();
         let mut d: f64 = 0.0;
         for (i, p) in pts.iter().enumerate() {
             for q in &pts[i + 1..] {
@@ -323,14 +405,30 @@ fn holes(view: &dyn TopologyView, f: EntityId, th: &HealThresholds) -> Vec<(Enti
         let mut ents = vec![f];
         ents.extend(across);
         ents.sort_unstable();
-        out.push((key, HealFinding { code: HealCode::SmallHole, entity: key, entities: ents, value: d, extra: None }));
+        out.push((
+            key,
+            HealFinding {
+                code: HealCode::SmallHole,
+                entity: key,
+                entities: ents,
+                value: d,
+                extra: None,
+            },
+        ));
     }
     out
 }
 
 /// A blend finding for `f`, if it is a partial cylinder tangent to both neighbours.
-fn blend(view: &dyn TopologyView, f: EntityId, area: f64, th: &HealThresholds) -> Option<HealFinding> {
-    let SurfaceDef::Cylinder(cyl) = crate::pieces::surface_def_of(view, f)? else { return None };
+fn blend(
+    view: &dyn TopologyView,
+    f: EntityId,
+    area: f64,
+    th: &HealThresholds,
+) -> Option<HealFinding> {
+    let SurfaceDef::Cylinder(cyl) = crate::pieces::surface_def_of(view, f)? else {
+        return None;
+    };
     if cyl.radius > th.blend_max_radius {
         return None;
     }
@@ -339,19 +437,32 @@ fn blend(view: &dyn TopologyView, f: EntityId, area: f64, th: &HealThresholds) -
     // The straight rails: lines along the axis shared with another face.
     let mut rails: Vec<(EntityId, EntityId)> = Vec::new();
     for &e in view.face_edges(f) {
-        let Some(CurveDef::Line(line)) = geo::edge_curve(view, e).and_then(|(_, cc)| view.shapes().curve_def(cc.curve)) else { continue };
+        let Some(CurveDef::Line(line)) =
+            geo::edge_curve(view, e).and_then(|(_, cc)| view.shapes().curve_def(cc.curve))
+        else {
+            continue;
+        };
         if line.dir.cross(axis).norm() > ang.max(1e-9) {
             continue;
         }
-        let others: Vec<EntityId> = faces_around(view, e).into_iter().filter(|&g| g != f).collect();
-        let uses = view.coboundary(e).iter().filter(|i| view.dim_of(i.cell) == Some(Dim::Face)).count();
+        let others: Vec<EntityId> = faces_around(view, e)
+            .into_iter()
+            .filter(|&g| g != f)
+            .collect();
+        let uses = view
+            .coboundary(e)
+            .iter()
+            .filter(|i| view.dim_of(i.cell) == Some(Dim::Face))
+            .count();
         if let [g] = others[..]
             && uses == 2
         {
             rails.push((e, g));
         }
     }
-    let [(e1, g1), (e2, g2)] = rails[..] else { return None };
+    let [(e1, g1), (e2, g2)] = rails[..] else {
+        return None;
+    };
     // Both rails tangent to their neighbour: equal face-oriented normals at the rail midpoint.
     for (e, g) in [(e1, g1), (e2, g2)] {
         let p = geo::edge_sample(view, e, 0.5)?;
@@ -369,7 +480,13 @@ fn blend(view: &dyn TopologyView, f: EntityId, area: f64, th: &HealThresholds) -
     let mut ents = vec![f, g1, g2];
     ents.sort_unstable();
     ents.dedup();
-    Some(HealFinding { code: HealCode::BlendCandidate, entity: f, entities: ents, value: cyl.radius, extra: Some(extent) })
+    Some(HealFinding {
+        code: HealCode::BlendCandidate,
+        entity: f,
+        entities: ents,
+        value: cyl.radius,
+        extra: Some(extent),
+    })
 }
 
 /// One finding per chain of free edges (edges used by a single non-baffle face).
@@ -379,7 +496,11 @@ fn open_shells(view: &dyn TopologyView, edges: &[EntityId]) -> Vec<HealFinding> 
         .copied()
         .filter(|&e| !geo::is_degenerate(view, e))
         .filter(|&e| {
-            let uses: Vec<_> = view.coboundary(e).iter().filter(|i| view.dim_of(i.cell) == Some(Dim::Face)).collect();
+            let uses: Vec<_> = view
+                .coboundary(e)
+                .iter()
+                .filter(|i| view.dim_of(i.cell) == Some(Dim::Face))
+                .collect();
             matches!(uses[..], [u] if u.side != Side::Both)
         })
         .collect();
@@ -414,15 +535,33 @@ fn open_shells(view: &dyn TopologyView, edges: &[EntityId]) -> Vec<HealFinding> 
         .map(|mut es| {
             es.sort_unstable();
             let value = es.iter().filter_map(|&e| edge_length(view, e)).sum();
-            HealFinding { code: HealCode::OpenShell, entity: es[0], entities: es, value, extra: None }
+            HealFinding {
+                code: HealCode::OpenShell,
+                entity: es[0],
+                entities: es,
+                value,
+                extra: None,
+            }
         })
         .collect()
 }
 
 /// Near gaps between cells that share no face or neighbouring face.
 fn near_gaps(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Vec<HealFinding> {
-    let rep = merge_check(view, entities.as_deref().unwrap_or(&[]), &[], &MergeOptions { tol: None, kinds: MergeKinds::default() });
-    let near: Vec<_> = rep.pairs.iter().filter(|p| p.status == MergeStatus::Near).collect();
+    let rep = merge_check(
+        view,
+        entities.as_deref().unwrap_or(&[]),
+        &[],
+        &MergeOptions {
+            tol: None,
+            kinds: MergeKinds::default(),
+        },
+    );
+    let near: Vec<_> = rep
+        .pairs
+        .iter()
+        .filter(|p| p.status == MergeStatus::Near)
+        .collect();
     // A pair on the same face or on neighbouring faces is a feature of that patch (the corner
     // of a notch), not a gap between bodies or between unsewn faces.
     let ring1 = |c: EntityId| -> BTreeSet<EntityId> {
@@ -435,7 +574,9 @@ fn near_gaps(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Vec<H
         }
         all
     };
-    let apart = |a: EntityId, b: EntityId| ring1(a).is_disjoint(&faces_around(view, b)) && ring1(b).is_disjoint(&faces_around(view, a));
+    let apart = |a: EntityId, b: EntityId| {
+        ring1(a).is_disjoint(&faces_around(view, b)) && ring1(b).is_disjoint(&faces_around(view, a))
+    };
     let near: Vec<_> = near.into_iter().filter(|p| apart(p.a, p.b)).collect();
     // Report at the highest rank: an edge pair covered by a near face pair, and a vertex pair
     // covered by a near edge pair, add nothing.
@@ -444,14 +585,20 @@ fn near_gaps(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Vec<H
     let covered_edges: BTreeSet<(EntityId, EntityId)> = of_kind(MergeKind::Face)
         .flat_map(|p| {
             let (ea, eb) = (face_edges(p.a), face_edges(p.b));
-            ea.into_iter().flat_map(move |x| eb.clone().into_iter().map(move |y| (x.min(y), x.max(y))))
+            ea.into_iter()
+                .flat_map(move |x| eb.clone().into_iter().map(move |y| (x.min(y), x.max(y))))
         })
         .collect();
-    let ends = |e: EntityId| view.edge_ends(e).map(|(s, t)| vec![s, t]).unwrap_or_default();
+    let ends = |e: EntityId| {
+        view.edge_ends(e)
+            .map(|(s, t)| vec![s, t])
+            .unwrap_or_default()
+    };
     let covered_vertices: BTreeSet<(EntityId, EntityId)> = of_kind(MergeKind::Edge)
         .flat_map(|p| {
             let (va, vb) = (ends(p.a), ends(p.b));
-            va.into_iter().flat_map(move |x| vb.clone().into_iter().map(move |y| (x.min(y), x.max(y))))
+            va.into_iter()
+                .flat_map(move |x| vb.clone().into_iter().map(move |y| (x.min(y), x.max(y))))
         })
         .collect();
     near.iter()
@@ -460,7 +607,13 @@ fn near_gaps(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Vec<H
             MergeKind::Edge => !covered_edges.contains(&(p.a, p.b)),
             MergeKind::Vertex => !covered_vertices.contains(&(p.a, p.b)),
         })
-        .map(|p| HealFinding { code: HealCode::GapNear, entity: p.a, entities: vec![p.a, p.b], value: p.gap, extra: None })
+        .map(|p| HealFinding {
+            code: HealCode::GapNear,
+            entity: p.a,
+            entities: vec![p.a, p.b],
+            value: p.gap,
+            extra: None,
+        })
         .collect()
 }
 
@@ -481,11 +634,21 @@ pub fn heal_check(view: &dyn TopologyView, o: &HealOptions) -> Result<HealReport
                 return None;
             }
             let len = edge_length(view, e)?;
-            (len <= th.small_edge).then(|| HealFinding { code: HealCode::SmallEdge, entity: e, entities: vec![e], value: len, extra: None })
+            (len <= th.small_edge).then(|| HealFinding {
+                code: HealCode::SmallEdge,
+                entity: e,
+                entities: vec![e],
+                value: len,
+                extra: None,
+            })
         })
         .collect();
     findings.extend(edge_hits.into_iter().flatten());
-    let per_face: Vec<_> = scope.faces.par_iter().map(|&f| face_findings(view, f, &th)).collect();
+    let per_face: Vec<_> = scope
+        .faces
+        .par_iter()
+        .map(|&f| face_findings(view, f, &th))
+        .collect();
     let mut hole_by_key: BTreeMap<EntityId, HealFinding> = BTreeMap::new();
     for (fs, hs) in per_face {
         findings.extend(fs);
@@ -506,6 +669,14 @@ pub fn heal_check(view: &dyn TopologyView, o: &HealOptions) -> Result<HealReport
     findings.extend(hole_by_key.into_values());
     findings.extend(open_shells(view, &scope.edges));
     findings.extend(near_gaps(view, &o.entities));
-    findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.entity.cmp(&b.entity)).then(a.value.total_cmp(&b.value)));
-    Ok(HealReport { thresholds: th, findings })
+    findings.sort_by(|a, b| {
+        a.code
+            .cmp(&b.code)
+            .then(a.entity.cmp(&b.entity))
+            .then(a.value.total_cmp(&b.value))
+    });
+    Ok(HealReport {
+        thresholds: th,
+        findings,
+    })
 }

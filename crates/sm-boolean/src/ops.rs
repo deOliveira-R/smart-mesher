@@ -23,18 +23,63 @@ use crate::merge::{MergeKinds, MergeOptions, MergeReport, merge, merge_check};
 use crate::webcut::{CutTool, KeepSide, WebcutOptions, webcut};
 
 const BOOL_OUTPUTS: &[OutputRole] = &[
-    OutputRole::new("bodies", &[EntityKind::TopoBody], Cardinality::Many, "The result bodies, one per result volume."),
-    OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "The result volumes."),
-    OutputRole::new("new_faces", &[EntityKind::TopoFace], Cardinality::Many, "Faces on the intersection surfaces, created by the operation."),
-    OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The remaining faces of the result volumes."),
+    OutputRole::new(
+        "bodies",
+        &[EntityKind::TopoBody],
+        Cardinality::Many,
+        "The result bodies, one per result volume.",
+    ),
+    OutputRole::new(
+        "volumes",
+        &[EntityKind::TopoVolume],
+        Cardinality::Many,
+        "The result volumes.",
+    ),
+    OutputRole::new(
+        "new_faces",
+        &[EntityKind::TopoFace],
+        Cardinality::Many,
+        "Faces on the intersection surfaces, created by the operation.",
+    ),
+    OutputRole::new(
+        "faces",
+        &[EntityKind::TopoFace],
+        Cardinality::Many,
+        "The remaining faces of the result volumes.",
+    ),
 ];
 
 const WEBCUT_OUTPUTS: &[OutputRole] = &[
-    OutputRole::new("positive", &[EntityKind::TopoBody], Cardinality::Many, "Bodies on the side the tool normal points to."),
-    OutputRole::new("negative", &[EntityKind::TopoBody], Cardinality::Many, "Bodies on the opposite side."),
-    OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "The volumes of every piece."),
-    OutputRole::new("cut_faces", &[EntityKind::TopoFace], Cardinality::Many, "The faces generated on the tool surface."),
-    OutputRole::new("bodies", &[EntityKind::TopoBody], Cardinality::Many, "Pieces on neither side (empty for plane, surface and cylinder tools)."),
+    OutputRole::new(
+        "positive",
+        &[EntityKind::TopoBody],
+        Cardinality::Many,
+        "Bodies on the side the tool normal points to.",
+    ),
+    OutputRole::new(
+        "negative",
+        &[EntityKind::TopoBody],
+        Cardinality::Many,
+        "Bodies on the opposite side.",
+    ),
+    OutputRole::new(
+        "volumes",
+        &[EntityKind::TopoVolume],
+        Cardinality::Many,
+        "The volumes of every piece.",
+    ),
+    OutputRole::new(
+        "cut_faces",
+        &[EntityKind::TopoFace],
+        Cardinality::Many,
+        "The faces generated on the tool surface.",
+    ),
+    OutputRole::new(
+        "bodies",
+        &[EntityKind::TopoBody],
+        Cardinality::Many,
+        "Pieces on neither side (empty for plane, surface and cylinder tools).",
+    ),
 ];
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
@@ -46,16 +91,27 @@ pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<
     let mesh = ctx.state().layer::<MeshLayer>();
     for &v in volumes {
         if decomposed.contains(&v) {
-            return Err(OpError::Unsupported(format!("{v} is decomposed: undo the decomposition first")));
+            return Err(OpError::Unsupported(format!(
+                "{v} is decomposed: undo the decomposition first"
+            )));
         }
-        if model.instancing().prototypes.values().any(|p| p.volumes.contains(&v)) {
-            return Err(OpError::Unsupported(format!("{v} is a prototype volume of an instance: instanced volumes cannot be edited")));
+        if model
+            .instancing()
+            .prototypes
+            .values()
+            .any(|p| p.volumes.contains(&v))
+        {
+            return Err(OpError::Unsupported(format!(
+                "{v} is a prototype volume of an instance: instanced volumes cannot be edited"
+            )));
         }
         if let Some(m) = mesh {
             let mut cells = vec![v];
             cells.extend(topo.volume_faces(v).iter().copied());
             if let Some(mid) = cells.iter().find_map(|c| m.mesh_of(*c)) {
-                return Err(OpError::Invalid(format!("{v} has a mesh ({mid}): mesh.delete first")));
+                return Err(OpError::Invalid(format!(
+                    "{v} has a mesh ({mid}): mesh.delete first"
+                )));
             }
         }
     }
@@ -75,10 +131,21 @@ fn resolve_all(ctx: &ApplyCtx<'_>, ids: &[EntityId], kind: EntityKind) -> Result
 }
 
 fn bool_options(keep: Option<bool>, regularize: Option<bool>, tol: Option<f64>) -> BoolOptions {
-    BoolOptions { keep: keep.unwrap_or(false), regularize: regularize.unwrap_or(true), merge: true, max_gap: tol }
+    BoolOptions {
+        keep: keep.unwrap_or(false),
+        regularize: regularize.unwrap_or(true),
+        merge: true,
+        max_gap: tol,
+    }
 }
 
-fn run_boolean(ctx: &mut ApplyCtx<'_>, rule: BoolRule, a: &[EntityId], b: &[EntityId], opts: BoolOptions) -> Result<(), OpError> {
+fn run_boolean(
+    ctx: &mut ApplyCtx<'_>,
+    rule: BoolRule,
+    a: &[EntityId],
+    b: &[EntityId],
+    opts: BoolOptions,
+) -> Result<(), OpError> {
     resolve_all(ctx, a, EntityKind::TopoBody)?;
     resolve_all(ctx, b, EntityKind::TopoBody)?;
     let mut all: Vec<EntityId> = a.to_vec();
@@ -88,7 +155,9 @@ fn run_boolean(ctx: &mut ApplyCtx<'_>, rule: BoolRule, a: &[EntityId], b: &[Enti
     if let Some(t) = opts.max_gap {
         let max = ctx.layer::<ModelLayer>()?.tolerance().linear_max;
         if !(t.is_finite() && t >= 0.0 && t <= max) {
-            return Err(OpError::Invalid(format!("`tol` {t:e} is outside [0, linear_max = {max:e}]")));
+            return Err(OpError::Invalid(format!(
+                "`tol` {t:e} is outside [0, linear_max = {max:e}]"
+            )));
         }
     }
     // A tangent contact met after the arrangement started cannot be undone inside the kernel, but
@@ -99,18 +168,33 @@ fn run_boolean(ctx: &mut ApplyCtx<'_>, rule: BoolRule, a: &[EntityId], b: &[Enti
     let mut first_err: Option<OpError> = None;
     let (out, txn) = loop {
         let mut culprit: Option<usize> = None;
-        let r = topo_txn(ctx, |topo, _model| boolean_ordered(topo, rule, a, b, &opts, &defer, &mut culprit).map_err(OpError::from));
+        let r = topo_txn(ctx, |topo, _model| {
+            boolean_ordered(topo, rule, a, b, &opts, &defer, &mut culprit).map_err(OpError::from)
+        });
         match (r, culprit) {
             (Err(e), Some(c)) if rule != BoolRule::Subtract && !defer.contains(&c) => {
                 first_err.get_or_insert(e);
                 defer.push(c);
             }
             // The first tangent contact is the informative one when the reordered run fails too.
-            (Err(_), _) if first_err.is_some() => return Err(first_err.take().unwrap_or_else(|| OpError::Failed("boolean failed".into()))),
+            (Err(_), _) if first_err.is_some() => {
+                return Err(first_err
+                    .take()
+                    .unwrap_or_else(|| OpError::Failed("boolean failed".into())));
+            }
             (r, _) => break r?,
         }
     };
-    commit_topology(ctx, &txn, &[("bodies", &out.bodies), ("volumes", &out.volumes), ("new_faces", &out.new_faces), ("faces", &out.faces)])
+    commit_topology(
+        ctx,
+        &txn,
+        &[
+            ("bodies", &out.bodies),
+            ("volumes", &out.volumes),
+            ("new_faces", &out.new_faces),
+            ("faces", &out.faces),
+        ],
+    )
 }
 
 /// `model.unite {bodies, keep?, regularize?, tol?}`: the union of two or more bodies.
@@ -143,9 +227,17 @@ impl TypedOp for Unite {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if self.bodies.len() < 2 {
-            return Err(OpError::Invalid("`bodies` needs at least two bodies".into()));
+            return Err(OpError::Invalid(
+                "`bodies` needs at least two bodies".into(),
+            ));
         }
-        run_boolean(ctx, BoolRule::Unite, &self.bodies[..1], &self.bodies[1..], bool_options(self.keep, self.regularize, self.tol))
+        run_boolean(
+            ctx,
+            BoolRule::Unite,
+            &self.bodies[..1],
+            &self.bodies[1..],
+            bool_options(self.keep, self.regularize, self.tol),
+        )
     }
 }
 
@@ -177,9 +269,17 @@ impl TypedOp for Subtract {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if self.targets.is_empty() || self.tools.is_empty() {
-            return Err(OpError::Invalid("`targets` and `tools` must not be empty".into()));
+            return Err(OpError::Invalid(
+                "`targets` and `tools` must not be empty".into(),
+            ));
         }
-        run_boolean(ctx, BoolRule::Subtract, &self.targets, &self.tools, bool_options(self.keep, self.regularize, self.tol))
+        run_boolean(
+            ctx,
+            BoolRule::Subtract,
+            &self.targets,
+            &self.tools,
+            bool_options(self.keep, self.regularize, self.tol),
+        )
     }
 }
 
@@ -209,9 +309,17 @@ impl TypedOp for Intersect {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if self.bodies.len() < 2 {
-            return Err(OpError::Invalid("`bodies` needs at least two bodies".into()));
+            return Err(OpError::Invalid(
+                "`bodies` needs at least two bodies".into(),
+            ));
         }
-        run_boolean(ctx, BoolRule::Intersect, &self.bodies[..1], &self.bodies[1..], bool_options(self.keep, self.regularize, self.tol))
+        run_boolean(
+            ctx,
+            BoolRule::Intersect,
+            &self.bodies[..1],
+            &self.bodies[1..],
+            bool_options(self.keep, self.regularize, self.tol),
+        )
     }
 }
 
@@ -235,20 +343,37 @@ pub struct Imprint {
 impl TypedOp for Imprint {
     const NAME: &'static str = "model.imprint";
     const OUTPUTS: &'static [OutputRole] = &[
-        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The faces the imprint produced (the children of split faces)."),
-        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The new imprint edges."),
+        OutputRole::new(
+            "faces",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The faces the imprint produced (the children of split faces).",
+        ),
+        OutputRole::new(
+            "edges",
+            &[EntityKind::TopoEdge],
+            Cardinality::Many,
+            "The new imprint edges.",
+        ),
     ];
     const POSITIONAL: Option<&'static str> = Some("bodies");
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if self.bodies.len() < 2 {
-            return Err(OpError::Invalid("`bodies` needs at least two bodies".into()));
+            return Err(OpError::Invalid(
+                "`bodies` needs at least two bodies".into(),
+            ));
         }
         resolve_all(ctx, &self.bodies, EntityKind::TopoBody)?;
         let vols = volumes_of_bodies(ctx, &self.bodies)?;
         guard_volumes(ctx, &vols)?;
-        let o = ImprintOptions { merge: self.merge.unwrap_or(false), tol: self.tol };
-        let (out, txn) = topo_txn(ctx, |topo, _model| imprint_bodies(topo, &self.bodies, &o).map_err(OpError::from))?;
+        let o = ImprintOptions {
+            merge: self.merge.unwrap_or(false),
+            tol: self.tol,
+        };
+        let (out, txn) = topo_txn(ctx, |topo, _model| {
+            imprint_bodies(topo, &self.bodies, &o).map_err(OpError::from)
+        })?;
         commit_topology(ctx, &txn, &[("faces", &out.faces), ("edges", &out.edges)])
     }
 }
@@ -268,7 +393,11 @@ pub enum MergeKindName {
 fn kinds_of(list: &Option<Vec<MergeKindName>>) -> MergeKinds {
     match list {
         None => MergeKinds::default(),
-        Some(l) => MergeKinds { vertex: l.contains(&MergeKindName::Vertex), edge: l.contains(&MergeKindName::Edge), face: l.contains(&MergeKindName::Face) },
+        Some(l) => MergeKinds {
+            vertex: l.contains(&MergeKindName::Vertex),
+            edge: l.contains(&MergeKindName::Edge),
+            face: l.contains(&MergeKindName::Face),
+        },
     }
 }
 
@@ -285,7 +414,10 @@ fn interface_faces(model: &sm_model_api::Model) -> Vec<EntityId> {
     out.into_iter().collect()
 }
 
-fn check_scope(topo: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Result<Vec<EntityId>, OpError> {
+fn check_scope(
+    topo: &dyn TopologyView,
+    entities: &Option<Vec<EntityId>>,
+) -> Result<Vec<EntityId>, OpError> {
     let scope = entities.clone().unwrap_or_default();
     for &e in &scope {
         match Dim::of_real_kind(e.kind()) {
@@ -321,31 +453,62 @@ pub struct Merge {
 impl TypedOp for Merge {
     const NAME: &'static str = "model.merge";
     const OUTPUTS: &'static [OutputRole] = &[
-        OutputRole::new("vertices", &[EntityKind::TopoVertex], Cardinality::Many, "The surviving merged vertices."),
-        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The surviving merged edges."),
-        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The surviving merged faces."),
+        OutputRole::new(
+            "vertices",
+            &[EntityKind::TopoVertex],
+            Cardinality::Many,
+            "The surviving merged vertices.",
+        ),
+        OutputRole::new(
+            "edges",
+            &[EntityKind::TopoEdge],
+            Cardinality::Many,
+            "The surviving merged edges.",
+        ),
+        OutputRole::new(
+            "faces",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The surviving merged faces.",
+        ),
     ];
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let layer = ctx.layer::<ModelLayer>()?;
         let scope = check_scope(layer.host(), &self.entities)?;
         let skip = interface_faces(layer.model());
-        let opts = MergeOptions { tol: self.tol, kinds: kinds_of(&self.kinds) };
+        let opts = MergeOptions {
+            tol: self.tol,
+            kinds: kinds_of(&self.kinds),
+        };
         let max = layer.tolerance().linear_max;
         if let Some(t) = self.tol
             && !(t.is_finite() && t >= 0.0 && t <= max)
         {
-            return Err(OpError::Invalid(format!("`tol` {t:e} is outside [0, linear_max = {max:e}]")));
+            return Err(OpError::Invalid(format!(
+                "`tol` {t:e} is outside [0, linear_max = {max:e}]"
+            )));
         }
         if self.check_only.unwrap_or(false) {
             return Ok(());
         }
-        let (rep, txn) = topo_txn(ctx, |topo, _model| merge(topo, &scope, &skip, &opts).map_err(OpError::from))?;
+        let (rep, txn) = topo_txn(ctx, |topo, _model| {
+            merge(topo, &scope, &skip, &opts).map_err(OpError::from)
+        })?;
         let survivors = |kind: crate::merge::MergeKind| -> Vec<EntityId> {
-            let s: BTreeSet<EntityId> = rep.merged.iter().filter(|m| m.kind == kind).map(|m| m.keep).collect();
+            let s: BTreeSet<EntityId> = rep
+                .merged
+                .iter()
+                .filter(|m| m.kind == kind)
+                .map(|m| m.keep)
+                .collect();
             s.into_iter().collect()
         };
-        let (v, e, f) = (survivors(crate::merge::MergeKind::Vertex), survivors(crate::merge::MergeKind::Edge), survivors(crate::merge::MergeKind::Face));
+        let (v, e, f) = (
+            survivors(crate::merge::MergeKind::Vertex),
+            survivors(crate::merge::MergeKind::Edge),
+            survivors(crate::merge::MergeKind::Face),
+        );
         commit_topology(ctx, &txn, &[("vertices", &v), ("edges", &e), ("faces", &f)])
     }
 }
@@ -370,10 +533,20 @@ impl TypedQuery for MergeCheck {
     type Output = MergeReport;
 
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<MergeReport, OpError> {
-        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
+        let layer = state
+            .layer::<ModelLayer>()
+            .ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
         let scope = check_scope(layer.host(), &self.entities)?;
         let skip = interface_faces(layer.model());
-        let rep = merge_check(layer.host(), &scope, &skip, &MergeOptions { tol: self.tol, kinds: MergeKinds::default() });
+        let rep = merge_check(
+            layer.host(),
+            &scope,
+            &skip,
+            &MergeOptions {
+                tol: self.tol,
+                kinds: MergeKinds::default(),
+            },
+        );
         if let Some(e) = &rep.error {
             return Err(OpError::Invalid(e.clone()));
         }
@@ -398,9 +571,24 @@ pub struct Regularize {
 impl TypedOp for Regularize {
     const NAME: &'static str = "model.regularize";
     const OUTPUTS: &'static [OutputRole] = &[
-        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The surviving faces of joined pairs."),
-        OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The surviving edges of joined pairs."),
-        OutputRole::new("refused", &[EntityKind::TopoFace, EntityKind::TopoEdge], Cardinality::Many, "The faces and edges of pairs on the same geometry that the topology refused to join."),
+        OutputRole::new(
+            "faces",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The surviving faces of joined pairs.",
+        ),
+        OutputRole::new(
+            "edges",
+            &[EntityKind::TopoEdge],
+            Cardinality::Many,
+            "The surviving edges of joined pairs.",
+        ),
+        OutputRole::new(
+            "refused",
+            &[EntityKind::TopoFace, EntityKind::TopoEdge],
+            Cardinality::Many,
+            "The faces and edges of pairs on the same geometry that the topology refused to join.",
+        ),
     ];
     const POSITIONAL: Option<&'static str> = Some("volumes");
 
@@ -411,22 +599,41 @@ impl TypedOp for Regularize {
         resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         guard_volumes(ctx, &self.volumes)?;
         let ((rep, live), txn) = topo_txn(ctx, |topo, _model| {
-            let rep = crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from)?;
+            let rep = crate::regularize::regularize_volumes(topo, &self.volumes)
+                .map_err(OpError::from)?;
             // A refused cell can die later in the same pass (a neighbouring join absorbs it).
-            let live: BTreeSet<EntityId> = rep.refused.iter().flat_map(|r| [r.a, r.b]).filter(|&c| topo.is_alive(c)).collect();
+            let live: BTreeSet<EntityId> = rep
+                .refused
+                .iter()
+                .flat_map(|r| [r.a, r.b])
+                .filter(|&c| topo.is_alive(c))
+                .collect();
             Ok((rep, live))
         })?;
         // A later join in the same pass can retire an earlier keep (5+7 -> 5, then 3+5 -> 3).
         let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
             let dropped: BTreeSet<EntityId> = l.iter().map(|p| p.drop).collect();
-            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).filter(|k| !dropped.contains(k)).collect();
+            let s: BTreeSet<EntityId> = l
+                .iter()
+                .map(|p| p.keep)
+                .filter(|k| !dropped.contains(k))
+                .collect();
             s.into_iter().collect()
         };
         let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
         // Cells of refused pairs that are still alive (`live`) and were not absorbed by a later join.
-        let gone: BTreeSet<EntityId> = rep.joined_faces.iter().chain(&rep.joined_edges).map(|p| p.drop).collect();
+        let gone: BTreeSet<EntityId> = rep
+            .joined_faces
+            .iter()
+            .chain(&rep.joined_edges)
+            .map(|p| p.drop)
+            .collect();
         let refused: Vec<EntityId> = live.into_iter().filter(|c| !gone.contains(c)).collect();
-        commit_topology(ctx, &txn, &[("faces", &f), ("edges", &e), ("refused", &refused)])
+        commit_topology(
+            ctx,
+            &txn,
+            &[("faces", &f), ("edges", &e), ("refused", &refused)],
+        )
     }
 }
 
@@ -466,8 +673,14 @@ impl TypedQuery for HealCheck {
     const NAME: &'static str = "model.heal_check";
     type Output = crate::heal_check::HealReport;
 
-    fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<crate::heal_check::HealReport, OpError> {
-        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
+    fn run(
+        &self,
+        state: &State,
+        _cx: &QueryCtx<'_>,
+    ) -> Result<crate::heal_check::HealReport, OpError> {
+        let layer = state
+            .layer::<ModelLayer>()
+            .ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
         let scope = check_scope(layer.topo(), &self.entities)?;
         let o = crate::heal_check::HealOptions {
             entities: self.entities.as_ref().map(|_| scope),
@@ -540,30 +753,57 @@ pub enum PlaneSpec {
 }
 
 fn finite3(name: &str, v: [f64; 3]) -> Result<Vector3, OpError> {
-    if v.iter().all(|c| c.is_finite()) { Ok(Vector3::new(v[0], v[1], v[2])) } else { Err(OpError::Invalid(format!("`{name}` must be finite, got {v:?}"))) }
+    if v.iter().all(|c| c.is_finite()) {
+        Ok(Vector3::new(v[0], v[1], v[2]))
+    } else {
+        Err(OpError::Invalid(format!(
+            "`{name}` must be finite, got {v:?}"
+        )))
+    }
 }
 
 fn vertex_point(topo: &dyn TopologyView, v: EntityId) -> Result<Point3, OpError> {
     match topo.carrier(v) {
         Carrier::Point(p) if topo.is_alive(v) => Ok(*p),
-        _ => Err(OpError::WrongKind { id: v, expected: EntityKind::TopoVertex }),
+        _ => Err(OpError::WrongKind {
+            id: v,
+            expected: EntityKind::TopoVertex,
+        }),
     }
 }
 
-fn webcut_run(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutTool, keep: Option<KeepSide>, merge_opt: Option<bool>, imprint: Option<bool>) -> Result<(), OpError> {
+fn webcut_run(
+    ctx: &mut ApplyCtx<'_>,
+    targets: &[EntityId],
+    tool: CutTool,
+    keep: Option<KeepSide>,
+    merge_opt: Option<bool>,
+    imprint: Option<bool>,
+) -> Result<(), OpError> {
     webcut_run_flipped(ctx, targets, tool, keep, merge_opt, imprint, false)
 }
 
 /// [`webcut_run`] for a tool whose positive side is the library's negative one (a face with a
 /// reversed carrier): `keep` and the output roles are mirrored.
-fn webcut_run_flipped(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutTool, keep: Option<KeepSide>, merge_opt: Option<bool>, imprint: Option<bool>, flip: bool) -> Result<(), OpError> {
+fn webcut_run_flipped(
+    ctx: &mut ApplyCtx<'_>,
+    targets: &[EntityId],
+    tool: CutTool,
+    keep: Option<KeepSide>,
+    merge_opt: Option<bool>,
+    imprint: Option<bool>,
+    flip: bool,
+) -> Result<(), OpError> {
     if targets.is_empty() {
         return Err(OpError::Invalid("`targets` must not be empty".into()));
     }
     for &t in targets {
         ctx.require(t)?;
         if !matches!(t.kind(), EntityKind::TopoBody | EntityKind::TopoVolume) {
-            return Err(OpError::WrongKind { id: t, expected: EntityKind::TopoBody });
+            return Err(OpError::WrongKind {
+                id: t,
+                expected: EntityKind::TopoBody,
+            });
         }
     }
     let vols = volumes_of_bodies(ctx, targets)?;
@@ -576,12 +816,29 @@ fn webcut_run_flipped(ctx: &mut ApplyCtx<'_>, targets: &[EntityId], tool: CutToo
             KeepSide::Negative => KeepSide::Positive,
         };
     }
-    let o = WebcutOptions { merge: merge_opt.unwrap_or(true), imprint: imprint.unwrap_or(false), keep, consume_tool: false };
-    let (mut out, txn) = topo_txn(ctx, |topo, _model| webcut(topo, targets, &tool, &o).map_err(OpError::from))?;
+    let o = WebcutOptions {
+        merge: merge_opt.unwrap_or(true),
+        imprint: imprint.unwrap_or(false),
+        keep,
+        consume_tool: false,
+    };
+    let (mut out, txn) = topo_txn(ctx, |topo, _model| {
+        webcut(topo, targets, &tool, &o).map_err(OpError::from)
+    })?;
     if flip {
         core::mem::swap(&mut out.positive, &mut out.negative);
     }
-    commit_topology(ctx, &txn, &[("positive", &out.positive), ("negative", &out.negative), ("volumes", &out.volumes), ("cut_faces", &out.cut_faces), ("bodies", &out.bodies)])
+    commit_topology(
+        ctx,
+        &txn,
+        &[
+            ("positive", &out.positive),
+            ("negative", &out.negative),
+            ("volumes", &out.volumes),
+            ("cut_faces", &out.cut_faces),
+            ("bodies", &out.bodies),
+        ],
+    )
 }
 
 /// `model.webcut_plane {targets, plane, keep?, merge?, imprint?}`: split bodies or volumes with a
@@ -629,15 +886,28 @@ impl TypedOp for WebcutPlane {
                 (Point3::new(o.x, o.y, o.z), finite3("normal", p.normal)?)
             }
             PlaneSpec::Vertices(v) => {
-                let p: Vec<Point3> = v.vertices.iter().map(|&x| vertex_point(topo, x)).collect::<Result<_, _>>()?;
+                let p: Vec<Point3> = v
+                    .vertices
+                    .iter()
+                    .map(|&x| vertex_point(topo, x))
+                    .collect::<Result<_, _>>()?;
                 let n = (p[1] - p[0]).cross(p[2] - p[0]);
                 (p[0], n)
             }
         };
         if normal.norm().is_nan() || normal.norm() <= 0.0 {
-            return Err(OpError::Invalid("the plane is degenerate (zero normal)".into()));
+            return Err(OpError::Invalid(
+                "the plane is degenerate (zero normal)".into(),
+            ));
         }
-        webcut_run(ctx, &self.targets, CutTool::Plane { origin, normal }, self.keep, self.merge, self.imprint)
+        webcut_run(
+            ctx,
+            &self.targets,
+            CutTool::Plane { origin, normal },
+            self.keep,
+            self.merge,
+            self.imprint,
+        )
     }
 }
 
@@ -674,21 +944,49 @@ impl TypedOp for WebcutSurface {
         let layer = ctx.layer::<ModelLayer>()?;
         let topo = layer.host();
         let tol = layer.tolerance().linear;
-        let plane = topo.face_plane(self.face, tol.max(1e-9)).map_err(|e| OpError::Failed(e.to_string()))?;
+        let plane = topo
+            .face_plane(self.face, tol.max(1e-9))
+            .map_err(|e| OpError::Failed(e.to_string()))?;
         let Some((n, d)) = plane else {
             let (def, sense) = match topo.carrier(self.face) {
                 Carrier::Surface(sc) => (topo.shapes().surface_def(sc.surface).cloned(), sc.sense),
                 _ => (None, sm_topo_api::Sense::Forward),
             };
             return match def {
-                Some(def @ (SurfaceDef::Cylinder(_) | SurfaceDef::Sphere(_) | SurfaceDef::Cone(_) | SurfaceDef::Torus(_) | SurfaceDef::EllipticCylinder(_) | SurfaceDef::EllipticCone(_))) => {
-                    webcut_run_flipped(ctx, &self.targets, CutTool::Surface { surface: def, window: None }, self.keep, self.merge, self.imprint, sense == sm_topo_api::Sense::Reversed)
-                }
-                _ => Err(OpError::Unsupported(format!("{} carries a surface webcut_surface cannot use (it takes a plane, cylinder, sphere, cone, torus or elliptic face)", self.face))),
+                Some(
+                    def @ (SurfaceDef::Cylinder(_)
+                    | SurfaceDef::Sphere(_)
+                    | SurfaceDef::Cone(_)
+                    | SurfaceDef::Torus(_)
+                    | SurfaceDef::EllipticCylinder(_)
+                    | SurfaceDef::EllipticCone(_)),
+                ) => webcut_run_flipped(
+                    ctx,
+                    &self.targets,
+                    CutTool::Surface {
+                        surface: def,
+                        window: None,
+                    },
+                    self.keep,
+                    self.merge,
+                    self.imprint,
+                    sense == sm_topo_api::Sense::Reversed,
+                ),
+                _ => Err(OpError::Unsupported(format!(
+                    "{} carries a surface webcut_surface cannot use (it takes a plane, cylinder, sphere, cone, torus or elliptic face)",
+                    self.face
+                ))),
             };
         };
         let origin = Point3::new(n.x * d, n.y * d, n.z * d);
-        webcut_run(ctx, &self.targets, CutTool::Plane { origin, normal: n }, self.keep, self.merge, self.imprint)
+        webcut_run(
+            ctx,
+            &self.targets,
+            CutTool::Plane { origin, normal: n },
+            self.keep,
+            self.merge,
+            self.imprint,
+        )
     }
 }
 
@@ -724,16 +1022,30 @@ impl TypedOp for WebcutCylinder {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !(self.radius.is_finite() && self.radius > 0.0) {
-            return Err(OpError::Invalid("`radius` must be finite and positive".into()));
+            return Err(OpError::Invalid(
+                "`radius` must be finite and positive".into(),
+            ));
         }
         let axis = finite3("axis", self.axis)?;
         let c = finite3("center", self.center)?;
         if axis.norm().is_nan() || axis.norm() <= 0.0 {
             return Err(OpError::Invalid("`axis` must not be zero".into()));
         }
-        let frame = Frame::from_z(Point3::new(c.x, c.y, c.z), axis).map_err(|e| OpError::Invalid(e.to_string()))?;
-        let cyl = sm_geom_api::Cylinder::new(frame, self.radius).map_err(|e| OpError::Invalid(e.to_string()))?;
-        webcut_run(ctx, &self.targets, CutTool::Surface { surface: SurfaceDef::Cylinder(cyl), window: None }, self.keep, self.merge, self.imprint)
+        let frame = Frame::from_z(Point3::new(c.x, c.y, c.z), axis)
+            .map_err(|e| OpError::Invalid(e.to_string()))?;
+        let cyl = sm_geom_api::Cylinder::new(frame, self.radius)
+            .map_err(|e| OpError::Invalid(e.to_string()))?;
+        webcut_run(
+            ctx,
+            &self.targets,
+            CutTool::Surface {
+                surface: SurfaceDef::Cylinder(cyl),
+                window: None,
+            },
+            self.keep,
+            self.merge,
+            self.imprint,
+        )
     }
 }
 

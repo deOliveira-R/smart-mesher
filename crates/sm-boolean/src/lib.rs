@@ -29,22 +29,25 @@ pub mod ops;
 mod pcurves;
 mod pieces;
 mod poly2;
-pub mod regularize;
 mod registry;
+pub mod regularize;
 pub mod subdivide;
 mod toolbody;
 pub mod webcut;
 
-pub use error::BooleanError;
 pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
-pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
-pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 pub use bvh::CandidateStats;
+pub use error::BooleanError;
 pub use heal_check::{HealCode, HealFinding, HealOptions, HealReport, HealThresholds, heal_check};
-pub use regularize::{JoinedPair, RefusedJoin, RegularizeReport, regularize_volumes};
+pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use locate::{PointLocation, face_interior_point, locate_point, volume_interior_point};
+pub use merge::{
+    MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell,
+    SkipReason, merge, merge_check,
+};
 pub use pieces::candidate_pair_stats;
-pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
+pub use regularize::{JoinedPair, RefusedJoin, RegularizeReport, regularize_volumes};
+pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 
