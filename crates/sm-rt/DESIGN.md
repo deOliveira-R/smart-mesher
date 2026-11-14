@@ -282,13 +282,18 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   (a hashed direction of the local point), so the first pass can find no claimant. The point is then
   still inside the lattice footprint, so a second pass takes the first non-excluded in-range candidate in
   the same order and asks its leaf with the direction nudged toward the candidate's centre (the particle's
-  direction is unchanged), provided the ray stays within `tol` of that hexagon over the next `4 tol` (a
-  ray leaving at a vertex is not carried into it). So a ray along a shared face, which every ray from an
+  direction is unchanged), provided the distance outside each flat within `tol` of the point plus the outward drift over one
+  edge (`p / sqrt 3`, the longest run along a flat) stays within `tol` (a ray leaving at a vertex, however
+  grazing, is not carried into it). After a zero-length exit of a leaf (a step of at most `tol` ending at
+  its outer face) this pass goes first, so two leaves that each give a tangential point back cannot hand it
+  to each other; the leaf the pass picks gets the flat the ray runs along as its entry face, and a leaf
+  keeps a ray on its side of its entry plane while the ray is tangential to it (no hashed tie ends the run). So a ray along a shared face, which every ray from an
   element centre through a vertex does for one run, is carried along it and never ends with a
   `Boundary` (vacuum) inside the lattice; a ray that runs along an outer flat of the lattice may end there
   or continue (tolerance-ambiguous, as along a Cartesian wall). Cartesian lattices are unchanged. Tested:
-  `tests/hex_world.rs::rays_along_or_near_shared_faces_reach_the_lattice_boundary` (both orientations, six
-  vertex directions and +-1e-15..1e-9 rad off them, closed-form totals) and
+  `tests/hex_world.rs::rays_along_or_near_shared_faces_reach_the_lattice_boundary` (both orientations, every
+  element centre of a 7x7, six vertex directions and +-1e-15..1e-6 rad off them, closed-form totals, no
+  ray lost or carried beyond the footprint) and
   `tests/hex_world.rs::vertex_ties_follow_the_documented_rule` (the ordering).
 * **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
   circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh

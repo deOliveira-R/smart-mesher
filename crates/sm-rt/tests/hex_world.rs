@@ -492,29 +492,35 @@ fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
     for o in [Or::X, Or::Y] {
         let (w, l) = world(o, 7, 1, ORIGIN());
         let base = if o == Or::X { 30.0f64 } else { 0.0 };
-        for (ci, cj) in [(3, 3), (2, 3), (3, 2)] {
+        for (ci, cj) in (0..7).flat_map(|i| (0..7).map(move |j| (i, j))) {
             let c = l.element_center([ci, cj, 0]);
             let org = p3(c.x, c.y, 0.1);
             for k in 0..6 {
-                for eps in [0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-11, -1e-11, 1e-9, -1e-9] {
+                for eps in [0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-9, -1e-9, 1e-7, -1e-7, 1e-6, -1e-6] {
                     let a = (base + 60.0 * f64::from(k)).to_radians() + eps;
                     let d = [a.cos(), a.sin()];
                     let what = format!("{o:?} centre ({ci},{cj}) dir {k} eps {eps:e}");
-                    // A run within 1e-7 of an outer flat is ambiguous (the tolerance band, 1e-9,
+                    // A run within 1e-7 of an outer flat is ambiguous (the tolerance band
                     // blurs where a ray along a flat is judged to leave it): ending there or
                     // continuing along it are both fine, truncating before it is not.
                     let (lo, wide) = footprint_run(o, &l, org, d, 1e-7);
-                    let tight = footprint_run(o, &l, org, d, 1e-12).1;
-                    assert!(lo > 1.0, "{what}: closed form {lo}");
+                    assert!(lo > 0.5, "{what}: closed form {lo}");
                     let (got, end) = trace(&w, org, v3(d[0], d[1], 0.0)).unwrap();
                     assert_ne!(end, "lost", "{what}");
                     assert_eq!(end, "boundary", "{what}");
                     let total: f64 = got.iter().map(|g| g.1).sum();
+                    // No overrun: carried no further than the run within the tolerance band
+                    // (tol = 1e-6) of the lattice footprint.
+                    if total > wide + 1e-6 {
+                        let band = footprint_run(o, &l, org, d, 1e-6).1;
+                        assert!(total <= band + 1e-6, "{what}: overrun, total {total} vs {band}");
+                    }
                     if lo < wide - 1e-6 {
                         assert!(total >= lo - 1e-6 && total <= wide + 1e-6, "{what}: total {total} outside [{lo}, {wide}]");
                     } else {
                         // The tolerance band also blurs the exit of a ray 1e-9 rad off a flat.
-                        let tol = if eps.abs() >= 1e-9 { 2e-8 } else { 2e-9 };
+                        let tight = footprint_run(o, &l, org, d, 1e-12).1;
+                        let tol = if eps.abs() >= 1e-9 { 2e-8_f64.max(10.0 * eps.abs()) } else { 2e-9 };
                         assert!((total - tight).abs() < tol, "{what}: total {total} vs closed form {tight}");
                         exact += 1;
                     }
@@ -523,5 +529,5 @@ fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
         }
     }
     // Most rays have no ambiguity at all: those must match the closed form.
-    assert!(exact > 150, "{exact}");
+    assert!(exact > 1000, "{exact}");
 }

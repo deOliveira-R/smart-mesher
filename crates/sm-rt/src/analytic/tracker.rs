@@ -413,6 +413,14 @@ impl AnalyticTracker {
         })
     }
 
+    /// The face of regular cell `c` a ray from `p` along `d` runs along (see `Leaf::on_face_along`).
+    pub(crate) fn on_face_along(&self, c: CellId, p: Point3, d: Vector3) -> Option<FaceId> {
+        if c.is_none() || c == CellId::COMPLEMENT || c.get() >= self.leaf.n_cells() {
+            return None;
+        }
+        self.leaf.on_face_along(c.get(), a3(p), av(d)).map(FaceId)
+    }
+
     fn region_of(&self, c: CellId) -> RegionId {
         if c == CellId::COMPLEMENT {
             self.complement.unwrap_or(RegionId::NONE)
@@ -505,7 +513,8 @@ impl AnalyticTracker {
 
     /// The first of the sorted `sc.hits` that is an event: a crossing out of the current cell
     /// into another cell (or, from the complement, into one), before the box exit.
-    fn first_event(&self, cur_cell: Option<u32>, comp: bool, t_box: f64, o: V3, d: V3, sc: &mut Scratch) -> Option<(f64, u32, Next)> {
+    fn first_event(&self, cur_cell: Option<u32>, entry: Option<u32>, comp: bool, t_box: f64, ray: (V3, V3), sc: &mut Scratch) -> Option<(f64, u32, Next)> {
+        let (o, d) = ray;
         for i in 0..sc.hits.len() {
             let (t, s) = sc.hits[i];
             if comp && t_box <= t {
@@ -518,7 +527,7 @@ impl AnalyticTracker {
             }
             let sense: i8 = if dn > 0.0 { 1 } else { -1 };
             if let Some(c) = cur_cell
-                && self.leaf.contains(c as usize, p, d, Some((s, sense)), &mut sc.counters)
+                && self.leaf.contains_keeping(c as usize, p, d, Some((s, sense)), entry, &mut sc.counters)
             {
                 continue;
             }
@@ -564,7 +573,7 @@ impl AnalyticTracker {
                     sc.hits.retain(|h| h.0 > after && h.0 <= t_exit);
                     sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
                     after = t_exit;
-                    event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+                    event = self.first_event(cur_cell, entry, comp, t_box, (o, d), sc);
                     event.is_some()
                 });
             }
@@ -577,7 +586,7 @@ impl AnalyticTracker {
                     self.push_hits(s, o, d, max_dist, entry, sc);
                 }
                 sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-                event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+                event = self.first_event(cur_cell, entry, comp, t_box, (o, d), sc);
             }
         }
 

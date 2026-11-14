@@ -494,11 +494,22 @@ impl Leaf {
 
     /// Does the cell contain `p`, with the side of one surface optionally forced?
     pub(crate) fn contains(&self, c: usize, p: V3, d: V3, force: Option<(u32, i8)>, cnt: &mut WorkCounters) -> bool {
+        self.contains_keeping(c, p, d, force, None, cnt)
+    }
+
+    /// [`Self::contains`] for the cell a ray is in, which entered through (or runs along) the
+    /// surface `keep`: while `p` is within the on-face band of it and `d` is tangential to it,
+    /// the ray stays on the cell's side of it (the hashed tie would otherwise end a run along a
+    /// face at once, when the hash puts the point outside).
+    pub(crate) fn contains_keeping(&self, c: usize, p: V3, d: V3, force: Option<(u32, i8)>, keep: Option<u32>, cnt: &mut WorkCounters) -> bool {
         'terms: for th in self.terms(c) {
             for &h in th {
                 let s = h >> 1;
                 let sense = match force {
                     Some((fs, fsn)) if fs == s => fsn,
+                    _ if keep == Some(s) && self.surfs[s as usize].sd(p).abs() <= self.tol && dot(self.surfs[s as usize].normal(p), d).abs() <= self.ang => {
+                        if h & 1 == 1 { 1 } else { -1 }
+                    }
                     _ => self.sense(s as usize, p, d, cnt),
                 };
                 if (sense > 0) != (h & 1 == 1) {
@@ -574,6 +585,13 @@ impl Leaf {
     /// The lowest surface within the on-face band of `p` among the cell's surfaces.
     pub(crate) fn on_face(&self, c: usize, p: V3) -> Option<u32> {
         self.cell_surfs(c).iter().copied().find(|&s| self.surfs[s as usize].sd(p).abs() <= self.tol)
+    }
+
+    /// Among the cell's surfaces within the on-face band of `p`, the one the direction `d` is most
+    /// nearly parallel to (lowest id on a tie): the surface a ray along a face runs on.
+    pub(crate) fn on_face_along(&self, c: usize, p: V3, d: V3) -> Option<u32> {
+        let key = |s: u32| dot(self.surfs[s as usize].normal(p), d).abs();
+        self.cell_surfs(c).iter().copied().filter(|&s| self.surfs[s as usize].sd(p).abs() <= self.tol).min_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)))
     }
 
     /// The lowest surface of the leaf within the on-face band of `p` (for a point in the

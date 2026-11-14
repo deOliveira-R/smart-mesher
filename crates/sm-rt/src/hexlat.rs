@@ -73,6 +73,26 @@ pub(crate) fn sd(o: Orient, p: f64, u: [f64; 2]) -> f64 {
     n.iter().map(|n| (u[0] * n[0] + u[1] * n[1]).abs()).fold(0.0, f64::max) - 0.5 * p
 }
 
+/// Whether a run of length `len` from `u` (relative to an element centre) along `dir` can leave
+/// the hexagon by more than `tol`: `u` itself is more than `tol` outside, or for a flat within
+/// `tol` of `u` the distance outside it plus the outward drift over the run exceeds `tol`.
+pub(crate) fn run_leaves(o: Orient, p: f64, u: [f64; 2], dir: [f64; 2], len: f64, tol: f64) -> bool {
+    if sd(o, p, u) > tol {
+        return true;
+    }
+    let h = s32();
+    let n: [[f64; 2]; 3] = match o {
+        Orient::XRows => [[1.0, 0.0], [0.5, h], [-0.5, h]],
+        Orient::YRows => [[h, 0.5], [0.0, 1.0], [-h, 0.5]],
+    };
+    n.iter().any(|n| {
+        let a = u[0] * n[0] + u[1] * n[1];
+        let outside = a.abs() - 0.5 * p;
+        let out = a.signum() * (dir[0] * n[0] + dir[1] * n[1]);
+        outside >= -tol && outside + out.max(0.0) * len > tol
+    })
+}
+
 /// Half extents `(x, y)` of the box circumscribing one hexagon.
 pub(crate) fn half_box(o: Orient, p: f64) -> [f64; 2] {
     let v = p / 3.0_f64.sqrt();

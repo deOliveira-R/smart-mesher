@@ -747,7 +747,7 @@ impl WorldTracker {
                             tests += 1;
                             let q = pb.inv.pt(w);
                             let d = av3(hashed_direction(p3(w)));
-                            if let Loc::Hit(h) = self.locate_rec(pb.child, q, pb.inv.vec(d), &mut sc, None)
+                            if let Loc::Hit(h) = self.locate_rec(pb.child, q, pb.inv.vec(d), &mut sc, None, false)
                                 && h.strict
                             {
                                 if issues.len() < MAX_ISSUES {
@@ -879,7 +879,7 @@ impl WorldTracker {
     /// `excl`: the path of an instance to skip (`Some(rest)` while on that path; at the leaf with
     /// nothing left the instance is the excluded one). A particle that just left an instance
     /// through an outer face must not be given that instance back by rounding.
-    fn locate_rec(&self, comp: usize, p: [f64; 3], dir: [f64; 3], sc: &mut Scratch, excl: Option<&[Level]>) -> Loc {
+    fn locate_rec(&self, comp: usize, p: [f64; 3], dir: [f64; 3], sc: &mut Scratch, excl: Option<&[Level]>, carry: bool) -> Loc {
         let c = &self.comps[comp];
         if box_empty(&c.bounds) || !inside_box(&c.bounds, p, self.tol) {
             return Loc::Miss;
@@ -915,7 +915,7 @@ impl WorldTracker {
                         continue;
                     }
                     let sub_excl = excl.and_then(|r| r.split_first()).filter(|(l, _)| l.component.get() == comp && l.instance.get() == i).map(|(_, rest)| rest);
-                    match self.locate_rec(pl.child, pl.inv.pt(p), pl.inv.vec(dir), sc, sub_excl) {
+                    match self.locate_rec(pl.child, pl.inv.pt(p), pl.inv.vec(dir), sc, sub_excl, carry) {
                         Loc::Miss => {}
                         Loc::Overlap => return Loc::Overlap,
                         Loc::Hit(h) => match &best {
@@ -941,31 +941,15 @@ impl WorldTracker {
                 }
             }
             Kind::Lattice(l) => {
-                for idx in l.cands(p, dir, self.tol) {
-                    if !l.in_range(idx) {
-                        continue;
-                    }
-                    let lin = l.lin(idx);
-                    let ce = l.center(idx);
-                    let q = sub(p, ce);
-                    let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
-                    match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl) {
-                        Loc::Miss => {}
-                        Loc::Overlap => return Loc::Overlap,
-                        Loc::Hit(mut h) => {
-                            h.base += self.cell_off_in_lattice(l, lin);
-                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
-                            return Loc::Hit(h);
-                        }
-                    }
-                }
                 // A hex point on a shared flat, with the direction along it: each leaf rules on
-                // its own tangential tie and may refuse. The point is still inside the footprint
-                // (a candidate other than the excluded one holds it within `tol`), so take the
-                // first candidate in order, ruled on with the direction nudged toward its centre
-                // (the state's direction is not changed), provided the ray stays within `tol` of
-                // its hexagon over the next `4 tol`.
-                if let Shape::Hex(or) = l.shape {
+                // its own tangential tie and may take the point yet leave at once (two leaves
+                // handing a ray back and forth with zero-length steps) or refuse it. The point is
+                // still inside the footprint, so take the first candidate in order other than the
+                // excluded one, ruled on with the direction nudged toward its centre (the state's
+                // direction is not changed), provided the ray stays within `tol` of its hexagon
+                // over a run of one edge. After a zero-length exit (`carry`) this goes first.
+                let carry_pass = |sc: &mut Scratch| -> Option<Hit> {
+                    let Shape::Hex(or) = l.shape else { return None };
                     for idx in l.cands(p, dir, self.tol) {
                         if !l.in_range(idx) {
                             continue;
@@ -976,20 +960,56 @@ impl WorldTracker {
                         }
                         let q = sub(p, l.center(idx));
                         let n = norm(q);
-                        // Only a ray that keeps running within `tol` of this hexagon (along the
-                        // flat): a ray leaving it at a vertex is not carried into it.
-                        let ahead = [q[0] + 4.0 * self.tol * dir[0], q[1] + 4.0 * self.tol * dir[1]];
-                        if n <= 0.0 || hexlat::sd(or, l.pitch[0], ahead) > self.tol {
+                        // For each flat within `tol` of the point, the distance outside it plus
+                        // the sideways drift over a run of one edge (`p / sqrt 3`, the longest run
+                        // along a flat) stays within `tol`, however grazing the departure. A ray
+                        // leaving at a vertex is not carried into it.
+                        let edge = l.pitch[0] / 3.0_f64.sqrt();
+                        if n <= 0.0 || hexlat::run_leaves(or, l.pitch[0], [q[0], q[1]], [dir[0], dir[1]], edge, self.tol) {
                             continue;
                         }
-                        if let Loc::Hit(mut h) = self.locate_rec(l.fill[lin] as usize, q, scale(q, -1.0 / n), sc, None) {
+                        if let Loc::Hit(mut h) = self.locate_rec(l.fill[lin] as usize, q, scale(q, -1.0 / n), sc, None, false) {
+                            // The leaf must know it is on the flat the ray runs along, or it may
+                            // end the run at once through that plane (rounding in the direction).
+                            if let (Body::Csg(a), Kind::Leaf(_)) = (&self.protos[h.proto].tracker, &self.comps[l.fill[lin] as usize].kind)
+                                && let Some(f) = a.on_face_along(h.local.cell, p3(q), v3(dir))
+                            {
+                                h.local.on_face = Some(f);
+                            }
+                            h.base += self.cell_off_in_lattice(l, lin);
+                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
+                            return Some(h);
+                        }
+                    }
+                    None
+                };
+                if carry && excl.is_some_and(|r| r.first().is_some_and(|lv| lv.component.get() == comp))
+                    && let Some(h) = carry_pass(sc)
+                {
+                    return Loc::Hit(h);
+                }
+                for idx in l.cands(p, dir, self.tol) {
+                    if !l.in_range(idx) {
+                        continue;
+                    }
+                    let lin = l.lin(idx);
+                    let ce = l.center(idx);
+                    let q = sub(p, ce);
+                    let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
+                    match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl, carry) {
+                        Loc::Miss => {}
+                        Loc::Overlap => return Loc::Overlap,
+                        Loc::Hit(mut h) => {
                             h.base += self.cell_off_in_lattice(l, lin);
                             h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
                             return Loc::Hit(h);
                         }
                     }
                 }
-                Loc::Miss
+                match carry_pass(sc) {
+                    Some(h) => Loc::Hit(h),
+                    None => Loc::Miss,
+                }
             }
         }
     }
@@ -1018,7 +1038,7 @@ impl WorldTracker {
             let (oj, dj) = (pj.inv.pt(ou), pj.inv.vec(du));
             // Midpoint of the chord strictly inside the partner.
             if inside_box(&pj.bbox, mid, self.tol)
-                && let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(mid), pj.inv.vec(hashed_dir_arr(mid)), sc, None)
+                && let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(mid), pj.inv.vec(hashed_dir_arr(mid)), sc, None, false)
                 && h.strict
             {
                 return true;
@@ -1039,7 +1059,7 @@ impl WorldTracker {
                     return true;
                 }
                 let q = madd(ou, du, (t + 4.0 * self.tol).min(t_end));
-                if let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(q), pj.inv.vec(du), sc, None)
+                if let Loc::Hit(h) = self.locate_rec(pj.child, pj.inv.pt(q), pj.inv.vec(du), sc, None, false)
                     && h.strict
                 {
                     return true;
@@ -1382,7 +1402,7 @@ impl Tracker for WorldTracker {
                 return Ok(self.global_located(Hit { proto: pi, base: fr.base, local: loc, levels, strict: true }));
             }
         }
-        Ok(match self.locate_rec(self.root, pa, d, scratch, None) {
+        Ok(match self.locate_rec(self.root, pa, d, scratch, None, false) {
             Loc::Hit(h) => self.global_located(h),
             Loc::Miss | Loc::Overlap => Located::new(CellId::NONE, RegionId::NONE, None),
         })
@@ -1461,7 +1481,7 @@ impl Tracker for WorldTracker {
             }
             StepEnd::Boundary { surface, face, .. } => {
                 // The leaf's outer face: relocate the exit point from the root.
-                match self.locate_rec(self.root, new_pos, d, sc, Some(&st.levels[..])) {
+                match self.locate_rec(self.root, new_pos, d, sc, Some(&st.levels[..]), s.dist <= self.tol) {
                     Loc::Overlap => Ok(self.lost_step(st, LostCause::Overlap)),
                     Loc::Hit(h) => {
                         let to = self.global_located(h);
