@@ -1,6 +1,7 @@
 //! Lattice reuse (draft D4): one prototype per distinct universe, copies by `model.copy`, the
 //! result conformal and equal to the flat partition in volumes, blocks and tags.
 mod common;
+use core::f64::consts::PI;
 use common::decks::*;
 use common::*;
 use sm_csgbrep::OpenmcOptions;
@@ -149,15 +150,33 @@ fn a_5x5_lattice_with_outer_stays_conformal() {
     assert_eq!(stat(&da, "imprints"), 16);
 }
 
-/// A kernel limit both paths still meet, pinned so a fix shows up here: uniting the four pieces
-/// of a ring (the lattice `outer`) around a 9 x 9 array is refused (`cannot find a point inside a
-/// fragment`). It happens in the flat partition too, before any copy.
+/// The 9 x 9 array with a `p / 2` ring (the lattice `outer`) used to be refused by the kernel
+/// (`cannot find a point inside a fragment`); it imports on both paths with analytic volumes.
 #[test]
-fn a_ring_around_a_large_array_is_a_typed_kernel_error() {
+fn a_ring_around_a_large_array_imports_with_analytic_volumes() {
     let deck = pin_lattice(9, 1.0, (0.2, 0.25, 0.3), 1.0, true);
+    let (r1, r2, r3, p, h, n2) = (0.2_f64, 0.25_f64, 0.3_f64, 1.0_f64, 1.0_f64, 81.0_f64);
     for opts in [None, flat()] {
-        let e = Rig::new().import_with(&deck, Some(&materials(4)), opts).unwrap_err().to_string();
-        assert!(e.contains("csg.kernel") && e.contains("uniting the pieces of cell 1/900"), "{e}");
+        let mut r = Rig::new();
+        let d = r.import_with(&deck, Some(&materials(4)), opts).unwrap();
+        assert_eq!(d.outputs["deck_volumes"].len(), 4 * 81 + 1);
+        let mut by_name: BTreeMap<String, f64> = BTreeMap::new();
+        let m = r.model();
+        for c in m.colors().filter(|c| c.domain == Domain::Volume) {
+            by_name.insert(c.name.clone(), m.volumes_of_color(c.id).iter().map(|&v| r.volume(v)).sum());
+        }
+        let want = [
+            ("m1", n2 * PI * r1 * r1 * h),
+            ("m2", n2 * PI * (r3 * r3 - r2 * r2) * h),
+            ("m3", n2 * (p * p - PI * r3 * r3) * h),
+            // The ring: the 10 x 10 container minus the 9 x 9 array.
+            ("m4", (100.0 - 81.0) * h),
+        ];
+        for (k, w) in want {
+            assert!((by_name[k] - w).abs() < 1e-9 * w, "{k}: {} vs {w}", by_name[k]);
+        }
+        let total: f64 = d.outputs["deck_volumes"].iter().map(|&v| r.volume(v)).sum();
+        assert!((total - 100.0 * h).abs() < 1e-9 * 100.0, "total {total}");
     }
 }
 

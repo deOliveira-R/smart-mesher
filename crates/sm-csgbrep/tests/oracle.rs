@@ -165,15 +165,19 @@ const IMPORTING: &[(&str, usize)] = &[
     ("disconnected", 0),
     ("placed_z", 0),
     ("ref_pin_h2", 0),
+    ("ref_pin", 0),
     ("ref_mini3x3_h2", 590),
     ("ref_assembly17_h2", 590),
+    ("ref_mini3x3", 0),
+    ("ref_assembly17", 0),
 ];
 
 #[test]
 fn membership_at_the_600_oracle_points_equals_openmc() {
     for &(name, lattice_floor) in IMPORTING {
+        let t0 = std::time::Instant::now();
         let t = compare(name, &fixture(name, "geometry.xml")).unwrap_or_else(|e| panic!("{name}: {e}"));
-        eprintln!("{name}: {} points, {} outside, {} undecided, {} lattice checks, {} contested", t.points, t.outside, t.undecided, t.lattice_checked, t.contested);
+        eprintln!("{name}: {:.1}s, {} points, {} outside, {} undecided, {} lattice checks, {} contested", t0.elapsed().as_secs_f64(), t.points, t.outside, t.undecided, t.lattice_checked, t.contested);
         assert!(t.disagreements.is_empty(), "{name}: {} disagreements, first: {:?}", t.disagreements.len(), t.disagreements.iter().take(3).collect::<Vec<_>>());
         assert!(t.points >= 595 && t.undecided <= 5, "{name}: {} decided, {} undecided", t.points, t.undecided);
         assert_eq!(t.contested, 0, "{name}: points inside several volumes");
@@ -181,16 +185,23 @@ fn membership_at_the_600_oracle_points_equals_openmc() {
     }
 }
 
-/// The W4-REFCORPUS decks as the corpus writes them (20 cm tall pins, the 460 cm BEAVRS assembly)
-/// are refused by the kernel today with a typed `csg.kernel` error naming a deck surface: the
-/// `_h2` variants above carry the same decks at height 2. When a kernel fix lets one import, this
-/// test fails and the fixture moves to `IMPORTING`.
+/// The 460 cm BEAVRS assembly imports since the W4-BOOL-TOOLS kernel fix (about 11 minutes in a
+/// debug build, hence `ignore`). The oracle finds 24 of its 600 points (z between 300 and 370 cm,
+/// the cells 52 and 54, fuel and clad) in the borated-water volume, where OpenMC has fuel or
+/// Zircaloy: a kernel or import defect, pinned here with its count so a fix shows up (then move
+/// the deck to `IMPORTING`). The three shorter corpus decks agree at all 600 points.
 #[test]
-fn the_tall_corpus_decks_are_refused_typed_by_the_kernel() {
-    for name in ["ref_pin", "ref_mini3x3", "ref_assembly17", "ref_beavrs_assembly"] {
-        let e = compare(name, &fixture(name, "geometry.xml")).err().unwrap_or_else(|| panic!("{name} imports now: move it to IMPORTING"));
-        assert!(e.contains("csg.kernel") && e.contains("deck surface"), "{name}: {e}");
+#[ignore = "slow (about 11 minutes in a debug build)"]
+fn the_beavrs_assembly_imports_and_disagrees_with_openmc_at_a_few_points() {
+    let name = "ref_beavrs_assembly";
+    let t = compare(name, &fixture(name, "geometry.xml")).unwrap_or_else(|e| panic!("{name}: {e}"));
+    eprintln!("{name}: {} points, {} disagreements", t.points, t.disagreements.len());
+    for d in &t.disagreements {
+        eprintln!("  {d}");
     }
+    assert!(t.points >= 595 && t.undecided <= 5 && t.contested == 0);
+    assert!(t.lattice_checked >= 590, "{} lattice checks", t.lattice_checked);
+    assert!(!t.disagreements.is_empty() && t.disagreements.len() <= 24, "{} disagreements (24 when pinned)", t.disagreements.len());
 }
 
 /// The text between `<universes>` and `</universes>`, mapped by `f` on its rows.
