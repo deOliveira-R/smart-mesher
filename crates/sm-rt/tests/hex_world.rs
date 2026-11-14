@@ -714,6 +714,23 @@ fn rays_on_the_layer_interface_reach_the_lattice_boundary() {
     assert!(checked > 4 * 2 * 250, "{checked}");
 }
 
+/// Rays on the z-wall with `dz` just above `tol.angular` stay within `tol.linear` of the wall
+/// over a run of one element: none lost (600 rays per kind, as the reviewed probe). Slow in a
+/// debug build: `cargo test --release -p sm-rt --test hex_world -- --ignored`.
+#[test]
+#[ignore = "slow in debug; run with --release"]
+fn rays_on_the_layer_interface_with_small_dz_reach_the_lattice_boundary() {
+    let mut dzs = Vec::new();
+    for m in [1.001e-9, 1e-8, 1e-7] {
+        dzs.extend([m, -m]);
+    }
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 2, ORIGIN());
+        let n = zwall_rays(o, &w, &l, &dzs, 600);
+        assert!(n > 6 * 1000, "{n}");
+    }
+}
+
 /// The same z-wall rays on a world built with a wider angular tolerance: the band the fix covers
 /// follows it.
 #[test]

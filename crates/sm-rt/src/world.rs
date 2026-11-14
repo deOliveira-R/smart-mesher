@@ -953,7 +953,7 @@ impl WorldTracker {
                 // element the ray left is not handed to the neighbouring layer of the same column,
                 // which holds it only within `tol` and ends the run at once (zero-length
                 // hand-backs between the two layers).
-                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= self.info.tol.angular;
+                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= self.zpar_limit(l);
                 let excl_col = excl.and_then(|r| r.first()).filter(|lv| lv.component.get() == comp && parallel_z).map(|lv| lv.lattice);
                 let same_column = |idx: [i32; 3]| {
                     let Shape::Hex(or) = l.shape else { return false };
@@ -1042,9 +1042,15 @@ impl WorldTracker {
     /// angular tolerance (parallel to the z-walls) and the point on a z-wall (within the on-face
     /// band): into the element, `10 * tol.angular`, so the leaf's tie on its z plane (hashed
     /// whenever `|n . d| <= tol.angular`) is decided inward.
+    fn zpar_limit(&self, l: &Lat) -> f64 {
+        // Parallel to the z-walls: `dz` too small to leave the on-face band (`tol`) over a run
+        // of one element (at most two pitches), or within the angular tolerance.
+        self.info.tol.angular.max(self.tol / (2.0 * l.pitch[0].abs().max(f64::MIN_POSITIVE)))
+    }
+
     fn zwall_nudge(&self, l: &Lat, qz: f64, dz: f64) -> Option<f64> {
         let ang = self.info.tol.angular;
-        (matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0 && dz.abs() <= ang && (qz.abs() - 0.5 * l.pitch[2]).abs() <= self.tol).then(|| -qz.signum() * 10.0 * ang)
+        (matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0 && dz.abs() <= self.zpar_limit(l) && (qz.abs() - 0.5 * l.pitch[2]).abs() <= self.tol).then(|| -qz.signum() * 10.0 * ang)
     }
 
     fn global_located(&self, h: Hit) -> Located {
