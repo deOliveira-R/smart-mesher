@@ -4,6 +4,7 @@ use crate::derived::TopologyViewExt;
 use crate::error::QueryError;
 use crate::geometry::{self, FaceCentral, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
+use crate::overlay::EdgeSampler;
 use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind};
 use sm_core::{EntityId, EntityKind, Vector3};
 use sm_geom_api::{GeomStore, ModelTolerance, PCurve, ShapeValue, Uv};
@@ -75,6 +76,32 @@ pub trait TopologyView: Send + Sync {
     /// The pcurve of a coedge, if recorded. It is parametrized by the same parameter as the
     /// edge's curve (valid over the edge's carrier range).
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve>;
+
+    /// End offsets of an edge whose sampled ends are displaced from its carrier curve: the
+    /// vectors added to the point sampled at the edge's start and end, blended linearly in the
+    /// normalized position along the edge, so the sampled ends land on the edge's vertices
+    /// (an edge re-pointed by a virtual collapse). `None` (the default) means no offset: sample
+    /// the carrier as is. Mesher-side samplers over `&dyn TopologyView` apply this;
+    /// `Overlay::edge_sampler` is the reference implementation.
+    fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
+        let _ = edge;
+        None
+    }
+
+    /// A sampler for the curve of live edge `edge` by normalized position `s` in `[0, 1]`
+    /// (see [`EdgeSampler`]): `None` for an unknown or dead edge or one without a curve. The
+    /// default samples a `Carrier::Curve` edge with [`TopologyView::edge_end_offsets`]; an
+    /// overlay also samples its composite edges (members weighted by arc length). Use this to
+    /// sample any edge through `&dyn TopologyView`.
+    fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
+        if self.state(edge) != Some(EntityState::Live) {
+            return None;
+        }
+        let Carrier::Curve(cc) = self.carrier(edge) else { return None };
+        let (t0, t1) = if cc.sense == Sense::Forward { (cc.range.lo, cc.range.hi) } else { (cc.range.hi, cc.range.lo) };
+        let off = self.edge_end_offsets(edge).unwrap_or_default();
+        Some(EdgeSampler::single(self.shapes().curve(cc.curve)?, t0, t1, off, self.tolerance().linear))
+    }
 
     /// Kind of shell `ring` of `volume`.
     fn shell_kind(&self, volume: EntityId, ring: u16) -> Option<ShellKind>;

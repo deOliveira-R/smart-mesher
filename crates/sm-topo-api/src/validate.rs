@@ -270,7 +270,7 @@ fn check_coboundary(view: &dyn TopologyView, out: &mut Vec<TopoIssue>) {
 /// Check carriers against shape: vertices have points, edges have curves whose end points match
 /// their vertices, edge samples lie on the surfaces of the faces that use them (all within the
 /// per-entity tolerances), and CSG volumes only reference surfaces in the store. Virtual
-/// (composite) faces and bodies are skipped.
+/// (composite) edges, faces and bodies are skipped.
 pub fn validate_geometry(view: &dyn TopologyView) -> Vec<TopoIssue> {
     let store = view.shapes();
     let mut out = Vec::new();
@@ -284,6 +284,9 @@ pub fn validate_geometry(view: &dyn TopologyView) -> Vec<TopoIssue> {
             continue;
         }
         let Carrier::Curve(cc) = view.carrier(e) else {
+            if matches!(view.carrier(e), Carrier::Composite(_)) {
+                continue;
+            }
             out.push(v(e, Rule::MissingGeometry, "edge has no curve"));
             continue;
         };

@@ -39,7 +39,7 @@ pub use error::{QueryError, TopoError};
 pub use geometry::{FaceCentral, FaceMoments, Moments, PointClass};
 pub use join::{JoinEdgesPlan, JoinFacesPlan, plan_join_edges, plan_join_faces};
 pub use lineage::LineageLog;
-pub use overlay::{Overlay, OverlayData, PlaneCut, VirtualCut, VirtualOp, VirtualOverlay, VolumeCut};
+pub use overlay::{Collapsed, EdgeSampler, Overlay, OverlayData, PlaneCut, VirtualCut, VirtualOp, VirtualOverlay, VolumeCut};
 pub use types::{
     CapFace, Carrier, CellFlags, CoedgeKey, CoedgeKind, CoedgeSpec, Coincidence, CornerKey, CurveCarrier, CutOutcome, Dim, EntityState, FaceCut, FacePair, FaceUseSpec, Incidence,
     InnerLoopAssign, Lineage, LineageEvent, LineageKind, LineageRecord, ModKind, OpId, OpSummary, Region, Sense, ShellAssign, ShellKind, ShellSpec, Side, SurfaceCarrier, VertexId, VolumeId, WrongKind, BodyId, EdgeId, FaceId,
