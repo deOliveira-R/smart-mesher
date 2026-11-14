@@ -16,9 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3, Vector3};
-use sm_geom_api::{Cylinder, Frame, Interval, Line, Plane, SurfaceDef};
+use sm_geom_api::{Cylinder, Frame, Interval, Line, Plane, Sphere, SurfaceDef};
 use sm_topo_api::CurveCarrier;
-use sm_topo_api::{CoedgeSpec, Dim, Sense, Side, SurfaceCarrier, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CoedgeSpec, Dim, Sense, Side, SurfaceCarrier, TopologyEdit, TopologyView, TopologyViewExt};
 
 use crate::arrange;
 use crate::bodies;
@@ -359,6 +359,84 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
     Ok(out)
 }
 
+/// A frame for the sphere `s` whose poles lie away from the circles that the planes and spheres
+/// among the faces of `v` cut on it.
+///
+/// A sphere is the same surface in any frame, but its seam and poles sit where the frame puts
+/// them. A small circle that passes near a pole makes the moment quadrature of the pieces
+/// inaccurate (the error is 1e-9 at about 25 degrees from the pole, 1e-4 at 3 degrees, 3 % on
+/// the pole), and a cut loop that straddles the seam is the hardest case of the arrangement.
+/// Axes along the circle normals turn those circles into latitudes (exact, one seam crossing);
+/// great circles along a meridian are exact too. Candidates, in order: the circle normals, the
+/// frame's own axis, a fixed fibonacci set. The first with an angular margin of 0.5 rad to every
+/// circle wins, else the one with the best margin, so the choice is deterministic. Without
+/// circles the frame of `s` is kept.
+fn sphere_frame<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> Frame {
+    let (c, r) = (s.frame.origin, s.radius);
+    // (unit direction of the circle's axis from the centre, angular radius)
+    let mut circles: Vec<(Vector3, f64)> = Vec::new();
+    for &f in view.volume_faces(v) {
+        let Carrier::Surface(sc) = view.carrier(f) else { continue };
+        let (n, h) = match view.shapes().surface_def(sc.surface) {
+            Some(SurfaceDef::Plane(p)) => (p.frame.z, p.frame.z.dot(p.frame.origin - c)),
+            Some(SurfaceDef::Sphere(o)) => {
+                let d = o.frame.origin - c;
+                let dist = d.norm();
+                if dist <= 1e-12 * r {
+                    continue;
+                }
+                (d * (1.0 / dist), (dist * dist + r * r - o.radius * o.radius) / (2.0 * dist))
+            }
+            _ => continue,
+        };
+        if h.abs() < r * (1.0 - 1e-9) {
+            circles.push((n, (h / r).acos()));
+        }
+    }
+    if circles.is_empty() {
+        return s.frame;
+    }
+    let half_pi = core::f64::consts::FRAC_PI_2;
+    let margin = |p: Vector3| -> f64 {
+        circles
+            .iter()
+            .map(|&(n, rho)| {
+                let th = p.dot(n).clamp(-1.0, 1.0).acos();
+                // A great circle along a meridian (axis in its plane) is exact in the parameters.
+                if (th - half_pi).abs() < 1e-9 && (rho - half_pi).abs() < 1e-9 {
+                    return half_pi;
+                }
+                (th - rho).abs().min((core::f64::consts::PI - th - rho).abs())
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // Axes along the circle normals first (the circles become latitudes), then the user's axis,
+    // then a fixed fibonacci set.
+    let mut cands: Vec<Vector3> = circles.iter().map(|c| c.0).collect();
+    cands.push(s.frame.z);
+    const N: usize = 64;
+    for i in 0..N {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
+        let rad = (1.0 - z * z).sqrt();
+        let a = i as f64 * 2.399_963_229_728_653;
+        cands.push(Vector3::new(rad * a.cos(), rad * a.sin(), z));
+    }
+    // A margin of 0.5 rad (about 28 degrees) is good enough: take the first such axis.
+    const ENOUGH: f64 = 0.5;
+    let mut best = (cands[0], margin(cands[0]));
+    for &p in &cands {
+        let m = margin(p);
+        if m >= ENOUGH {
+            best = (p, m);
+            break;
+        }
+        if m > best.1 + 1e-3 {
+            best = (p, m);
+        }
+    }
+    Frame::from_z(c, best.0).unwrap_or(s.frame)
+}
+
 /// What [`split_closed`] did to one volume.
 enum Closed {
     /// The tool does not cross the volume; it lies on the positive side (`true`) or the negative.
@@ -372,6 +450,18 @@ enum Closed {
 /// pieces that share the tool fragments (the cut faces). The inside is the negative side.
 fn split_closed<E: TopologyEdit + ?Sized>(topo: &mut E, v: EntityId, def: &SurfaceDef, handle: EntityId, window: Option<[f64; 6]>) -> Result<Closed, BooleanError> {
     use crate::boolean::{Class, imprint_classify};
+    // A sphere is the same surface in any frame: put its poles where no cut circle comes near
+    // (see `sphere_frame`), under a handle of its own.
+    let (def, handle) = match def {
+        SurfaceDef::Sphere(s) => {
+            let f = sphere_frame(&*topo, v, s);
+            let d = SurfaceDef::Sphere(Sphere::new(f, s.radius)?);
+            let h = topo.shapes_mut()?.add_surface(d.clone())?;
+            (d, h)
+        }
+        _ => (def.clone(), handle),
+    };
+    let def = &def;
     let mut bounds = sm_core::Aabb::empty();
     match window {
         Some(w) => {

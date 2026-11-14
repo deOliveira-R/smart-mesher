@@ -166,13 +166,23 @@ plane). A tool wholly inside the target gives an inside piece (the ball) and an 
 a cavity; a tool that misses the target, or contains it, returns the target whole on the side it
 lies on. The positive side is where the surface normal points (the outside of the solid).
 
+A sphere is rotation symmetric, so `webcut` re-frames it per target (`sphere_frame`): the axis goes
+along a cut circle's normal (latitude circles are exact), failing that to a fixed direction with
+a margin of 0.5 rad to every circle, because a cut circle near a pole costs accuracy (1e-4 at 3
+degrees from the pole) and a loop straddling the seam is the weakest case of the arrangement. The
+cut face is stored on the re-framed surface.
+
 Limits: a tool surface that coincides with part of the target boundary is `Unsupported`; spindle and
 horn tori do not exist (`Torus::new`); NURBS and implicit tools stay typed refusals. Volumes of
-curved pieces come from `volume_moments` quadrature and agree with the analytic value to 1e-9 for
-frames aligned with the axes, to about 2e-9 for a tilted sphere cut (measured; the property test
-uses 1e-8 there).
+curved pieces come from `volume_moments` quadrature; the property tests (random sphere,
+torus and elliptic cylinder frames) hold them to 1e-9 of the analytic value. A cut loop near a
+torus or elliptic-cone singularity is not re-framed (only spheres are), so a tilted torus whose
+loop passes near its seam crossing is the next place to watch.
 
-Fixed on the way: `arrange::orient_seam_loop` took the tangent at the last sample of a closing
+Fixed on the way: `geo::face_aabb` took a sphere face's box from its edges alone (the seam and the
+degenerate poles), so a plane that missed the seam's box never met the sphere in the candidate-pair
+search and no cut was found (every plane not perpendicular to the sphere's axis, in most positions).
+A sphere face now uses the whole sphere's box. `arrange::orient_seam_loop` took the tangent at the last sample of a closing
 loop from the first sample (a wrap by a period), so a sphere tilted by about 8 to 24 degrees cut
 through its centre by a plane failed with an open shell (booleans and webcut alike). The tangent
 now comes from the previous sample at the end of the list.

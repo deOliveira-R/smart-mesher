@@ -79,6 +79,16 @@ pub(crate) fn face_aabb<V: TopologyView + ?Sized>(view: &V, f: EntityId, pad: f6
             }
         }
     }
+    // A sphere patch bulges beyond its boundary (a cap, or the seam alone for a whole sphere), so
+    // the box of its edges can miss the surface; use the whole sphere's box.
+    if let Carrier::Surface(sc) = view.carrier(f)
+        && let Some(sm_geom_api::SurfaceDef::Sphere(s)) = view.shapes().surface_def(sc.surface)
+    {
+        let (c, r) = (s.frame.origin, s.radius);
+        b = Aabb::empty();
+        b.extend(Point3::new(c.x - r, c.y - r, c.z - r));
+        b.extend(Point3::new(c.x + r, c.y + r, c.z + r));
+    }
     if !b.is_empty() {
         b.lo = Point3::new(b.lo.x - pad, b.lo.y - pad, b.lo.z - pad);
         b.hi = Point3::new(b.hi.x + pad, b.hi.y + pad, b.hi.z + pad);

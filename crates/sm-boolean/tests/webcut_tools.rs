@@ -75,6 +75,21 @@ fn sphere_crossing_the_brick() {
     assert_eq!(k.shared, 1);
 }
 
+/// A sphere centred on a face, an edge and a corner of the brick: its great circles meet at
+/// vertices of the target; the inside is 1/2, 1/4 and 1/8 of the ball.
+#[test]
+fn sphere_centred_on_a_face_an_edge_and_a_corner() {
+    let r = 1.5;
+    let ball = 4.0 / 3.0 * PI * r * r * r;
+    for (centre, share) in [([0.0, 0.0, -3.0], 0.5), ([0.0, -3.0, -3.0], 0.25), ([-3.0, -3.0, -3.0], 0.125)] {
+        let def = SurfaceDef::Sphere(Sphere::new(frame(centre, [0.0, 0.0, 1.0]), r).unwrap());
+        let k = cut(def, [6.0; 3], [0.0; 3], true).unwrap_or_else(|e| panic!("{centre:?}: {e}"));
+        assert!((k.inside - ball * share).abs() < 1e-9, "{centre:?}: {} want {}", k.inside, ball * share);
+        assert!((k.inside + k.outside - 216.0).abs() < 1e-9);
+        assert_eq!(k.shared, 1, "{centre:?}");
+    }
+}
+
 #[test]
 fn sphere_cut_keep_sides() {
     let r = 1.5;
@@ -229,6 +244,32 @@ fn sphere_lens_by_a_second_sphere_cut() {
     assert!(sm_topo_api::validate(t).is_empty());
 }
 
+/// A sphere tool on both halves of a brick cut through the sphere's centre (the pattern of the CSG
+/// partition: one tool applied to every piece): each half gets its own cut face, and `merge`
+/// welds the two hemispherical caps along the circle on the cut plane. The result is conformal
+/// and valid, volumes are exact.
+#[test]
+fn a_sphere_tool_on_two_halves_merges_conformally() {
+    use sm_boolean::ops::{AxisPlane, Merge, PlaneAxis, PlaneSpec, WebcutPlane, WebcutSurface};
+    // Centres off the cut plane, on it (the circle runs through the poles), and on the other side.
+    for centre in [[0.4, 0.2, 0.1], [0.0, 0.0, 0.0], [-0.4, 0.2, 0.1]] {
+        let mut r = Rig::cc();
+        let b = r.brick([6.0; 3], [0.0; 3]);
+        let halves = r.run(&WebcutPlane { targets: vec![b.body], plane: PlaneSpec::Axis(AxisPlane { axis: PlaneAxis::X, offset: 0.0 }), keep: None, merge: None, imprint: None }).unwrap();
+        let both: Vec<EntityId> = halves.outputs["positive"].iter().chain(&halves.outputs["negative"]).copied().collect();
+        let s = r.sphere(1.5, centre);
+        let d = r.run(&WebcutSurface { targets: both, face: s.faces[0], keep: None, merge: None, imprint: None }).unwrap_or_else(|e| panic!("{centre:?}: {e}"));
+        r.run(&Merge { entities: None, kinds: None, tol: None, check_only: None }).unwrap();
+        let t = r.topo();
+        assert!(sm_topo_api::validate(t).is_empty() && sm_topo_api::validate_geometry(t).is_empty(), "{centre:?}");
+        let vol = |role: &str| -> f64 { d.outputs[role].iter().map(|&b| t.boundary(b).iter().map(|e| volume_of(t, e.cell)).sum::<f64>()).sum() };
+        assert!((vol("negative") - 4.0 / 3.0 * PI * 1.5f64.powi(3)).abs() < 1e-9, "{centre:?}: {}", vol("negative"));
+        assert!((vol("negative") + vol("positive") - 216.0).abs() < 1e-9, "{centre:?}");
+        assert_eq!(d.outputs["negative"].len(), 2, "{centre:?}");
+        assert_eq!(d.outputs["positive"].len(), 2, "{centre:?}");
+    }
+}
+
 /// Op-level scenario: a sphere, a torus and a cone face used as webcut tools on three bricks.
 fn tools_scenario(r: &mut Rig) -> sm_op_api::Hash256 {
     use sm_boolean::ops::WebcutSurface;
@@ -324,14 +365,16 @@ mod prop {
         /// A random sphere crossing the bottom face of a wide brick: the part inside the brick is
         /// the spherical cap of height `r + c` (c is the centre height).
         #[test]
-        fn sphere_cap_volumes(r in 0.5f64..2.0, c in -0.8f64..0.8, x in -2.0f64..2.0, y in -2.0f64..2.0, tx in -0.5f64..0.5, ty in -0.5f64..0.5) {
+        fn sphere_cap_volumes(r in 0.5f64..2.0, c in -0.8f64..0.8, x in -2.0f64..2.0, y in -2.0f64..2.0, tx in -4.0f64..4.0, ty in -4.0f64..4.0) {
+            // Any axis direction: loops that wrap the axis and loops that do not (the sphere's seam
+            // and poles end up anywhere relative to the cut).
             let c = c * r;
             let def = SurfaceDef::Sphere(Sphere::new(frame([x, y, c], [tx, ty, 1.0]), r).unwrap());
             let h = r + c;
             let want = PI * h * h * (3.0 * r - h) / 3.0;
             let k = cut(def, [12.0, 12.0, 6.0], [0.0, 0.0, 3.0], true).unwrap();
-            // Tilted frames: the moment quadrature of a wavy cut boundary is good to about 2e-9.
-            prop_assert!((k.inside - want).abs() < 1e-8 * want.max(1.0), "{} vs {}", k.inside, want);
+            // The sphere's frame is re-chosen away from the cut circles, so any axis gives 1e-9.
+            prop_assert!((k.inside - want).abs() < 1e-9 * want.max(1.0), "{} vs {}", k.inside, want);
             prop_assert!((k.inside + k.outside - 864.0).abs() < 1e-8);
             prop_assert!(k.shared >= 1);
         }
