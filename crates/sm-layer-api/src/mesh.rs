@@ -104,7 +104,8 @@ pub struct MeshLayer {
     entries: BTreeMap<EntityId, MeshEntry>,
     /// Ascending ids of `entries`, kept for [`MeshCatalog::mesh_ids`].
     ids: Vec<EntityId>,
-    links: BTreeMap<(EntityId, EntityId), LevelMap>,
+    /// Shared (`Arc`) so a copy-on-write clone of the layer does not deep-copy level maps.
+    links: BTreeMap<(EntityId, EntityId), Arc<LevelMap>>,
     alloc: SerialAlloc,
 }
 
@@ -326,7 +327,7 @@ fn digest_entry(d: &mut Digest, id: EntityId, e: &MeshEntry) {
 }
 
 /// The link section of the digest (only called when `links` is not empty).
-fn digest_links(d: &mut Digest, links: &BTreeMap<(EntityId, EntityId), LevelMap>) {
+fn digest_links(d: &mut Digest, links: &BTreeMap<(EntityId, EntityId), Arc<LevelMap>>) {
     d.u64(links.len() as u64);
     for ((f, c), m) in links {
         d.id(*f);
@@ -359,10 +360,19 @@ impl MeshCatalog for MeshLayer {
         self.entries.get(&id).map(|e| e.mesh())
     }
     fn maps_from(&self, fine: EntityId) -> Vec<(EntityId, &LevelMap)> {
-        self.links
+        // Keys ascend by `(fine, coarse)`: scan only the run of `fine`. Ids order by raw value
+        // (kind byte first), so the lowest id is serial 0 of the lowest kind.
+        let Some(lo) = EntityKind::ALL
             .iter()
-            .filter(|((f, _), _)| *f == fine)
-            .map(|((_, c), m)| (*c, m))
+            .filter_map(|k| EntityId::new(*k, 0))
+            .min()
+        else {
+            return Vec::new();
+        };
+        self.links
+            .range((fine, lo)..)
+            .take_while(|((f, _), _)| *f == fine)
+            .map(|((_, c), m)| (*c, &**m))
             .collect()
     }
     fn maps_to(&self, coarse: EntityId) -> Vec<(EntityId, &LevelMap)> {
@@ -370,7 +380,7 @@ impl MeshCatalog for MeshLayer {
         self.links
             .iter()
             .filter(|((_, c), _)| *c == coarse)
-            .map(|((f, _), m)| (*f, m))
+            .map(|((f, _), m)| (*f, &**m))
             .collect()
     }
     fn views(&self) -> &[InstancedView] {
@@ -399,7 +409,7 @@ impl CatalogEdit for MeshLayer {
                 "these meshes are already linked".into(),
             ));
         }
-        self.links.insert((f, c), map);
+        self.links.insert((f, c), Arc::new(map));
         Ok(())
     }
 

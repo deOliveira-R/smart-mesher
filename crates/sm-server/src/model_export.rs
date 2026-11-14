@@ -40,7 +40,7 @@ pub(crate) fn facets_of_model(model: &ModelLayer, chord_tol: f64) -> Result<Mode
             "`source: model` does not place instances yet: the model has instances (export a mesh instead)",
         ));
     }
-    let topo = model.topo();
+    let topo = model.host();
     let opts = TessOptions { chord_tol, angle_tol: core::f64::consts::PI, max_edge: f64::INFINITY };
     let (mut faces, mut skipped) = (Vec::new(), 0u64);
     let mut sides = Vec::new();

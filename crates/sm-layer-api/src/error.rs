@@ -34,6 +34,19 @@ pub enum LayerError {
     /// A reference fixture failed (it wraps topology and geometry errors).
     #[error("fixture: {0}")]
     Fixture(#[from] FixtureError),
+    /// A virtual-topology overlay does not fit the layer: it was built on another host
+    /// (revision or content hash differs) than the layer's, so [`ModelLayer::set_overlay`]
+    /// refuses it.
+    ///
+    /// [`ModelLayer::set_overlay`]: crate::ModelLayer::set_overlay
+    #[error("overlay: {0}")]
+    Overlay(String),
+    /// A host edit ([`topo_txn`](crate::topo_txn)) invalidated the layer's overlay: re-applying
+    /// the recorded virtual operations on the edited host failed (for example a composite's
+    /// member face was deleted). The edit is rolled back and the layer is unchanged. The
+    /// error names the offending cell; remove the virtual cell first (`Overlay::remove`).
+    #[error("host edit refused, it breaks the virtual topology: {0}")]
+    OverlayRebase(TopoError),
     /// A transaction helper was used incorrectly (a previous `topo_txn` was never committed,
     /// a role names an id the transaction did not create, an id is in two roles, ...).
     #[error("layer transaction: {0}")]
