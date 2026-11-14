@@ -16,6 +16,7 @@ use sm_topo_api::{VirtualOp, VirtualOverlay};
 pub struct VirtualInfo {
     /// Restrict to the operations that created or use this cell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "PartitionVertex", "PartitionEdge", "PartitionFace"]))]
     pub id: Option<EntityId>,
 }
 
