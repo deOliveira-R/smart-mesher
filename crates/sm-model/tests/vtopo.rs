@@ -10,7 +10,7 @@ use common::{Factory, cell_complex, id, meta, topo_store};
 use proptest::prelude::*;
 use serde_json::json;
 use sm_boolean::BooleanPlugin;
-use sm_boolean::ops::{AxisPlane, PlaneAxis, PlaneSpec, Unite, WebcutPlane};
+use sm_boolean::ops::{AxisPlane, PlaneAxis, PlaneSpec, Subtract, Unite, WebcutPlane};
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::SurfaceDef;
 use sm_layer_api::{CoreLayers, ModelLayer};
@@ -113,7 +113,7 @@ fn composite_of_the_cylinder_lateral_halves_has_the_analytic_area() {
         assert_eq!(list(&s, "PartitionFace"), vec![comp]);
         let faces = list(&s, "TopoFace");
         assert!(lat.iter().all(|m| !faces.contains(m)));
-        assert_eq!(faces.len(), before - lat.len() + 1);
+        assert_eq!(faces.len(), before - lat.len(), "model.list of a real kind lists real cells only");
         // The host keeps them.
         assert!(lat.iter().all(|m| layer(&s).host().is_alive(*m)));
         // virtual_info names the members and the op.
@@ -634,4 +634,156 @@ proptest! {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------ W4-VTOPO-FIX
+
+fn realized_brick() -> (Session, Vec<EntityId>) {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+    let d = go(&mut s, &SplitRealized { piece: id(EntityKind::TopoVolume, 1), normal: [1.0, 0.0, 0.0], offset: 1.0 });
+    let kids = d.outputs["pieces"].clone();
+    (s, kids)
+}
+
+fn cut_of_whole(s: &Session) -> sm_model_api::CutCells {
+    let dec = layer(s).model().decomposition();
+    let cut = dec.split_of(PieceRef::Whole(id(EntityKind::TopoVolume, 1))).expect("split").cut;
+    dec.cut_cells(cut).expect("realized").clone()
+}
+
+#[test]
+fn plain_virtual_ops_refuse_the_cells_of_a_realized_split() {
+    let (mut s, kids) = realized_brick();
+    let cc = cut_of_whole(&s);
+    assert!(!cc.faces.is_empty() && !cc.edges.is_empty() && !cc.split_faces.is_empty() && !cc.split_edges.is_empty());
+    let hash = s.state().hash();
+    let mut owned: Vec<EntityId> = cc.faces.iter().chain(&cc.edges).chain(&cc.vertices).chain(&kids).copied().collect();
+    for (f, h) in &cc.split_faces {
+        owned.push(*f);
+        owned.extend(h);
+    }
+    for (e, v, h) in &cc.split_edges {
+        owned.push(*e);
+        owned.push(*v);
+        owned.extend(h);
+    }
+    // remove_virtual on any cell the split created (cut face, either piece, edges, vertices, halves).
+    let mut tried = 0;
+    for &c in &owned {
+        if layer(&s).overlay().unwrap().ops().iter().all(|o| !o.created().contains(&c)) {
+            continue; // a hidden parent, not a created cell
+        }
+        tried += 1;
+        let e = try_go(&mut s, &RemoveVirtual { id: c }).unwrap_err().to_string();
+        assert!(e.contains("unsplit_realized"), "{c}: {e}");
+        assert_eq!(s.state().hash(), hash, "{c}: refusal leaves the state alone");
+    }
+    assert!(tried >= 8, "{tried}");
+    // Partition of the cut face and of a cut edge.
+    let cut_face = cc.faces[0];
+    let e = try_go(&mut s, &PartitionFace { face: cut_face, from: cc.vertices[0], to: cc.vertices[2] }).unwrap_err().to_string();
+    assert!(e.contains("unsplit_realized"), "{e}");
+    assert_eq!(s.state().hash(), hash);
+    let cut_edge = cc.edges[0];
+    let e = try_go(&mut s, &PartitionEdge { edge: cut_edge, param: 0.5 }).unwrap_err().to_string();
+    assert!(e.contains("unsplit_realized"), "{e}");
+    assert_eq!(s.state().hash(), hash);
+    // Collapse: the cut edge itself, and an edge whose dropped end is a cut vertex.
+    let ends: Vec<EntityId> = layer(&s).topo().boundary(cut_edge).iter().map(|i| i.cell).collect();
+    let e = try_go(&mut s, &CollapseEdge { edge: cut_edge, into_vertex: ends[0] }).unwrap_err().to_string();
+    assert!(e.contains("unsplit_realized"), "{e}");
+    let (_, v, halves) = cc.split_edges[0];
+    let ends: Vec<EntityId> = layer(&s).topo().boundary(halves[0]).iter().map(|i| i.cell).collect();
+    let keep = *ends.iter().find(|&&x| x != v).expect("far end");
+    let e = try_go(&mut s, &CollapseEdge { edge: halves[0], into_vertex: keep }).unwrap_err().to_string();
+    assert!(e.contains("unsplit_realized"), "{e}");
+    // Composites over halves of cut edges / faces.
+    assert!(try_go(&mut s, &CompositeEdges { edges: vec![halves[0], halves[1]] }).is_err());
+    assert!(try_go(&mut s, &CompositeFaces { faces: vec![cc.split_faces[0].1[0], cc.split_faces[0].1[1]] }).is_err());
+    assert_eq!(s.state().hash(), hash);
+
+    // The decomposition's cut cells still resolve, the view validates, and unsplit still works.
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
+    assert!(cc.faces.iter().chain(&cc.edges).chain(&cc.vertices).all(|c| layer(&s).topo().is_alive(*c)));
+    go(&mut s, &UnsplitRealized { piece: kids[0] });
+    assert!(layer(&s).overlay().unwrap().ops().is_empty());
+}
+
+#[test]
+fn virtual_info_lists_pieces_and_a_splits_cut_edges() {
+    let (s, kids) = realized_brick();
+    let cc = cut_of_whole(&s);
+    let i = info(&s, Some(kids[0]));
+    let op = i.ops.iter().find(|o| o.op == "partition_volume").expect("volume op");
+    assert!(cc.edges.iter().all(|e| op.inputs.contains(e)), "cut edges are inputs: {:?}", op.inputs);
+    assert!(op.created.contains(&kids[0]));
+}
+
+#[test]
+fn split_ops_round_trip_through_op_records() {
+    let (mut s, kids) = realized_brick();
+    let ops: [Box<dyn Op>; 2] = [
+        Box::new(SplitRealized { piece: id(EntityKind::TopoVolume, 1), normal: [1.0, 0.0, 0.0], offset: 1.0 }),
+        Box::new(UnsplitRealized { piece: kids[0] }),
+    ];
+    for op in &ops {
+        let rec = OpRecord::of(op.as_ref()).unwrap();
+        let back = s.engine().registry().decode(&rec).unwrap();
+        assert_eq!(OpRecord::of(back.as_ref()).unwrap(), rec);
+    }
+    // Replay the decoded forms on a twin.
+    let mut twin = session_for(cell_complex);
+    go(&mut twin, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+    let rec = OpRecord::of(ops[0].as_ref()).unwrap();
+    go(&mut twin, s.engine().registry().decode(&rec).unwrap().as_ref());
+    assert_eq!(twin.state().hash(), s.state().hash());
+    let rec = OpRecord::of(ops[1].as_ref()).unwrap();
+    go(&mut twin, s.engine().registry().decode(&rec).unwrap().as_ref());
+    go(&mut s, ops[1].as_ref());
+    assert_eq!(twin.state().hash(), s.state().hash());
+}
+
+#[test]
+fn model_list_of_a_real_kind_excludes_virtual_cells() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
+    let (a, b) = (vertex_at(&s, [0., 0., 2.]), vertex_at(&s, [2., 2., 2.]));
+    let top = face_with_vertices(&s, &[a, b, vertex_at(&s, [2., 0., 2.])]);
+    let kids = go(&mut s, &PartitionFace { face: top, from: a, to: b }).outputs["faces"].clone();
+    assert!(list(&s, "TopoFace").iter().all(|f| f.kind() == EntityKind::TopoFace));
+    assert_eq!(list(&s, "TopoFace").len(), 5);
+    assert_eq!(list(&s, "PartitionFace"), kids);
+}
+
+#[test]
+fn chord_checks_use_the_exact_arc_of_a_concave_notch() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+    go(&mut s, &CreateCylinder { height: 4.0, radius: 1.0, center: Some([2.0, 0.0, 1.0]) });
+    go(&mut s, &Subtract { targets: vec![id(EntityKind::TopoBody, 1)], tools: vec![id(EntityKind::TopoBody, 2)], keep: None, regularize: None, tol: None });
+    let v = |x, y| vertex_at(&s, [x, y, 2.0]);
+    let (p0, p1, p3, p4, p5, p6) = (v(0., 0.), v(1., 0.), v(3., 0.), v(4., 0.), v(0., 2.), v(4., 2.));
+    let top = face_with_vertices(&s, &[p0, p1, p3, p4, p5]);
+    // The chord between the notch ends spans the cut-out: it leaves the face.
+    assert_refused_untouched(&mut s, top, p1, p3);
+    // A chord from a notch end back into the notch crosses the arc: refused. One away from it is fine.
+    assert_refused_untouched(&mut s, top, p1, p6);
+    let kids = go(&mut s, &PartitionFace { face: top, from: p1, to: p5 }).outputs["faces"].clone();
+    assert_eq!(kids.len(), 2);
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
+}
+
+#[test]
+fn an_overlay_state_hash_is_pinned() {
+    let build = |f: Factory| {
+        let mut s = session_for(f);
+        go(&mut s, &CreateBrick { x: 2.0, y: Some(3.0), z: Some(4.0), center: None });
+        let edge = list(&s, "TopoEdge")[0];
+        go(&mut s, &PartitionEdge { edge, param: 0.5 });
+        s.state().hash()
+    };
+    let (a, b) = (build(cell_complex), build(topo_store));
+    assert_eq!(a, b);
+    assert_eq!(format!("{a:?}"), "Hash256(83cf0a9aba4e)", "update the pin only for a reviewed overlay change");
 }
