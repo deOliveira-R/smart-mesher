@@ -443,9 +443,8 @@ fn a7_the_pass_is_deterministic_for_any_thread_count() {
 }
 
 /// A node set never gains interior nodes. The 8 corners of the cell [0,1]^3 of a 2 x 2 x 2 block
-/// carry over as 11 nodes: the 8 corners plus the 3 midpoints of the model edges at the origin
-/// (both ends members). No model face is covered, so no other edge midpoint, face centre or the
-/// cell centre joins. The 9 nodes of the wall x = 0 (a model face)
+/// carry over as 20 nodes: the refined nodes of the 3 wall quads of that cell (each a patch of
+/// one model face); interior faces and the cell centre never join. The 9 nodes of the wall x = 0 (a model face)
 /// carry over as 9 + 12 edge midpoints + 4 face centres = 25, all on the wall. The interior plane
 /// x = 1 is no model face, so its set gains nothing (9).
 #[test]
@@ -470,7 +469,9 @@ fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
         _ => panic!("vertices"),
     };
     let cell = set("cell_nodes");
-    assert_eq!(cell.len(), 11, "corners plus the model-edge midpoints at the origin");
+    // The cell touches three walls with one whole quad each (patches): 3 x 9 - 3 x 3 + 1 = 19
+    // refined nodes on them, plus the member corner (1,1,1); the 3 interior faces and the centre add nothing.
+    assert_eq!(cell.len(), 20, "the three wall patches of the corner cell plus the member corner (1,1,1)");
     for v in &cell {
         let p = m.point(v.get());
         let on_boundary = [p.x, p.y, p.z].iter().any(|c| *c == 0.0 || *c == 1.0);
@@ -506,6 +507,24 @@ fn vertex_set_on_two_walls_of_a_wedge_block_stays_on_the_walls() {
     // line of 5 -> 45 nodes (the originals are 3 x 3 + 3 x 3 - 3 = 15).
     let on_walls = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 || m.point(i).y == 2.0).count();
     assert_eq!((n_src, vs.len(), on_walls), (15, 45, 45));
+}
+
+/// A node set on part of a wall ({x == 0, y <= 1}: 6 nodes) carries to exactly the 15 refined
+/// nodes on that patch (5 along y in [0,1]... 5 along z times 3 along y), all with x == 0.
+#[test]
+fn vertex_set_on_part_of_a_wall_carries_the_whole_patch() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 && src.point(v.get()).y <= 1.0).collect();
+    assert_eq!(set.len(), 6);
+    src.add_set("patch", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("patch").expect("set").members else { panic!("vertices") };
+    let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
+    assert_eq!((vs.len(), on_patch), (15, 15));
+    assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
 }
 
 #[test]

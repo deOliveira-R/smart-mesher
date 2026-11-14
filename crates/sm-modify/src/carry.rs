@@ -43,7 +43,8 @@ pub(crate) struct Lineage<'a> {
 /// Cell sets become the children; face sets the new faces on the member faces; side sets the new
 /// sides whose cell descends from the member side; vertex sets the original vertices plus the new
 /// nodes lying on a covered entity: a model face (model edge in 2D) all of whose mesh vertices are
-/// members covers its mesh faces, and the midpoints of their edges and their centres join; the
+/// members covers its mesh faces (so does a single wall face with member vertices, one of them on
+/// that model face, which carries box-picked patches), and the midpoints of their edges and their centres join; the
 /// midpoint of a model edge with both ends members joins too. Interior faces and cell centres
 /// never join. Without classification, boundary faces whose vertices are all members cover
 /// (this cannot tell walls apart). Cell tags are inherited; vertex tags take
@@ -118,7 +119,12 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     let fi = FaceIx::new(f);
                     let c = src.face_class(fi);
                     if c.dim() == Some(wall_dim) {
+                        // Covered when the whole model face is, or locally when all its vertices
+                        // are members and one of them lies on this model face (a patch); corner
+                        // faces with every vertex on model edges or vertices do not cover.
                         ent_cov.get(&c.entity).copied().unwrap_or(false)
+                            || (src.face_vertices(fi).iter().all(|x| inset[x.get()])
+                                && src.face_vertices(fi).iter().any(|x| src.vertex_class(*x).entity == c.entity))
                     } else {
                         c.dim().is_none() && src.face_right(fi).is_none() && src.face_vertices(fi).iter().all(|x| inset[x.get()])
                     }
