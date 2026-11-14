@@ -147,7 +147,7 @@ fn a_cutting_selection_drops_the_level_map_with_a_note_on_both_smsh_paths() {
         let dropped: Vec<_> = notes.iter().filter(|(c, _)| c == "export.select_levelmap_dropped").collect();
         assert_eq!(dropped, [&("export.select_levelmap_dropped".to_owned(), 1)], "split {split}: {notes:?}");
         assert!(d.level_maps.is_empty(), "split {split}: a cut mesh is a new mesh, the maps name the whole one");
-        assert_eq!(d.cell_ids.len(), 64, "split {split}: the fuel brick refined is 8 x 8 cells");
+        assert_eq!(d.cell_ids.len(), 64, "split {split}: the fuel brick refined is 4 x 4 x 4 = 64 cells");
         if split {
             assert_eq!(region_sets(&d), ["fuel"], "the region sets of the kept cells stay, the others go");
         }

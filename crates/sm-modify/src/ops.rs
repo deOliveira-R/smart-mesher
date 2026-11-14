@@ -167,7 +167,11 @@ impl TypedOp for Refine {
                 );
             }
             for (code, msg) in r.notes {
-                ctx.warn(code, msg, &[source]);
+                if code == "refine.set_ambiguous" {
+                    ctx.info(code, msg, &[source]);
+                } else {
+                    ctx.warn(code, msg, &[source]);
+                }
             }
             if level == 1 && !keep {
                 ctx.record_successors(source, &[new])?;
