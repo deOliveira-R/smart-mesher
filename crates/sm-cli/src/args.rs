@@ -24,6 +24,37 @@ pub enum Format {
     Smrt,
 }
 
+/// What `export` writes (`--source`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SourceArg {
+    /// A volume mesh of the session (the default).
+    Mesh,
+    /// DAGMC only: facets straight from the B-rep, no volume mesh.
+    Model,
+}
+
+/// Overlap policy of `import-openmc` (`--overlap`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OverlapArg {
+    /// Fail naming both cells, exit 1 (the default).
+    Error,
+    /// Keep the overlapping piece in the first cell.
+    FirstWins,
+    /// As `first-wins`, and report each overlap as a warning (exit 0).
+    Report,
+}
+
+impl OverlapArg {
+    /// The wire name, as `model.import_openmc` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::FirstWins => "first_wins",
+            Self::Report => "report",
+        }
+    }
+}
+
 /// Quality profiles accepted by `smesh quality --profile`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum QualityProfile {
@@ -225,6 +256,35 @@ pub enum Command {
         /// for `.msh` or `--option graveyard=true` for `.h5m`; repeatable.
         #[arg(long = "option", value_name = "KEY=VALUE")]
         option: Vec<String>,
+        /// What is exported (default `mesh`). `model` is DAGMC only: the `.h5m` is faceted straight
+        /// from the B-rep (no mesh is needed, `--mesh` is refused); set `--option chord_tol=X`.
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+        /// `.smsh` and `.smrt` only: split lattice elements into one region per part, a comma list
+        /// of `lattice`, `ring`, `sector` (sugar for `--option regions={"split":[..]}`).
+        #[arg(long, value_name = "PARTS", value_delimiter = ',')]
+        regions: Vec<String>,
+    },
+    /// Import an OpenMC deck (`geometry.xml`, optional `materials.xml`) as B-rep volumes.
+    ///
+    /// Stages the files and applies `model.import_openmc` (one history node). Diagnostics (gaps,
+    /// overlaps, partition counts) are printed after the op line, and carried in `--json`.
+    /// Exits 1 when two cells overlap, unless `--overlap report` or `first-wins` says otherwise.
+    ImportOpenmc {
+        /// The `geometry.xml` (a relative path resolves against the working directory).
+        geometry: PathBuf,
+        /// The `materials.xml`; without it every material id is an unnamed material.
+        #[arg(long, value_name = "FILE")]
+        materials: Option<PathBuf>,
+        /// What to do with space two cells own (default `error`).
+        #[arg(long, value_enum)]
+        overlap: Option<OverlapArg>,
+        /// Cap on placed cells (default 20000).
+        #[arg(long, value_name = "N")]
+        max_cells: Option<usize>,
+        /// Cut every lattice element instead of copying one prototype per universe.
+        #[arg(long)]
+        no_reuse_lattices: bool,
     },
     /// Store a file (e.g. a STEP file) in the project's input store and print `{sha256, bytes}`.
     ///
@@ -284,6 +344,7 @@ impl Command {
             self,
             Command::Run { .. }
                 | Command::Apply { .. }
+                | Command::ImportOpenmc { .. }
                 | Command::Checkout { .. }
                 | Command::Fork { .. }
                 | Command::Undo

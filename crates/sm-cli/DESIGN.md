@@ -36,7 +36,8 @@ drive it with a recording fake endpoint, and the binary passes `connect_standard
 | `status` | `timeline.status` |
 | `hash [--at rev] [--layers]` | `session.hash{at?}` |
 | `checkout <rev>` / `fork <name> [--at hash]` / `undo` / `redo` | `timeline.checkout` / `.branch` / `.undo` / `.redo` |
-| `export <file> [--mesh id] [--format f] [--provenance]` | `session.export` |
+| `export <file> [--mesh id] [--format f] [--provenance] [--source mesh\|model] [--regions lattice,ring,sector]` | `session.export` (`--regions` is sugar for `options.regions.split`) |
+| `import-openmc <geometry.xml> [--materials f] [--overlap error\|first-wins\|report] [--max-cells n] [--no-reuse-lattices]` | stages the files, then `apply{model.import_openmc}`; diagnostics print on stderr, exit 1 on `csg.overlap` |
 | `stage <file>` | `script.run{"session.stage(<abs path>)"}` (the protocol has no stage method); prints the event's `{sha256, bytes}` |
 | `validate [--mesh id]` | `query{mesh.validate, {mesh?}}`; exit 1 when `valid` is false (the report is still printed) |
 | `quality [--mesh id] [--profile p] [--worst n]` | `query{mesh.quality, {mesh?, profile?, worst_n?}}` |

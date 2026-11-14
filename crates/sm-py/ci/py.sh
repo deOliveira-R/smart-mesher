@@ -27,7 +27,8 @@ maturin develop --features python,test-hooks
 python -c "import smartmesh; print('smartmesh', smartmesh.__version__)"
 
 python tools/gen_stubs.py --check
-pytest -q tests
+# --basetemp keeps pytest's tmp_path trees inside $TMP, so the run leaves nothing in the system temp dir.
+pytest -q --basetemp "$TMP/pytest" tests
 mypy --strict python/smartmesh tests/typing_example.py
 (cd "$ROOT" && cargo clippy -p sm-py --features python,test-hooks --all-targets -- -D warnings)
 
