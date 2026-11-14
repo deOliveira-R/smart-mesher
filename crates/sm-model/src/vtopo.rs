@@ -20,7 +20,7 @@ use sm_geom_api::{CurveDef, Interval, Line, SurfaceDef};
 use sm_layer_api::{LayerResultExt, ModelLayer, model_overlay_txn};
 use sm_model_api::{PieceRef, Plane};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_topo_api::{Carrier, Dim, Overlay, TopologyView, VirtualCut, VirtualOp};
+use sm_topo_api::{Carrier, Dim, Overlay, TopologyView, TopologyViewExt, VirtualCut, VirtualOp};
 
 const FACE_ROLE: &[OutputRole] = &[OutputRole::new("face", &[EntityKind::PartitionFace], Cardinality::One, "The composite face.")];
 const EDGE_ROLE: &[OutputRole] = &[OutputRole::new("edge", &[EntityKind::PartitionEdge], Cardinality::One, "The composite edge.")];
@@ -126,7 +126,8 @@ impl TypedOp for PartitionEdge {
 ///
 /// Only faces on a plane are accepted: a chord on a curved face would need pcurves that
 /// imported faces lack (vtopo risk R3), so a periodic or curved face is refused with the
-/// face's id.
+/// face's id. A chord that leaves the face, touches or crosses its boundary away from its two
+/// end vertices, or runs along an existing edge is refused with the face's id too.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionFace {
@@ -173,8 +174,17 @@ impl TypedOp for PartitionFace {
 
 /// Collects the plane of `face`: a plane surface, or every member of a composite (recursively).
 /// Any other carrier is refused with the id of `top`, the face the op was asked to cut.
-fn face_planes(view: &dyn TopologyView, top: EntityId, face: EntityId, out: &mut Vec<sm_geom_api::Plane>) -> Result<(), OpError> {
-    match view.carrier(face) {
+///
+/// The overlay view reports no carrier for a hidden cell, so a composite's members are read
+/// from the host. A hidden virtual member (a composite of a partition child) has no carrier
+/// to read and is refused.
+fn face_planes(ov: &Overlay, top: EntityId, face: EntityId, out: &mut Vec<sm_geom_api::Plane>) -> Result<(), OpError> {
+    let view: &dyn TopologyView = ov;
+    let carrier = match view.carrier(face) {
+        Carrier::None => ov.host().carrier(face),
+        c => c,
+    };
+    match carrier {
         Carrier::Surface(sc) => match view.shapes().surface_def(sc.surface) {
             Some(SurfaceDef::Plane(p)) => {
                 out.push(*p);
@@ -182,9 +192,85 @@ fn face_planes(view: &dyn TopologyView, top: EntityId, face: EntityId, out: &mut
             }
             _ => Err(OpError::Invalid(format!("face {top} is not planar: a virtual chord on a curved face needs pcurves (not available yet)"))),
         },
-        Carrier::Composite(members) if !members.is_empty() => members.iter().try_for_each(|&m| face_planes(view, top, m, out)),
+        Carrier::Composite(members) if !members.is_empty() => members.iter().try_for_each(|&m| face_planes(ov, top, m, out)),
         _ => Err(OpError::Invalid(format!("face {top} is not planar: it has no plane carrier"))),
     }
+}
+
+/// Polyline samples per edge when the loop is flattened for the chord checks.
+const LOOP_SAMPLES: usize = 32;
+
+/// Distance from `p` to the segment `a b`.
+fn dist_pt_seg(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (d, w) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 { ((w[0] * d[0] + w[1] * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    ((w[0] - t * d[0]).powi(2) + (w[1] - t * d[1]).powi(2)).sqrt()
+}
+
+/// Whether the open segments `a b` and `c d` properly cross.
+fn crosses(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    o(a, b, c) * o(a, b, d) < 0.0 && o(c, d, a) * o(c, d, b) < 0.0
+}
+
+/// Minimum distance between segments `a b` and `c d`.
+fn dist_seg_seg(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
+    if crosses(a, b, c, d) {
+        return 0.0;
+    }
+    dist_pt_seg(a, c, d).min(dist_pt_seg(b, c, d)).min(dist_pt_seg(c, a, b)).min(dist_pt_seg(d, a, b))
+}
+
+/// Refuses (with the face id) a chord that is not a proper interior chord of the face: one that
+/// touches or crosses the loops anywhere but at its two end vertices, runs along an existing
+/// edge, or whose midpoint is not strictly inside the face. The loops are flattened in the
+/// plane's frame (edge samplers, so virtual and curved edges count).
+fn check_chord_inside(view: &dyn TopologyView, face: EntityId, frame: &sm_geom_api::Frame, a3: sm_core::Point3, b3: sm_core::Point3) -> Result<(), OpError> {
+    let tol = view.tolerance().linear;
+    let proj = |p: sm_core::Point3| {
+        let w = p - frame.origin;
+        [w.dot(frame.x), w.dot(frame.y)]
+    };
+    let (a, b) = (proj(a3), proj(b3));
+    let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    for l in view.loops(face) {
+        for e in l.entries {
+            let Some(sm) = view.edge_sampler(e.cell) else { continue };
+            let pts: Vec<[f64; 2]> = (0..=LOOP_SAMPLES).map(|i| proj(sm.eval(i as f64 / LOOP_SAMPLES as f64))).collect();
+            segs.extend(pts.windows(2).map(|w| (w[0], w[1])));
+        }
+    }
+    let bad = |why: &str| Err(OpError::Invalid(format!("face {face}: the chord {why}")));
+    let near = |p: [f64; 2], q: [f64; 2]| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt() <= tol;
+    for &(p, q) in &segs {
+        let at_end = near(p, a) || near(q, a) || near(p, b) || near(q, b);
+        if at_end {
+            // Touching at an end vertex is fine; running along the segment is not.
+            let other = |v: [f64; 2]| if near(p, v) { q } else { p };
+            let ends = [(a, b), (b, a)];
+            for (v, w) in ends {
+                if near(p, v) || near(q, v) {
+                    let far = other(v);
+                    if dist_pt_seg(far, a, b) <= tol || dist_pt_seg(w, p, q) <= tol {
+                        return bad("runs along an existing edge of the face");
+                    }
+                }
+            }
+        } else if dist_seg_seg(a, b, p, q) <= tol {
+            return bad("crosses or touches the face boundary away from its end vertices");
+        }
+    }
+    // Midpoint strictly inside (even-odd over every loop).
+    let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    if segs.iter().any(|&(p, q)| dist_pt_seg(m, p, q) <= tol) {
+        return bad("lies on the face boundary");
+    }
+    let inside = segs.iter().fold(false, |acc, &(p, q)| if (p[1] > m[1]) != (q[1] > m[1]) && m[0] < p[0] + (m[1] - p[1]) / (q[1] - p[1]) * (q[0] - p[0]) { !acc } else { acc });
+    if !inside {
+        return bad("leaves the face (its midpoint is outside)");
+    }
+    Ok(())
 }
 
 /// The straight chord `from -> to` as a [`VirtualCut`]; refuses a non-planar face or a vertex
@@ -195,7 +281,7 @@ fn chord(ov: &Overlay, face: EntityId, from: EntityId, to: EntityId) -> Result<V
         return Err(OpError::Invalid(format!("face {face} is not live in the overlay view")));
     }
     let mut planes = Vec::new();
-    face_planes(view, face, face, &mut planes)?;
+    face_planes(ov, face, face, &mut planes)?;
     let tol = view.tolerance();
     let r = planes[0];
     for p in &planes[1..] {
@@ -212,6 +298,7 @@ fn chord(ov: &Overlay, face: EntityId, from: EntityId, to: EntityId) -> Result<V
     let (a, b) = (pt(from)?, pt(to)?);
     let d: Vector3 = b - a;
     let len = d.norm();
+    check_chord_inside(view, face, &r.frame, a, b)?;
     let line = Line::new(a, d).map_err(|e| OpError::Invalid(format!("chord {from} -> {to}: {e}")))?;
     Ok(VirtualCut { from, to, curve: CurveDef::Line(line), range: Interval::new(0.0, len) })
 }

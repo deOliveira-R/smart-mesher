@@ -20,7 +20,7 @@ use sm_model::{
 };
 use sm_model_api::PieceRef;
 use sm_op_api::{DerivedCache, Engine, Hash256, Op, OpRecord, QuietControl, Registry, Rev, Services, Session};
-use sm_topo_api::{Carrier, Dim, TopologyView};
+use sm_topo_api::{Carrier, Dim, TopologyView, TopologyViewExt};
 
 fn session_for(factory: Factory) -> Session {
     let mut reg = Registry::new();
@@ -211,6 +211,94 @@ fn partition_face_by_a_chord_gives_two_triangles_and_a_chord() {
     assert!(try_go(&mut s, &PartitionFace { face: kids[0], from: a, to: a }).is_err());
     assert!(try_go(&mut s, &PartitionFace { face: a, from: a, to: b }).is_err());
     assert_eq!(s.state().hash(), hash);
+}
+
+/// Area of a planar face from its outline corners (straight edges only).
+fn outline_area(s: &Session, f: EntityId) -> f64 {
+    let pts = layer(s).topo().face_outline(f);
+    let mut sum = sm_core::Vector3::new(0.0, 0.0, 0.0);
+    for i in 0..pts.len() {
+        let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+        sum = sum + sm_core::Vector3::new(p.x, p.y, p.z).cross(sm_core::Vector3::new(q.x, q.y, q.z));
+    }
+    0.5 * sum.norm()
+}
+
+fn assert_refused_untouched(s: &mut Session, face: EntityId, from: EntityId, to: EntityId) -> String {
+    let hash = s.state().hash();
+    let e = try_go(s, &PartitionFace { face, from, to }).unwrap_err().to_string();
+    assert!(e.contains(&face.to_string()), "{e}");
+    assert_eq!(s.state().hash(), hash, "a refused op leaves the state as it was");
+    e
+}
+
+#[test]
+fn partition_face_refuses_a_chord_that_leaves_an_l_shaped_face() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(1.0), z: Some(1.0), center: Some([1.0, 0.5, 0.5]) });
+    go(&mut s, &CreateBrick { x: 1.0, y: Some(1.0), z: Some(1.0), center: Some([0.5, 1.5, 0.5]) });
+    let bodies = list(&s, "TopoBody");
+    go(&mut s, &Unite { bodies, keep: None, regularize: None, tol: None });
+    let v = |x, y| vertex_at(&s, [x, y, 1.0]);
+    let corners = [v(0., 0.), v(2., 0.), v(2., 1.), v(1., 1.), v(1., 2.), v(0., 2.)];
+    let top = face_with_vertices(&s, &corners);
+    assert_eq!(layer(&s).topo().coedges(top).count(), 6);
+    // The chord across the notch lies outside the face; a chord that grazes the notch edge too.
+    let e = assert_refused_untouched(&mut s, top, corners[2], corners[4]);
+    assert!(e.contains("leaves the face") || e.contains("boundary"), "{e}");
+    assert_refused_untouched(&mut s, top, corners[1], corners[4]);
+    // An interior diagonal of the lower-left square is accepted and splits the area exactly.
+    let kids = go(&mut s, &PartitionFace { face: top, from: corners[0], to: corners[3] }).outputs["faces"].clone();
+    assert_eq!(kids.len(), 2);
+    let total: f64 = kids.iter().map(|&k| outline_area(&s, k)).sum();
+    assert!((total - 3.0).abs() < 1e-12, "{total}");
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
+}
+
+#[test]
+fn partition_face_refuses_a_chord_along_an_existing_edge_but_accepts_one_across_an_arc() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
+    let (a, c) = (vertex_at(&s, [0., 0., 2.]), vertex_at(&s, [2., 0., 2.]));
+    let top = face_with_vertices(&s, &[a, c, vertex_at(&s, [2., 2., 2.])]);
+    let e = assert_refused_untouched(&mut s, top, a, c);
+    assert!(e.contains("existing edge") || e.contains("boundary"), "{e}");
+
+    // Quarter disc: the chord between the arc's ends bounds a real circular segment.
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateCylinder { height: 2.0, radius: 1.0, center: None });
+    let plane = |s: &Session, axis| WebcutPlane { targets: list(s, "TopoBody"), plane: PlaneSpec::Axis(AxisPlane { axis, offset: 0.0 }), keep: None, merge: None, imprint: None };
+    let w = plane(&s, PlaneAxis::X);
+    go(&mut s, &w);
+    let w = plane(&s, PlaneAxis::Y);
+    go(&mut s, &w);
+    let t = layer(&s).topo();
+    let ztop = t.cells(Dim::Vertex).iter().map(|&v| vertex_point(t, v).z).fold(f64::MIN, f64::max);
+    let (o, px, py) = (vertex_at(&s, [0., 0., ztop]), vertex_at(&s, [1., 0., ztop]), vertex_at(&s, [0., 1., ztop]));
+    let quarter = face_with_vertices(&s, &[o, px, py]);
+    let kids = go(&mut s, &PartitionFace { face: quarter, from: px, to: py }).outputs["faces"].clone();
+    assert_eq!(kids.len(), 2);
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
+}
+
+#[test]
+fn partition_face_accepts_a_coplanar_composite_and_the_children_cover_it() {
+    let mut s = session_for(cell_complex);
+    go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
+    go(&mut s, &WebcutPlane { targets: vec![id(EntityKind::TopoBody, 1)], plane: PlaneSpec::Axis(AxisPlane { axis: PlaneAxis::X, offset: 1.0 }), keep: None, merge: None, imprint: None });
+    let bodies = list(&s, "TopoBody");
+    go(&mut s, &Unite { bodies, keep: None, regularize: Some(false), tol: None });
+    let v = |x, y| vertex_at(&s, [x, y, 2.0]);
+    let left = face_with_vertices(&s, &[v(0., 0.), v(1., 0.), v(1., 2.), v(0., 2.)]);
+    let right = face_with_vertices(&s, &[v(1., 0.), v(2., 0.), v(2., 2.), v(1., 2.)]);
+    assert_ne!(left, right);
+    let (p0, p1) = (v(0., 0.), v(2., 2.));
+    let comp = go(&mut s, &CompositeFaces { faces: vec![left, right] }).outputs["face"][0];
+    let kids = go(&mut s, &PartitionFace { face: comp, from: p0, to: p1 }).outputs["faces"].clone();
+    assert_eq!(kids.len(), 2);
+    let areas: Vec<f64> = kids.iter().map(|&k| outline_area(&s, k)).collect();
+    assert!(areas.iter().all(|a| (a - 2.0).abs() < 1e-12), "{areas:?}");
+    assert!(sm_topo_api::validate(layer(&s).topo()).is_empty());
 }
 
 #[test]
