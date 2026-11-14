@@ -286,6 +286,53 @@ default 0.1 therefore merges nothing there; 0.75 or more admits 20 merges at rat
 105 cells), nothing merges at or below 0.5. The tests pin both facts rather than relaxing the
 default.
 
+## Coarse levels: `mesh.agglomerate` (W4-POLY-AGG, ruling D3)
+
+The library option above merges small cells inside `dualize`. The op `mesh.agglomerate` is the
+reachable form for CMFD and multigrid: it takes ANY finished 3D mesh (typically the polyhedral
+dual), groups its cells, builds a new coarse mesh entry and links the two with a `LevelMap`
+(fine -> coarse, with the face map) through `MeshLayer::link` (ACR-LEVELMAP). Code: `agg.rs`
+(op, grouping modes), `coarsen.rs` (partition -> coarse mesh, merge gate).
+
+**Modes.** `target {cells}`: greedy pairwise merging (ascending volume, most shared area, ties
+lowest id; one merge per group per round) within a model volume until about `cells` remain.
+`blocks {size, origin}`: axis-aligned bins of the cell centroids, split into face-connected
+parts per volume; a group failing the convex rule is left as single cells. `per_pin {group,
+cells_per_group}`: one coarse cell per model volume (`group: volume`) or per lattice position
+(`group: lattice`, the D9 region-tag slots of the volume, ring and sector ignored, so a
+subdivided pin is one group); above one cell per pin the pin is split by the greedy rule inside
+the pin. A pin must be face-connected. A coarse cell takes the class of the volume holding most
+of its volume (a pin spans several volumes).
+
+**Gate.** The exact `sm-rt` convex rule (planar outer faces, every vertex inside every outer
+face plane within `1e-9 * diam`; same arithmetic as `sm_quality::cell_convexity`) on the union,
+checked before every greedy merge and again on the result for every merged cell (`convex:false`
+lifts it for `blocks` and one-cell `per_pin`; the coarse mesh must still pass `validate` and
+`validate_geometry`). There is no concavity number. The 64-face cap is an eligibility matter,
+not a merge gate.
+
+**Coarse faces.** Edge-adjacent coplanar fine faces between the same two groups and the same
+model entity merge when their boundary is one simple cycle and the merged polygon stays
+star-shaped about its vertex mean after collinear vertices are dropped (else the fine faces stay
+separate faces). A vertex is dropped when it is collinear in every coarse face loop that holds it
+and is not a model vertex, so a merged face has no hanging vertices and a 2x2x2 block of dual
+hexes is a hex template cell again. `per_pin` merges across model entities and gives the merged
+face the class with the most area. Edge classes are copied when the source has an edge table.
+The face map sends each fine face to the coarse face that carries it (none for a face inside a
+group), and `LevelMap::new` checks it against both meshes.
+
+**Measured** (tests/agg_op.rs): circumcentric Kuhn `6x6x6` (343 dual cells), `blocks` size 2 from
+0.5 gives the hand count 64 cells / 240 faces / 125 vertices, 8 interior cubes of volume 8, all 64
+cells convex hexes (min scaled Jacobian 1, max edge ratio 4 from the 0.5 x 2 boxes), volume 216 to
+1e-12. A 3 x 3 pin lattice (4 x 4 x 2 hexes per pin, fuel plus moderator volumes) gives 9 coarse
+cells with `per_pin lattice` (min scaled Jacobian 1, edge ratio 2) and 36 with `cells_per_group:
+4` (2 x 2 x 2 cubes).
+
+**Limits.** No size field yet (`blocks` is a uniform one). Cell sets and tags of the fine mesh
+are not carried to the coarse mesh. With `keep_source: false` no link is recorded (a map needs
+both meshes). Hex and face geometry of the fine mesh are used as they are: smoothing either mesh
+later keeps the map valid (it checks connectivity) but a fine cell may leave its parent.
+
 ## Risks
 
 **Reflex edges (resolved by the wedge split).** Formerly open: dual cells at a reflex interface

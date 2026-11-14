@@ -9,12 +9,15 @@
 //! | [`EdgeResolver`], [`VertexClassResolver`], [`TopologyResolver`] | feature-curve identity of boundary edges |
 //! | [`GENERATOR_TAGS`] | cell tags holding the generator point of a circumcentric dual |
 //! | [`poly_stats`], [`PolyStats`] | statistics of a polyhedral mesh |
-//! | [`PolyPlugin`] | registers op `mesh.to_poly` and query `mesh.poly_info` (no layers) |
+//! | [`MeshAgglomerate`], [`AggMode`], [`PinGroup`] | op `mesh.agglomerate`: coarse mesh plus `LevelMap` |
+//! | [`PolyPlugin`] | registers ops `mesh.to_poly`, `mesh.agglomerate` and query `mesh.poly_info` (no layers) |
 //!
 //! Install [`PolyPlugin`] after `sm_layer_api::CoreLayers`.
 
+mod agg;
 mod agglom;
 mod circum;
+mod coarsen;
 mod concave;
 mod dual;
 mod error;
@@ -30,6 +33,7 @@ mod stats;
 
 #[cfg(feature = "test-hooks")]
 pub use agglom::with_unchecked_merges;
+pub use agg::{AggMode, MeshAgglomerate, PinGroup};
 pub use dual::dualize;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
@@ -57,6 +61,7 @@ impl Plugin for PolyPlugin {
 
     fn register(&self, registry: &mut Registry) -> Result<(), RegistryError> {
         registry.register::<ToPoly>()?;
+        registry.register::<MeshAgglomerate>()?;
         registry.register_query::<PolyInfo>()?;
         Ok(())
     }

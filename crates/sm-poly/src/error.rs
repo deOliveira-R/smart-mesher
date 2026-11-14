@@ -89,6 +89,10 @@ pub enum PolyError {
         /// Number of failing merged cells.
         count: usize,
     },
+    /// The coarse mesh of an agglomeration could not be built or failed validation (a group that
+    /// is not face-connected, a coarse cell that is not valid, a builder refusal).
+    #[error("agglomeration failed: {0}")]
+    Coarsen(String),
     /// A circumcentric dual needs a locally Delaunay mesh whose circumcentres lie inside their
     /// regions, and this mesh is not (exact predicates). Use the barycentric dual, or remesh.
     /// `first_at` is the centroid of the first offending face (else tet).

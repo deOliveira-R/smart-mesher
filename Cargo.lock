@@ -1787,6 +1787,7 @@ dependencies = [
  "sm-mesh",
  "sm-mesh-api",
  "sm-meshio",
+ "sm-model-api",
  "sm-op-api",
  "sm-poly",
  "sm-quality",
