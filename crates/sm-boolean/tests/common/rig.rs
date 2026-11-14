@@ -7,8 +7,10 @@ use sm_boolean::BooleanPlugin;
 use sm_core::EntityId;
 use sm_layer_api::{CoreLayers, ModelLayer, TopoHost};
 use sm_model::{CreateBrick, CreateCylinder, CreateSphere, ModelPlugin};
-use sm_op_api::{DerivedCache, Delta, Engine, Meta, Op, QuietControl, Registry, Services, Session, TimelineError};
-use sm_topo_api::{TopologyView};
+use sm_op_api::{
+    Delta, DerivedCache, Engine, Meta, Op, QuietControl, Registry, Services, Session, TimelineError,
+};
+use sm_topo_api::TopologyView;
 
 pub type Factory = fn() -> Box<dyn TopoHost>;
 
@@ -45,8 +47,15 @@ pub struct Solid {
 
 impl Rig {
     pub fn new(factory: Factory) -> Self {
-        let engine = Engine::new(Arc::new(registry(factory)), Services::new(), Arc::new(DerivedCache::default())).expect("engine");
-        Self { s: Session::new(engine) }
+        let engine = Engine::new(
+            Arc::new(registry(factory)),
+            Services::new(),
+            Arc::new(DerivedCache::default()),
+        )
+        .expect("engine");
+        Self {
+            s: Session::new(engine),
+        }
     }
 
     pub fn cc() -> Self {
@@ -55,23 +64,39 @@ impl Rig {
 
     /// A rig without the derived-data cache (cold replay checks).
     pub fn uncached(factory: Factory) -> Self {
-        let engine = Engine::new(Arc::new(registry(factory)), Services::new(), Arc::new(DerivedCache::disabled())).expect("engine");
-        Self { s: Session::new(engine) }
+        let engine = Engine::new(
+            Arc::new(registry(factory)),
+            Services::new(),
+            Arc::new(DerivedCache::disabled()),
+        )
+        .expect("engine");
+        Self {
+            s: Session::new(engine),
+        }
     }
 
     pub fn run(&mut self, op: &dyn Op) -> Result<Delta, TimelineError> {
         let q = QuietControl::new();
-        self.s.apply(op, Meta::new("test", "", ""), &q.control()).map(|(_, d)| d)
+        self.s
+            .apply(op, Meta::new("test", "", ""), &q.control())
+            .map(|(_, d)| d)
     }
 
     /// Run a registered query on the current state.
     pub fn query(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value, String> {
         let q = QuietControl::new();
-        self.s.engine().run_query(self.s.state(), name, &input, &q.control()).map_err(|e| e.to_string())
+        self.s
+            .engine()
+            .run_query(self.s.state(), name, &input, &q.control())
+            .map_err(|e| e.to_string())
     }
 
     pub fn topo(&self) -> &dyn TopologyView {
-        self.s.state().layer::<ModelLayer>().expect("model layer").topo()
+        self.s
+            .state()
+            .layer::<ModelLayer>()
+            .expect("model layer")
+            .topo()
     }
 
     pub fn layer(&self) -> &ModelLayer {
@@ -83,21 +108,43 @@ impl Rig {
     }
 
     fn solid(d: &Delta) -> Solid {
-        Solid { body: d.outputs["body"][0], volume: d.outputs["volume"][0], faces: d.outputs["faces"].clone() }
+        Solid {
+            body: d.outputs["body"][0],
+            volume: d.outputs["volume"][0],
+            faces: d.outputs["faces"].clone(),
+        }
     }
 
     pub fn brick(&mut self, size: [f64; 3], center: [f64; 3]) -> Solid {
-        let d = self.run(&CreateBrick { x: size[0], y: Some(size[1]), z: Some(size[2]), center: Some(center) }).expect("brick");
+        let d = self
+            .run(&CreateBrick {
+                x: size[0],
+                y: Some(size[1]),
+                z: Some(size[2]),
+                center: Some(center),
+            })
+            .expect("brick");
         Self::solid(&d)
     }
 
     pub fn cylinder(&mut self, height: f64, radius: f64, center: [f64; 3]) -> Solid {
-        let d = self.run(&CreateCylinder { height, radius, center: Some(center) }).expect("cylinder");
+        let d = self
+            .run(&CreateCylinder {
+                height,
+                radius,
+                center: Some(center),
+            })
+            .expect("cylinder");
         Self::solid(&d)
     }
 
     pub fn sphere(&mut self, radius: f64, center: [f64; 3]) -> Solid {
-        let d = self.run(&CreateSphere { radius, center: Some(center) }).expect("sphere");
+        let d = self
+            .run(&CreateSphere {
+                radius,
+                center: Some(center),
+            })
+            .expect("sphere");
         Self::solid(&d)
     }
 }
@@ -105,9 +152,13 @@ impl Rig {
 impl Rig {
     /// Run a library function on a clone of the topology host inside one operation; returns the
     /// edited clone, or the error with the `end_op` issues spelled out.
-    pub fn lib<T>(&self, f: impl FnOnce(&mut dyn TopoHost) -> Result<T, sm_boolean::BooleanError>) -> Result<(Box<dyn TopoHost>, T), String> {
+    pub fn lib<T>(
+        &self,
+        f: impl FnOnce(&mut dyn TopoHost) -> Result<T, sm_boolean::BooleanError>,
+    ) -> Result<(Box<dyn TopoHost>, T), String> {
         let mut host = self.layer().topo_host().clone_host();
-        host.begin_op(sm_topo_api::OpId(self.layer().ops_run() + 1)).map_err(|e| e.to_string())?;
+        host.begin_op(sm_topo_api::OpId(self.layer().ops_run() + 1))
+            .map_err(|e| e.to_string())?;
         let r = match f(&mut *host) {
             Ok(r) => r,
             Err(e) => {
@@ -117,17 +168,30 @@ impl Rig {
         };
         match host.end_op() {
             Ok(_) => Ok((host, r)),
-            Err(e) => Err(format!("end_op: {e} {:?}", match &e { sm_topo_api::TopoError::OpInvalid(v) => v.clone(), _ => vec![] })),
+            Err(e) => Err(format!(
+                "end_op: {e} {:?}",
+                match &e {
+                    sm_topo_api::TopoError::OpInvalid(v) => v.clone(),
+                    _ => vec![],
+                }
+            )),
         }
     }
 }
 
 /// Mesh the given volumes of the model layer with the stub schemes in one `Driver::mesh` call,
 /// every edge at `size`.
-pub fn mesh_volumes(rig: &Rig, volumes: &[EntityId], size: f64) -> sm_scheme_api::Meshed<sm_mesh_api::reference::ReferenceMesh> {
+pub fn mesh_volumes(
+    rig: &Rig,
+    volumes: &[EntityId],
+    size: f64,
+) -> sm_scheme_api::Meshed<sm_mesh_api::reference::ReferenceMesh> {
     use sm_mesh_api::SerialAlloc;
     use sm_mesh_api::reference::ReferenceBuilder;
-    use sm_scheme_api::{Driver, Firm, IntervalRequest, MeshInput, MeshIntent, ReferenceCornerPicker, ReferenceIntervalSolver, Sequential, WholeFaces};
+    use sm_scheme_api::{
+        Driver, Firm, IntervalRequest, MeshInput, MeshIntent, ReferenceCornerPicker,
+        ReferenceIntervalSolver, Sequential, WholeFaces,
+    };
     use sm_topo_api::Dim;
     let layer = rig.layer();
     let topo = layer.topo();
@@ -139,7 +203,15 @@ pub fn mesh_volumes(rig: &Rig, volumes: &[EntityId], size: f64) -> sm_scheme_api
         intent.set_intervals(e, Firm::hard(IntervalRequest::Size(size)));
     }
     let input = MeshInput::new(topo, layer.model(), &WholeFaces, volumes);
-    driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new()).expect("mesh")
+    driver
+        .mesh(
+            &input,
+            &intent,
+            &Sequential,
+            ReferenceBuilder::new(),
+            &mut SerialAlloc::new(),
+        )
+        .expect("mesh")
 }
 
 use schemars::JsonSchema;
@@ -167,7 +239,8 @@ impl TypedOp for Tag {
                     None => m.add_color(self.label, "tag", Domain::Volume).or_op()?,
                 };
                 m.color_volumes(c, &self.volumes).or_op()?;
-                m.add_group(&format!("g{}", self.label), &self.volumes).or_op()?;
+                m.add_group(&format!("g{}", self.label), &self.volumes)
+                    .or_op()?;
                 Ok(c)
             },
             |_, _| Vec::new(),
@@ -183,7 +256,16 @@ pub struct FakeMesh {
     pub volume: EntityId,
 }
 
-const UNIT_CUBE: [[f64; 3]; 8] = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
+const UNIT_CUBE: [[f64; 3]; 8] = [
+    [0., 0., 0.],
+    [1., 0., 0.],
+    [1., 1., 0.],
+    [0., 1., 0.],
+    [0., 0., 1.],
+    [1., 0., 1.],
+    [1., 1., 1.],
+    [0., 1., 1.],
+];
 
 impl TypedOp for FakeMesh {
     const NAME: &'static str = "test.fake_mesh";
@@ -192,8 +274,22 @@ impl TypedOp for FakeMesh {
         let q = ctx.layer::<ModelLayer>()?.hash_quanta();
         let before = ctx.layer::<MeshLayer>()?.alloc().clone();
         let mut alloc = before.clone();
-        let fx = sm_testkit::meshes::build_mesh(&UNIT_CUBE, &[sm_testkit::meshes::CellSpec::Template(sm_mesh_api::CellShape::Hex, (0..8).collect())], &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
-        insert_mesh(ctx, MeshEntry::new(Box::new(fx), vec![self.volume], None, q), &before, alloc, "mesh")
+        let fx = sm_testkit::meshes::build_mesh(
+            &UNIT_CUBE,
+            &[sm_testkit::meshes::CellSpec::Template(
+                sm_mesh_api::CellShape::Hex,
+                (0..8).collect(),
+            )],
+            &mut alloc,
+        )
+        .map_err(|e| OpError::Failed(e.to_string()))?;
+        insert_mesh(
+            ctx,
+            MeshEntry::new(Box::new(fx), vec![self.volume], None, q),
+            &before,
+            alloc,
+            "mesh",
+        )
     }
 }
 
@@ -212,7 +308,9 @@ impl TypedOp for MarkInterface {
         model_txn(
             ctx,
             |m, _t| {
-                let b = m.add_boundary("iface", BoundaryKind::Interface(InterfaceIntent::Conformal)).or_op()?;
+                let b = m
+                    .add_boundary("iface", BoundaryKind::Interface(InterfaceIntent::Conformal))
+                    .or_op()?;
                 m.assign_interface(b, &self.faces, &[]).or_op()?;
                 Ok(b)
             },

@@ -13,7 +13,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Interval, SurfaceDef};
-use sm_topo_api::{Carrier, CurveCarrier, Dim, FaceSides, Sense, SurfaceCarrier, TopoError, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{
+    Carrier, CurveCarrier, Dim, FaceSides, Sense, SurfaceCarrier, TopoError, TopologyEdit,
+    TopologyView, TopologyViewExt,
+};
 
 use crate::error::BooleanError;
 use crate::geo;
@@ -61,7 +64,9 @@ fn same_surface(a: &SurfaceDef, b: &SurfaceDef, tol: f64, ang: f64) -> bool {
             let parallel = p.frame.z.cross(q.frame.z).norm() <= ang.max(1e-9);
             parallel && p.frame.z.dot(q.frame.origin - p.frame.origin).abs() <= tol
         }
-        (SurfaceDef::Sphere(p), SurfaceDef::Sphere(q)) => geo::dist(p.frame.origin, q.frame.origin) <= tol && (p.radius - q.radius).abs() <= tol,
+        (SurfaceDef::Sphere(p), SurfaceDef::Sphere(q)) => {
+            geo::dist(p.frame.origin, q.frame.origin) <= tol && (p.radius - q.radius).abs() <= tol
+        }
         (SurfaceDef::Cylinder(p), SurfaceDef::Cylinder(q)) => {
             let parallel = p.frame.z.cross(q.frame.z).norm() <= ang.max(1e-9);
             let d = q.frame.origin - p.frame.origin;
@@ -70,7 +75,9 @@ fn same_surface(a: &SurfaceDef, b: &SurfaceDef, tol: f64, ang: f64) -> bool {
         }
         (SurfaceDef::Cone(p), SurfaceDef::Cone(q)) => {
             let parallel = p.frame.z.cross(q.frame.z).norm() <= ang.max(1e-9);
-            parallel && geo::dist(p.apex(), q.apex()) <= tol && (p.half_angle - q.half_angle).abs() <= 1e-9
+            parallel
+                && geo::dist(p.apex(), q.apex()) <= tol
+                && (p.half_angle - q.half_angle).abs() <= 1e-9
         }
         _ => false,
     }
@@ -86,7 +93,9 @@ fn same_curve(a: &CurveDef, b: &CurveDef, tol: f64, ang: f64) -> bool {
         }
         (CurveDef::Circle(p), CurveDef::Circle(q)) => {
             let parallel = p.frame.z.cross(q.frame.z).norm() <= ang.max(1e-9);
-            parallel && geo::dist(p.frame.origin, q.frame.origin) <= tol && (p.radius - q.radius).abs() <= tol
+            parallel
+                && geo::dist(p.frame.origin, q.frame.origin) <= tol
+                && (p.radius - q.radius).abs() <= tol
         }
         _ => false,
     }
@@ -107,27 +116,61 @@ struct Repointed {
 /// Re-point face `drop` at the surface handle of `keep` (same geometry), keeping its normal.
 /// `Ok(None)` means the faces cannot be joined; `Ok(Some(None))` that they already agree and
 /// nothing changed; `Ok(Some(Some(r)))` that `drop` was re-pointed (undo with [`restore`]).
-fn unify_surface<E: TopologyEdit + ?Sized>(topo: &mut E, keep: EntityId, drop: EntityId) -> Result<Option<Option<Repointed>>, BooleanError> {
-    let (Carrier::Surface(sk), Carrier::Surface(sd)) = (topo.carrier(keep).clone(), topo.carrier(drop).clone()) else { return Ok(None) };
+fn unify_surface<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    keep: EntityId,
+    drop: EntityId,
+) -> Result<Option<Option<Repointed>>, BooleanError> {
+    let (Carrier::Surface(sk), Carrier::Surface(sd)) =
+        (topo.carrier(keep).clone(), topo.carrier(drop).clone())
+    else {
+        return Ok(None);
+    };
     if sk.surface == sd.surface {
         return Ok((sk.sense == sd.sense).then_some(None));
     }
-    let Some(p) = crate::faceclass::interior_point(&*topo, &crate::faceclass::FaceCache::new(), drop)? else { return Ok(None) };
-    let (Some((nk_surf, _)), Some((nd_surf, _))) = (surface_normal(&*topo, sk.surface, p), surface_normal(&*topo, sd.surface, p)) else { return Ok(None) };
+    let Some(p) =
+        crate::faceclass::interior_point(&*topo, &crate::faceclass::FaceCache::new(), drop)?
+    else {
+        return Ok(None);
+    };
+    let (Some((nk_surf, _)), Some((nd_surf, _))) = (
+        surface_normal(&*topo, sk.surface, p),
+        surface_normal(&*topo, sd.surface, p),
+    ) else {
+        return Ok(None);
+    };
     let n_drop = nd_surf * sd.sense.sign();
     let dot = n_drop.dot(nk_surf);
     if dot.abs() < 0.5 {
         return Ok(None);
     }
-    let sense = if dot > 0.0 { Sense::Forward } else { Sense::Reversed };
+    let sense = if dot > 0.0 {
+        Sense::Forward
+    } else {
+        Sense::Reversed
+    };
     // The old pcurves belong to the old parametrization: drop them (the pcurve pass rebuilds).
     let keys: Vec<_> = topo.coedges(drop).map(|c| c.key).collect();
-    let pcurves: Vec<_> = keys.iter().filter_map(|&k| topo.pcurve(k).cloned().map(|pc| (k, pc))).collect();
-    topo.set_carrier(drop, Carrier::Surface(SurfaceCarrier { surface: sk.surface, sense }))?;
+    let pcurves: Vec<_> = keys
+        .iter()
+        .filter_map(|&k| topo.pcurve(k).cloned().map(|pc| (k, pc)))
+        .collect();
+    topo.set_carrier(
+        drop,
+        Carrier::Surface(SurfaceCarrier {
+            surface: sk.surface,
+            sense,
+        }),
+    )?;
     for &(k, _) in &pcurves {
         topo.set_pcurve(k, None)?;
     }
-    Ok(Some(Some(Repointed { face: drop, old: sd, pcurves })))
+    Ok(Some(Some(Repointed {
+        face: drop,
+        old: sd,
+        pcurves,
+    })))
 }
 
 /// Undo a [`unify_surface`] whose join was refused, so a refusal leaves no side effect.
@@ -139,7 +182,11 @@ fn restore<E: TopologyEdit + ?Sized>(topo: &mut E, r: Repointed) -> Result<(), B
     Ok(())
 }
 
-fn surface_normal<V: TopologyView + ?Sized>(view: &V, s: EntityId, p: Point3) -> Option<(sm_core::Vector3, Point3)> {
+fn surface_normal<V: TopologyView + ?Sized>(
+    view: &V,
+    s: EntityId,
+    p: Point3,
+) -> Option<(sm_core::Vector3, Point3)> {
     let surf = view.shapes().surface(s)?;
     let pr = surf.project(p, None).ok()?;
     let n = geo::unit(surf.normal(pr.uv).ok()?)?;
@@ -147,7 +194,12 @@ fn surface_normal<V: TopologyView + ?Sized>(view: &V, s: EntityId, p: Point3) ->
 }
 
 /// Merge fragments of the same surface that meet along edges nothing else uses.
-fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>, rep: &mut RegularizeReport) -> Result<bool, BooleanError> {
+fn join_faces_pass<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    volumes: &[EntityId],
+    tried: &mut BTreeSet<(EntityId, EntityId)>,
+    rep: &mut RegularizeReport,
+) -> Result<bool, BooleanError> {
     let tol = *topo.tolerance();
     for &v in volumes {
         if !topo.is_alive(v) {
@@ -160,7 +212,12 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
         }
         for e in edges {
             // The radial rings are only rebuilt at `end_op`: read the uses from the coboundary.
-            let uses: Vec<EntityId> = topo.coboundary(e).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face)).map(|i| i.cell).collect();
+            let uses: Vec<EntityId> = topo
+                .coboundary(e)
+                .iter()
+                .filter(|i| topo.dim_of(i.cell) == Some(Dim::Face))
+                .map(|i| i.cell)
+                .collect();
             // Two uses by two distinct faces (a seam is two uses by one face).
             let [u0, u1] = uses[..] else { continue };
             let (f, g) = (u0.min(u1), u0.max(u1));
@@ -174,12 +231,21 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             if sides_key(&*topo, f) != sides_key(&*topo, g) {
                 continue;
             }
-            let (Some(sf), Some(sg)) = (crate::pieces::surface_def_of(&*topo, f), crate::pieces::surface_def_of(&*topo, g)) else { continue };
+            let (Some(sf), Some(sg)) = (
+                crate::pieces::surface_def_of(&*topo, f),
+                crate::pieces::surface_def_of(&*topo, g),
+            ) else {
+                continue;
+            };
             if !same_surface(sf, sg, tol.linear, tol.angular) {
                 continue;
             }
             let Some(undo) = unify_surface(topo, f, g)? else {
-                rep.refused.push(RefusedJoin { a: f, b: g, reason: "same surface but the face normals disagree".to_owned() });
+                rep.refused.push(RefusedJoin {
+                    a: f,
+                    b: g,
+                    reason: "same surface but the face normals disagree".to_owned(),
+                });
                 continue;
             };
             // `join_faces` is atomic; if it refuses, put the surface and pcurves back.
@@ -188,7 +254,11 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
                     rep.joined_faces.push(JoinedPair { keep: f, drop: g });
                     return Ok(true);
                 }
-                Err(e) => rep.refused.push(RefusedJoin { a: f, b: g, reason: e.to_string() }),
+                Err(e) => rep.refused.push(RefusedJoin {
+                    a: f,
+                    b: g,
+                    reason: e.to_string(),
+                }),
             }
             if let Some(r) = undo {
                 restore(topo, r)?;
@@ -199,32 +269,56 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
 }
 
 /// Parameter range and sense that put `edge` on the curve `target` (same geometry).
-fn repoint_range<E: TopologyEdit + ?Sized>(topo: &E, edge: EntityId, target_curve: EntityId) -> Option<CurveCarrier> {
+fn repoint_range<E: TopologyEdit + ?Sized>(
+    topo: &E,
+    edge: EntityId,
+    target_curve: EntityId,
+) -> Option<CurveCarrier> {
     let (s, t) = topo.edge_ends(edge)?;
     let c = topo.shapes().curve(target_curve)?;
     let (ps, pt) = (geo::vertex_point(topo, s)?, geo::vertex_point(topo, t)?);
     let pm = geo::edge_sample(topo, edge, 0.5)?;
     let period = c.domain().period;
-    let (ts, tm, te) = (c.project(ps, None).ok()?.t, c.project(pm, None).ok()?.t, c.project(pt, None).ok()?.t);
+    let (ts, tm, te) = (
+        c.project(ps, None).ok()?.t,
+        c.project(pm, None).ok()?.t,
+        c.project(pt, None).ok()?.t,
+    );
     match period {
         None => {
             if te >= ts {
-                Some(CurveCarrier { curve: target_curve, range: Interval::new(ts, te), sense: Sense::Forward })
+                Some(CurveCarrier {
+                    curve: target_curve,
+                    range: Interval::new(ts, te),
+                    sense: Sense::Forward,
+                })
             } else {
-                Some(CurveCarrier { curve: target_curve, range: Interval::new(te, ts), sense: Sense::Reversed })
+                Some(CurveCarrier {
+                    curve: target_curve,
+                    range: Interval::new(te, ts),
+                    sense: Sense::Reversed,
+                })
             }
         }
         Some(p) => {
             let up = |x: f64, base: f64| x + p * ((base - x) / p).ceil();
             let (tm_f, te_f) = (up(tm, ts), up(te, up(tm, ts)));
             if te_f - ts < p {
-                Some(CurveCarrier { curve: target_curve, range: Interval::new(ts, te_f), sense: Sense::Forward })
+                Some(CurveCarrier {
+                    curve: target_curve,
+                    range: Interval::new(ts, te_f),
+                    sense: Sense::Forward,
+                })
             } else {
                 // Against the curve: go downwards from ts.
                 let dn = |x: f64, base: f64| x - p * ((x - base) / p).ceil();
                 let (tm_r, te_r) = (dn(tm, ts), dn(te, dn(tm, ts)));
                 let _ = (tm_f, tm_r);
-                Some(CurveCarrier { curve: target_curve, range: Interval::new(te_r, ts), sense: Sense::Reversed })
+                Some(CurveCarrier {
+                    curve: target_curve,
+                    range: Interval::new(te_r, ts),
+                    sense: Sense::Reversed,
+                })
             }
         }
     }
@@ -233,13 +327,28 @@ fn repoint_range<E: TopologyEdit + ?Sized>(topo: &E, edge: EntityId, target_curv
 /// `join_edges`, retried with the second edge's range moved by one period when the kernel finds
 /// the ranges not adjacent: the two arcs that close a full circle meet at `0` and `2 pi`, which
 /// the kernel does not take for the same parameter. A refused retry puts the carrier back.
-fn join_edges_periodic<E: TopologyEdit + ?Sized>(topo: &mut E, e1: EntityId, e2: EntityId, periodic: bool) -> Result<Result<EntityId, TopoError>, BooleanError> {
+fn join_edges_periodic<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    e1: EntityId,
+    e2: EntityId,
+    periodic: bool,
+) -> Result<Result<EntityId, TopoError>, BooleanError> {
     let first = topo.join_edges(e1, e2);
-    if !periodic || !matches!(&first, Err(TopoError::NotCoincident(m)) if m.contains("not adjacent")) {
+    if !periodic
+        || !matches!(&first, Err(TopoError::NotCoincident(m)) if m.contains("not adjacent"))
+    {
         return Ok(first);
     }
-    let Carrier::Curve(cur) = topo.carrier(e2).clone() else { return Ok(first) };
-    let Some(period) = topo.shapes().curve(cur.curve).and_then(|c| c.domain().period) else { return Ok(first) };
+    let Carrier::Curve(cur) = topo.carrier(e2).clone() else {
+        return Ok(first);
+    };
+    let Some(period) = topo
+        .shapes()
+        .curve(cur.curve)
+        .and_then(|c| c.domain().period)
+    else {
+        return Ok(first);
+    };
     for k in [-1.0, 1.0] {
         let range = Interval::new(cur.range.lo + k * period, cur.range.hi + k * period);
         topo.set_carrier(e2, Carrier::Curve(CurveCarrier { range, ..cur }))?;
@@ -252,19 +361,34 @@ fn join_edges_periodic<E: TopologyEdit + ?Sized>(topo: &mut E, e1: EntityId, e2:
     Ok(first)
 }
 
-fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], tried: &mut BTreeSet<(EntityId, EntityId)>, rep: &mut RegularizeReport, periodic: bool) -> Result<bool, BooleanError> {
+fn join_edges_pass<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    volumes: &[EntityId],
+    tried: &mut BTreeSet<(EntityId, EntityId)>,
+    rep: &mut RegularizeReport,
+    periodic: bool,
+) -> Result<bool, BooleanError> {
     let tol = *topo.tolerance();
     let mut verts: BTreeSet<EntityId> = BTreeSet::new();
     for &v in volumes {
         if topo.is_alive(v) {
-            verts.extend(topo.closure(v).into_iter().filter(|c| topo.dim_of(*c) == Some(Dim::Vertex)));
+            verts.extend(
+                topo.closure(v)
+                    .into_iter()
+                    .filter(|c| topo.dim_of(*c) == Some(Dim::Vertex)),
+            );
         }
     }
     for vx in verts {
         if !topo.is_alive(vx) {
             continue;
         }
-        let es: Vec<EntityId> = topo.coboundary(vx).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Edge)).map(|i| i.cell).collect();
+        let es: Vec<EntityId> = topo
+            .coboundary(vx)
+            .iter()
+            .filter(|i| topo.dim_of(i.cell) == Some(Dim::Edge))
+            .map(|i| i.cell)
+            .collect();
         if es.len() != 2 || topo.coboundary(vx).len() != 2 {
             continue;
         }
@@ -273,25 +397,45 @@ fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             continue;
         }
         tried.insert((e1, e2));
-        if topo.edge_ends(e1).is_none_or(|(s, t)| s == t) || topo.edge_ends(e2).is_none_or(|(s, t)| s == t) {
+        if topo.edge_ends(e1).is_none_or(|(s, t)| s == t)
+            || topo.edge_ends(e2).is_none_or(|(s, t)| s == t)
+        {
             continue;
         }
-        let (Carrier::Curve(c1), Carrier::Curve(c2)) = (topo.carrier(e1).clone(), topo.carrier(e2).clone()) else { continue };
-        let (Some(d1), Some(d2)) = (topo.shapes().curve_def(c1.curve), topo.shapes().curve_def(c2.curve)) else { continue };
+        let (Carrier::Curve(c1), Carrier::Curve(c2)) =
+            (topo.carrier(e1).clone(), topo.carrier(e2).clone())
+        else {
+            continue;
+        };
+        let (Some(d1), Some(d2)) = (
+            topo.shapes().curve_def(c1.curve),
+            topo.shapes().curve_def(c2.curve),
+        ) else {
+            continue;
+        };
         if !same_curve(d1, d2, tol.linear, tol.angular) {
             continue;
         }
         if c1.curve != c2.curve {
-            let Some(new) = repoint_range(&*topo, e2, c1.curve) else { continue };
+            let Some(new) = repoint_range(&*topo, e2, c1.curve) else {
+                continue;
+            };
             topo.set_carrier(e2, Carrier::Curve(new))?;
         }
         match join_edges_periodic(topo, e1, e2, periodic)? {
             Ok(kept) => {
                 // The kernel names the survivor (the lower id today); record what it returns.
-                rep.joined_edges.push(JoinedPair { keep: kept, drop: if kept == e1 { e2 } else { e1 } });
+                rep.joined_edges.push(JoinedPair {
+                    keep: kept,
+                    drop: if kept == e1 { e2 } else { e1 },
+                });
                 return Ok(true);
             }
-            Err(e) => rep.refused.push(RefusedJoin { a: e1, b: e2, reason: e.to_string() }),
+            Err(e) => rep.refused.push(RefusedJoin {
+                a: e1,
+                b: e2,
+                reason: e.to_string(),
+            }),
         }
     }
     Ok(false)
@@ -299,7 +443,11 @@ fn join_edges_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
 
 /// Regularize `volumes`: join fragments, then dissolve the vertices that no longer separate
 /// anything. Pairs the topology refuses are skipped and listed in the report.
-pub(crate) fn regularize<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId], periodic: bool) -> Result<RegularizeReport, BooleanError> {
+pub(crate) fn regularize<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    volumes: &[EntityId],
+    periodic: bool,
+) -> Result<RegularizeReport, BooleanError> {
     let mut rep = RegularizeReport::default();
     let mut tried_f: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
     while join_faces_pass(topo, volumes, &mut tried_f, &mut rep)? {}
@@ -314,13 +462,21 @@ pub(crate) fn regularize<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[Enti
 ///
 /// # Errors
 /// A topology or geometry failure; the caller aborts the operation.
-pub fn regularize_volumes<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId]) -> Result<RegularizeReport, BooleanError> {
+pub fn regularize_volumes<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    volumes: &[EntityId],
+) -> Result<RegularizeReport, BooleanError> {
     let rep = regularize(topo, volumes, true)?;
     // Only the faces a join touched get new pcurves: an untouched import keeps its own.
     let mut faces: BTreeSet<EntityId> = BTreeSet::new();
     faces.extend(rep.joined_faces.iter().map(|p| p.keep));
     for p in &rep.joined_edges {
-        faces.extend(topo.coboundary(p.keep).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face)).map(|i| i.cell));
+        faces.extend(
+            topo.coboundary(p.keep)
+                .iter()
+                .filter(|i| topo.dim_of(i.cell) == Some(Dim::Face))
+                .map(|i| i.cell),
+        );
     }
     let faces: Vec<EntityId> = faces.into_iter().filter(|&f| topo.is_alive(f)).collect();
     crate::pcurves::fix_faces(topo, &faces)?;

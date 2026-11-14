@@ -33,6 +33,7 @@ mod bvh;
 mod core;
 mod delta;
 mod facets;
+mod graze;
 mod hexlat;
 mod image;
 mod overlaps_query;

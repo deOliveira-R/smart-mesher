@@ -23,6 +23,8 @@ use crate::geo;
 
 /// Samples per non-degenerate coedge of the parameter-space polygon.
 const SAMPLES: usize = 32;
+/// Refinement of the sampling used to settle hits near a curved edge (sagitta shrinks 1/factor^2).
+const DENSE_FACTOR: usize = 64;
 
 /// The sampled model of one face.
 pub(crate) struct FaceModel {
@@ -31,6 +33,8 @@ pub(crate) struct FaceModel {
     /// 3D boundary samples, and the largest distance between consecutive ones.
     pub pts: Vec<Point3>,
     pub spacing: f64,
+    /// Bound on how far the sampled boundary lies from the true one (chord sagitta, 2x margin).
+    pub sag: f64,
 }
 
 /// Per-phase cache of face models and interior points.
@@ -38,6 +42,7 @@ pub(crate) struct FaceModel {
 pub(crate) struct FaceCache {
     models: RefCell<BTreeMap<EntityId, Rc<FaceModel>>>,
     interior: RefCell<BTreeMap<EntityId, Option<Point3>>>,
+    dense: RefCell<BTreeMap<EntityId, Rc<FaceModel>>>,
 }
 
 impl FaceCache {
@@ -45,22 +50,48 @@ impl FaceCache {
         Self::default()
     }
 
-    pub(crate) fn model<V: TopologyView + ?Sized>(&self, view: &V, f: EntityId) -> Result<Rc<FaceModel>, BooleanError> {
+    pub(crate) fn model<V: TopologyView + ?Sized>(
+        &self,
+        view: &V,
+        f: EntityId,
+    ) -> Result<Rc<FaceModel>, BooleanError> {
         if let Some(m) = self.models.borrow().get(&f) {
             return Ok(Rc::clone(m));
         }
-        let m = Rc::new(build_model(view, f)?);
+        let m = Rc::new(build_model(view, f, SAMPLES)?);
         self.models.borrow_mut().insert(f, Rc::clone(&m));
+        Ok(m)
+    }
+
+    /// The model sampled `DENSE_FACTOR` times finer, built on demand for the few hits that fall
+    /// within the chord sagitta of a curved edge.
+    fn dense_model<V: TopologyView + ?Sized>(
+        &self,
+        view: &V,
+        f: EntityId,
+    ) -> Result<Rc<FaceModel>, BooleanError> {
+        if let Some(m) = self.dense.borrow().get(&f) {
+            return Ok(Rc::clone(m));
+        }
+        let m = Rc::new(build_model(view, f, SAMPLES * DENSE_FACTOR)?);
+        self.dense.borrow_mut().insert(f, Rc::clone(&m));
         Ok(m)
     }
 }
 
-fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceModel, BooleanError> {
-    let Some((surf, _)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+fn build_model<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+    samples: usize,
+) -> Result<FaceModel, BooleanError> {
+    let Some((surf, _)) = geo::face_surface(view, f) else {
+        return Err(BooleanError::Unsupported("a face has no surface"));
+    };
     let dom = surf.domain();
     let mut polys = Vec::new();
     let mut pts: Vec<Point3> = Vec::new();
     let mut spacing = 0.0f64;
+    let mut sag = 0.0f64;
     for lp in view.loops(f) {
         let mut poly: Vec<Uv> = Vec::new();
         let mut prev: Option<Uv> = None;
@@ -70,42 +101,70 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
             if deg {
                 if let Some(pc) = pc {
                     let rg = pc.range();
-                    let (a, b) = if key.side == Side::Left { (pc.eval(rg.lo), pc.eval(rg.hi)) } else { (pc.eval(rg.hi), pc.eval(rg.lo)) };
+                    let (a, b) = if key.side == Side::Left {
+                        (pc.eval(rg.lo), pc.eval(rg.hi))
+                    } else {
+                        (pc.eval(rg.hi), pc.eval(rg.lo))
+                    };
                     poly.push(a);
                     poly.push(b);
                     prev = Some(b);
                 }
                 continue;
             }
-            let Carrier::Curve(cc) = view.carrier(key.edge) else { return Err(BooleanError::Unsupported("an edge has no curve")) };
-            let Some(curve) = view.shapes().curve(cc.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
+            let Carrier::Curve(cc) = view.carrier(key.edge) else {
+                return Err(BooleanError::Unsupported("an edge has no curve"));
+            };
+            let Some(curve) = view.shapes().curve(cc.curve) else {
+                return Err(BooleanError::Unsupported("curve not in store"));
+            };
             let along = (cc.sense == sm_topo_api::Sense::Forward) == (key.side == Side::Left);
             let mut last3: Option<Point3> = None;
-            for k in 0..=SAMPLES {
-                let frac = k as f64 / SAMPLES as f64;
+            let mut run: Vec<Point3> = Vec::with_capacity(samples + 1);
+            for k in 0..=samples {
+                let frac = k as f64 / samples as f64;
                 let t = geo::edge_param(cc, if along { frac } else { 1.0 - frac });
                 let p3 = curve.eval(t);
                 if let Some(l) = last3 {
                     spacing = spacing.max(geo::dist(l, p3));
                 }
                 last3 = Some(p3);
+                run.push(p3);
                 pts.push(p3);
                 let uv = match pc {
                     Some(pc) => pc.eval(t),
                     None => {
                         let pr = surf.project(p3, prev)?;
                         // A sample at a pole has no longitude of its own: keep the previous one.
-                        let u = if surf.jet(pr.uv).du.norm() < 1e-9 { prev.map_or(pr.uv.u, |p| p.u) } else { dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)) };
+                        let u = if surf.jet(pr.uv).du.norm() < 1e-9 {
+                            prev.map_or(pr.uv.u, |p| p.u)
+                        } else {
+                            dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u))
+                        };
                         Uv::new(u, dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)))
                     }
                 };
                 poly.push(uv);
                 prev = Some(uv);
             }
+            // A point on the arc is 4x the chord sagitta away from the chord of its neighbours.
+            for w in run.windows(3) {
+                let ch = w[2] - w[0];
+                let cl = ch.norm();
+                if cl > 0.0 {
+                    sag = sag.max(0.5 * (w[1] - w[0]).cross(ch).norm() / cl);
+                }
+            }
         }
         polys.push(poly);
     }
-    Ok(FaceModel { polys, dom, pts, spacing })
+    Ok(FaceModel {
+        polys,
+        dom,
+        pts,
+        spacing,
+        sag,
+    })
 }
 
 /// Winding-number test of `q` against the polygons (all loops together), trying the periodic
@@ -163,11 +222,20 @@ pub(crate) fn boundary_distance<V: TopologyView + ?Sized>(view: &V, f: EntityId,
 }
 
 /// True if `p` is within `tol` of the boundary of `f`; rejects cheaply against the samples.
-fn near_boundary<V: TopologyView + ?Sized>(view: &V, m: &FaceModel, f: EntityId, p: Point3, tol: f64) -> bool {
+fn near_boundary<V: TopologyView + ?Sized>(
+    view: &V,
+    m: &FaceModel,
+    f: EntityId,
+    p: Point3,
+    tol: f64,
+) -> bool {
     let reach = 1.5 * m.spacing + tol;
     if !m.pts.iter().any(|q| geo::dist(*q, p) <= reach) {
         // Poles and degenerate edges carry no samples.
-        let has_deg = view.face_edges(f).iter().any(|&e| geo::is_degenerate(view, e));
+        let has_deg = view
+            .face_edges(f)
+            .iter()
+            .any(|&e| geo::is_degenerate(view, e));
         if !has_deg {
             return false;
         }
@@ -177,26 +245,97 @@ fn near_boundary<V: TopologyView + ?Sized>(view: &V, m: &FaceModel, f: EntityId,
 
 /// Classify the point `p` (assumed to lie on the surface of `f`; it is projected onto it) against
 /// the trimmed face: `On` within `tol` of the boundary, else `In` or `Out`.
-pub(crate) fn classify<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId, p: Point3, tol: f64) -> Result<(PointClass, Uv), BooleanError> {
-    let Some((surf, _)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+pub(crate) fn classify<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &FaceCache,
+    f: EntityId,
+    p: Point3,
+    tol: f64,
+) -> Result<(PointClass, Uv), BooleanError> {
+    let Some((surf, _)) = geo::face_surface(view, f) else {
+        return Err(BooleanError::Unsupported("a face has no surface"));
+    };
     let pr = surf.project(p, None)?;
     classify_uv(view, cache, f, pr.uv, tol)
 }
 
 /// As [`classify`], from parameters.
-pub(crate) fn classify_uv<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId, uv: Uv, tol: f64) -> Result<(PointClass, Uv), BooleanError> {
-    let Some((surf, _)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+pub(crate) fn classify_uv<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &FaceCache,
+    f: EntityId,
+    uv: Uv,
+    tol: f64,
+) -> Result<(PointClass, Uv), BooleanError> {
+    let Some((surf, _)) = geo::face_surface(view, f) else {
+        return Err(BooleanError::Unsupported("a face has no surface"));
+    };
     let m = cache.model(view, f)?;
     let p3 = surf.eval(uv);
     if near_boundary(view, &m, f, p3, tol) {
         return Ok((PointClass::On, uv));
     }
-    Ok((if inside(&m.polys, &m.dom, uv) { PointClass::In } else { PointClass::Out }, uv))
+    Ok((
+        if inside(&m.polys, &m.dom, uv) {
+            PointClass::In
+        } else {
+            PointClass::Out
+        },
+        uv,
+    ))
+}
+
+/// True if `p` (on the surface of `f`) lies within `2 * m.sag` of the true boundary, where the
+/// sampled polygon of `m` may put it on the wrong side. Straight boundaries are never doubtful.
+fn doubtful_in<V: TopologyView + ?Sized>(view: &V, m: &FaceModel, f: EntityId, p: Point3) -> bool {
+    if m.sag <= 0.0 {
+        return false;
+    }
+    let reach = m.spacing + 2.0 * m.sag;
+    if !m.pts.iter().any(|q| geo::dist(*q, p) <= reach) {
+        return false;
+    }
+    boundary_distance(view, f, p) <= 2.0 * m.sag
+}
+
+/// As [`classify_uv`] for a ray hit `p` (the point at `uv`), settled against the true boundary:
+/// the coarse polygon is inscribed in a curved edge, so a hit within its sagitta band is
+/// re-classified on a polygon 64x finer (sagitta 4096x smaller). `None` if it is still within the
+/// finer band (the hit is then genuinely ambiguous).
+pub(crate) fn classify_hit<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &FaceCache,
+    f: EntityId,
+    uv: Uv,
+    p: Point3,
+    tol: f64,
+) -> Result<Option<PointClass>, BooleanError> {
+    let (class, uv) = classify_uv(view, cache, f, uv, tol)?;
+    if class == PointClass::On {
+        return Ok(Some(class));
+    }
+    let m = cache.model(view, f)?;
+    if !doubtful_in(view, &m, f, p) {
+        return Ok(Some(class));
+    }
+    let d = cache.dense_model(view, f)?;
+    if doubtful_in(view, &d, f, p) {
+        return Ok(None);
+    }
+    Ok(Some(if inside(&d.polys, &d.dom, uv) {
+        PointClass::In
+    } else {
+        PointClass::Out
+    }))
 }
 
 /// A point strictly inside the trimmed face, as far from the boundary as a coarse search finds:
 /// the centroid when it lies inside, else the best of a grid over the parameter bounding box.
-pub(crate) fn interior_point<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId) -> Result<Option<Point3>, BooleanError> {
+pub(crate) fn interior_point<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &FaceCache,
+    f: EntityId,
+) -> Result<Option<Point3>, BooleanError> {
     if let Some(p) = cache.interior.borrow().get(&f) {
         return Ok(*p);
     }
@@ -205,10 +344,19 @@ pub(crate) fn interior_point<V: TopologyView + ?Sized>(view: &V, cache: &FaceCac
     Ok(r)
 }
 
-fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache, f: EntityId) -> Result<Option<Point3>, BooleanError> {
-    let Some((surf, sc)) = geo::face_surface(view, f) else { return Ok(None) };
+fn interior_point_uncached<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &FaceCache,
+    f: EntityId,
+) -> Result<Option<Point3>, BooleanError> {
+    let Some((surf, sc)) = geo::face_surface(view, f) else {
+        return Ok(None);
+    };
     let lin = view.tolerance().linear;
-    let planar = matches!(view.shapes().surface_def(sc.surface), Some(sm_geom_api::SurfaceDef::Plane(_)));
+    let planar = matches!(
+        view.shapes().surface_def(sc.surface),
+        Some(sm_geom_api::SurfaceDef::Plane(_))
+    );
     // The centroid is exact and cheap for a planar face; curved faces use the grid below (their
     // moments integrate along every edge curve, which is slow for fitted NURBS edges).
     if planar
@@ -227,7 +375,10 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
         }
     }
     let m = cache.model(view, f)?;
-    let (mut lo, mut hi) = (Uv::new(f64::INFINITY, f64::INFINITY), Uv::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    let (mut lo, mut hi) = (
+        Uv::new(f64::INFINITY, f64::INFINITY),
+        Uv::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
     for lp in &m.polys {
         for q in lp {
             lo = Uv::new(lo.u.min(q.u), lo.v.min(q.v));
@@ -240,7 +391,11 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
     // Depth of a candidate: its distance to the sampled boundary (a lower bound of the true
     // distance to within the sample spacing); degenerate edges count as their vertex.
     let depth = |p: Point3| -> f64 {
-        let mut d = m.pts.iter().map(|q| geo::dist(*q, p)).fold(f64::INFINITY, f64::min);
+        let mut d = m
+            .pts
+            .iter()
+            .map(|q| geo::dist(*q, p))
+            .fold(f64::INFINITY, f64::min);
         for &e in view.face_edges(f) {
             if geo::is_degenerate(view, e)
                 && let Some((s, _)) = view.edge_ends(e)
@@ -259,7 +414,10 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
     const N: usize = 13;
     for i in 1..N {
         for j in 1..N {
-            let uv = Uv::new(lo.u + (hi.u - lo.u) * i as f64 / N as f64, lo.v + (hi.v - lo.v) * j as f64 / N as f64);
+            let uv = Uv::new(
+                lo.u + (hi.u - lo.u) * i as f64 / N as f64,
+                lo.v + (hi.v - lo.v) * j as f64 / N as f64,
+            );
             if !inside(&m.polys, &m.dom, uv) {
                 continue;
             }
@@ -283,7 +441,10 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
     // from the boundary instead, on a decade ladder of depths.
     let np: usize = m.polys.iter().map(Vec::len).sum();
     let stride = (np / 96).max(1);
-    let extent = m.pts.iter().fold(0.0f64, |a, q| a.max(geo::dist(*q, m.pts[0])));
+    let extent = m
+        .pts
+        .iter()
+        .fold(0.0f64, |a, q| a.max(geo::dist(*q, m.pts[0])));
     let mut found: Option<(f64, Point3)> = None;
     for lp in &m.polys {
         let n = lp.len();
@@ -293,13 +454,21 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(view: &V, cache: &FaceCache
             let jet = surf.jet(mid);
             let nrm = jet.du.cross(jet.dv);
             let t = surf.eval(b) - surf.eval(a);
-            let Some(inward) = geo::unit(nrm.cross(t)) else { continue };
+            let Some(inward) = geo::unit(nrm.cross(t)) else {
+                continue;
+            };
             let p0 = surf.eval(mid);
             let mut delta = 0.1 * extent;
             while delta > 10.0 * lin {
                 for sgn in [1.0, -1.0] {
-                    let q = Point3::new(p0.x + sgn * delta * inward.x, p0.y + sgn * delta * inward.y, p0.z + sgn * delta * inward.z);
-                    let Ok(pr) = surf.project(q, Some(mid)) else { continue };
+                    let q = Point3::new(
+                        p0.x + sgn * delta * inward.x,
+                        p0.y + sgn * delta * inward.y,
+                        p0.z + sgn * delta * inward.z,
+                    );
+                    let Ok(pr) = surf.project(q, Some(mid)) else {
+                        continue;
+                    };
                     if pr.distance > 1e-3 * delta.max(lin) || !inside(&m.polys, &m.dom, pr.uv) {
                         continue;
                     }

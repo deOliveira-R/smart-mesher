@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 
 use sm_core::{EntityId, Point3};
-use sm_topo_api::{CoedgeKind, FaceUseSpec, Sense, ShellKind, ShellSpec, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{
+    CoedgeKind, FaceUseSpec, Sense, ShellKind, ShellSpec, Side, TopologyEdit, TopologyView,
+    TopologyViewExt,
+};
 
 use crate::error::BooleanError;
 use crate::faceclass;
@@ -18,7 +21,11 @@ pub(crate) struct ShellGroup {
 }
 
 fn sense_of(side: Side) -> Sense {
-    if side == Side::Left { Sense::Forward } else { Sense::Reversed }
+    if side == Side::Left {
+        Sense::Forward
+    } else {
+        Sense::Reversed
+    }
 }
 
 /// Group `uses` (a face and the side the new region occupies) into closed shells by flood fill
@@ -26,8 +33,16 @@ fn sense_of(side: Side) -> Sense {
 /// shell against its normals, and give every cavity to the innermost outer shell around it.
 /// Groups come ordered by the lowest face id of the outer shell. `probe` and `rule` only label
 /// the error.
-pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId, Side)], probe: EntityId, rule: &'static str) -> Result<Vec<ShellGroup>, BooleanError> {
-    let invalid = || BooleanError::ResultInvalid { volume: probe, rule };
+pub(crate) fn group_shells<V: TopologyView + ?Sized>(
+    view: &V,
+    uses: &[(EntityId, Side)],
+    probe: EntityId,
+    rule: &'static str,
+) -> Result<Vec<ShellGroup>, BooleanError> {
+    let invalid = || BooleanError::ResultInvalid {
+        volume: probe,
+        rule,
+    };
     let cache = faceclass::FaceCache::new();
     let lin = view.tolerance().linear;
     let tol = *view.tolerance();
@@ -75,7 +90,14 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
         s.sort_by_key(|&i| uses[i].0);
     }
     shell_list.sort_by_key(|s| uses[s[0]].0);
-    let shell_uses: Vec<Vec<locate::Use>> = shell_list.iter().map(|s| s.iter().map(|&i| (uses[i].0, sense_of(uses[i].1))).collect()).collect();
+    let shell_uses: Vec<Vec<locate::Use>> = shell_list
+        .iter()
+        .map(|s| {
+            s.iter()
+                .map(|&i| (uses[i].0, sense_of(uses[i].1)))
+                .collect()
+        })
+        .collect();
     let mut is_outer: Vec<bool> = Vec::new();
     for su in &shell_uses {
         let mut bbox = sm_core::Aabb::empty();
@@ -91,10 +113,17 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
         let mut delta = 10.0 * lin;
         while verdict.is_none() {
             for &(f, sense) in su {
-                let Some(p) = faceclass::interior_point(view, &cache, f)? else { continue };
-                let (nf, _, _) = geo::face_normal_near(view, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+                let Some(p) = faceclass::interior_point(view, &cache, f)? else {
+                    continue;
+                };
+                let (nf, _, _) = geo::face_normal_near(view, f, p)
+                    .ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
                 let n_out = nf * sense.sign();
-                let q = Point3::new(p.x - delta * n_out.x, p.y - delta * n_out.y, p.z - delta * n_out.z);
+                let q = Point3::new(
+                    p.x - delta * n_out.x,
+                    p.y - delta * n_out.y,
+                    p.z - delta * n_out.z,
+                );
                 match locate::locate_in_uses(view, &cache, su, q, &tol) {
                     Ok(PointLocation::In) => {
                         verdict = Some(true);
@@ -132,7 +161,8 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
                 for &(g, _) in &shell_uses[o] {
                     bbox = bbox.union(&geo::face_aabb(view, g, 0.0));
                 }
-                let size = (bbox.hi.x - bbox.lo.x) * (bbox.hi.y - bbox.lo.y) * (bbox.hi.z - bbox.lo.z);
+                let size =
+                    (bbox.hi.x - bbox.lo.x) * (bbox.hi.y - bbox.lo.y) * (bbox.hi.z - bbox.lo.z);
                 if best.is_none_or(|b| size < b.0) {
                     best = Some((size, o));
                 }
@@ -141,20 +171,44 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
         let (_, o) = best.ok_or_else(invalid)?;
         void_of.entry(o).or_default().push(i);
     }
-    let spec = |idx: usize| -> Vec<(EntityId, Side)> { shell_list[idx].iter().map(|&i| uses[i]).collect() };
-    Ok(outers.iter().map(|&o| ShellGroup { outer: spec(o), voids: void_of.get(&o).map(|vs| vs.iter().map(|&v| spec(v)).collect()).unwrap_or_default() }).collect())
+    let spec = |idx: usize| -> Vec<(EntityId, Side)> {
+        shell_list[idx].iter().map(|&i| uses[i]).collect()
+    };
+    Ok(outers
+        .iter()
+        .map(|&o| ShellGroup {
+            outer: spec(o),
+            voids: void_of
+                .get(&o)
+                .map(|vs| vs.iter().map(|&v| spec(v)).collect())
+                .unwrap_or_default(),
+        })
+        .collect())
 }
 
 /// Make one volume per group.
-pub(crate) fn make_volumes<E: TopologyEdit + ?Sized>(topo: &mut E, groups: &[ShellGroup]) -> Result<Vec<EntityId>, BooleanError> {
+pub(crate) fn make_volumes<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    groups: &[ShellGroup],
+) -> Result<Vec<EntityId>, BooleanError> {
     let mut volumes = Vec::new();
     for g in groups {
-        let to_specs = |u: &[(EntityId, Side)]| -> Vec<FaceUseSpec> { u.iter().map(|&(face, side)| FaceUseSpec { face, side }).collect() };
+        let to_specs = |u: &[(EntityId, Side)]| -> Vec<FaceUseSpec> {
+            u.iter()
+                .map(|&(face, side)| FaceUseSpec { face, side })
+                .collect()
+        };
         let outer = to_specs(&g.outer);
         let voids: Vec<Vec<FaceUseSpec>> = g.voids.iter().map(|v| to_specs(v)).collect();
-        let mut shells: Vec<ShellSpec<'_>> = vec![ShellSpec { kind: ShellKind::Outer, uses: &outer }];
+        let mut shells: Vec<ShellSpec<'_>> = vec![ShellSpec {
+            kind: ShellKind::Outer,
+            uses: &outer,
+        }];
         for v in &voids {
-            shells.push(ShellSpec { kind: ShellKind::Void, uses: v });
+            shells.push(ShellSpec {
+                kind: ShellKind::Void,
+                uses: v,
+            });
         }
         volumes.push(topo.make_volume(&shells)?);
     }

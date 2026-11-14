@@ -33,7 +33,11 @@ pub(crate) struct CcResult {
 }
 
 /// Distance from `p` to the part of `c` over `range`, with the parameter of the closest point.
-pub(crate) fn dist_to_range(c: &dyn ParametricCurve, range: Interval, p: Point3) -> Option<(f64, f64)> {
+pub(crate) fn dist_to_range(
+    c: &dyn ParametricCurve,
+    range: Interval,
+    p: Point3,
+) -> Option<(f64, f64)> {
     let mut best: Option<(f64, f64)> = None;
     let mut consider = |t: f64| {
         let d = geo::dist(c.eval(t), p);
@@ -51,7 +55,9 @@ pub(crate) fn dist_to_range(c: &dyn ParametricCurve, range: Interval, p: Point3)
             ts.push(pr.t - per);
         }
         for t in ts {
-            if t >= range.lo - 1e-12 * range.len().abs().max(1.0) && t <= range.hi + 1e-12 * range.len().abs().max(1.0) {
+            if t >= range.lo - 1e-12 * range.len().abs().max(1.0)
+                && t <= range.hi + 1e-12 * range.len().abs().max(1.0)
+            {
                 consider(t.clamp(range.lo, range.hi));
             }
         }
@@ -67,14 +73,28 @@ fn line_parts(d: &CurveDef) -> Option<(Point3, Vector3)> {
 }
 
 /// Intersect two curve segments within the distance `tol`.
-pub(crate) fn curve_curve(d1: &CurveDef, r1: Interval, d2: &CurveDef, r2: Interval, tol: f64) -> CcResult {
+pub(crate) fn curve_curve(
+    d1: &CurveDef,
+    r1: Interval,
+    d2: &CurveDef,
+    r2: Interval,
+    tol: f64,
+) -> CcResult {
     if let (Some((p1, a)), Some((p2, b))) = (line_parts(d1), line_parts(d2)) {
         return line_line(p1, a, r1, p2, b, r2, tol);
     }
     numeric(d1.as_curve(), r1, d2.as_curve(), r2, tol)
 }
 
-fn line_line(p1: Point3, a: Vector3, r1: Interval, p2: Point3, b: Vector3, r2: Interval, tol: f64) -> CcResult {
+fn line_line(
+    p1: Point3,
+    a: Vector3,
+    r1: Interval,
+    p2: Point3,
+    b: Vector3,
+    r2: Interval,
+    tol: f64,
+) -> CcResult {
     let mut out = CcResult::default();
     let w = p1 - p2;
     let (aa, bb, ab) = (a.dot(a), b.dot(b), a.dot(b));
@@ -114,19 +134,35 @@ fn line_line(p1: Point3, a: Vector3, r1: Interval, p2: Point3, b: Vector3, r2: I
     }
     let (q1, q2) = (p1 + a * t, p2 + b * s);
     if geo::dist(q1, q2) <= tol {
-        out.points.push(CcHit { t1: t.clamp(r1.lo, r1.hi), t2: s.clamp(r2.lo, r2.hi), p: q1 });
+        out.points.push(CcHit {
+            t1: t.clamp(r1.lo, r1.hi),
+            t2: s.clamp(r2.lo, r2.hi),
+            p: q1,
+        });
     }
     out
 }
 
-fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2: Interval, tol: f64) -> CcResult {
+fn numeric(
+    c1: &dyn ParametricCurve,
+    r1: Interval,
+    c2: &dyn ParametricCurve,
+    r2: Interval,
+    tol: f64,
+) -> CcResult {
     let mut out = CcResult::default();
     if !(r1.is_bounded() && r1.hi > r1.lo) {
         return out;
     }
     const N: usize = 160;
-    let ts: Vec<f64> = (0..=N).map(|i| r1.lo + (r1.hi - r1.lo) * (i as f64 / N as f64)).collect();
-    let dist = |t: f64| dist_to_range(c2, r2, c1.eval(t)).map(|d| d.0).unwrap_or(f64::INFINITY);
+    let ts: Vec<f64> = (0..=N)
+        .map(|i| r1.lo + (r1.hi - r1.lo) * (i as f64 / N as f64))
+        .collect();
+    let dist = |t: f64| {
+        dist_to_range(c2, r2, c1.eval(t))
+            .map(|d| d.0)
+            .unwrap_or(f64::INFINITY)
+    };
     let ds: Vec<f64> = ts.iter().map(|&t| dist(t)).collect();
     // Overlap runs: consecutive samples all within tol (and at least three of them).
     let mut i = 0;
@@ -150,8 +186,16 @@ fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2:
                     }
                     a
                 };
-                let lo = if i > 0 { refine(ts[i], ts[i - 1]) } else { ts[i] };
-                let hi = if j + 1 < ts.len() { refine(ts[j], ts[j + 1]) } else { ts[j] };
+                let lo = if i > 0 {
+                    refine(ts[i], ts[i - 1])
+                } else {
+                    ts[i]
+                };
+                let hi = if j + 1 < ts.len() {
+                    refine(ts[j], ts[j + 1])
+                } else {
+                    ts[j]
+                };
                 out.overlaps.push(Interval::new(lo, hi));
             }
             i = j + 1;
@@ -165,7 +209,11 @@ fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2:
             continue;
         }
         let left = if i > 0 { ds[i - 1] } else { f64::INFINITY };
-        let right = if i + 1 < ts.len() { ds[i + 1] } else { f64::INFINITY };
+        let right = if i + 1 < ts.len() {
+            ds[i + 1]
+        } else {
+            f64::INFINITY
+        };
         if !(ds[i] <= left && ds[i] <= right) {
             continue;
         }
@@ -193,7 +241,9 @@ fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2:
         let mut best_t = t;
         let mut best_d = dist(t);
         for cand in [ts[i], r1.lo, r1.hi] {
-            if (cand - t).abs() < (b - a).abs().max(1e-9) * 4.0 + (r1.hi - r1.lo) / N as f64 && dist(cand) < best_d {
+            if (cand - t).abs() < (b - a).abs().max(1e-9) * 4.0 + (r1.hi - r1.lo) / N as f64
+                && dist(cand) < best_d
+            {
                 best_t = cand;
                 best_d = dist(cand);
             }
@@ -201,9 +251,17 @@ fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2:
         if best_d <= tol {
             let p = c1.eval(best_t);
             if let Some((_, s)) = dist_to_range(c2, r2, p)
-                && out.points.iter().all(|h| (h.t1 - best_t).abs() > 1e-9 * r1.len().abs().max(1.0)) {
-                    out.points.push(CcHit { t1: best_t, t2: s, p });
-                }
+                && out
+                    .points
+                    .iter()
+                    .all(|h| (h.t1 - best_t).abs() > 1e-9 * r1.len().abs().max(1.0))
+            {
+                out.points.push(CcHit {
+                    t1: best_t,
+                    t2: s,
+                    p,
+                });
+            }
         }
     }
     out.points.sort_by(|a, b| a.t1.total_cmp(&b.t1));
@@ -216,27 +274,57 @@ mod tests {
     use sm_geom_api::{Circle, Frame, Line};
 
     fn line(o: [f64; 3], d: [f64; 3]) -> CurveDef {
-        CurveDef::Line(Line::new(Point3::new(o[0], o[1], o[2]), Vector3::new(d[0], d[1], d[2])).unwrap())
+        CurveDef::Line(
+            Line::new(
+                Point3::new(o[0], o[1], o[2]),
+                Vector3::new(d[0], d[1], d[2]),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
     fn crossing_lines() {
-        let r = curve_curve(&line([0.0; 3], [1.0, 0.0, 0.0]), Interval::new(0.0, 2.0), &line([1.0, -1.0, 0.0], [0.0, 1.0, 0.0]), Interval::new(0.0, 2.0), 1e-9);
+        let r = curve_curve(
+            &line([0.0; 3], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            &line([1.0, -1.0, 0.0], [0.0, 1.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            1e-9,
+        );
         assert_eq!(r.points.len(), 1);
         assert!((r.points[0].t1 - 1.0).abs() < 1e-12 && (r.points[0].t2 - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn skew_and_out_of_range_lines_miss() {
-        let skew = curve_curve(&line([0.0; 3], [1.0, 0.0, 0.0]), Interval::new(0.0, 2.0), &line([1.0, -1.0, 0.5], [0.0, 1.0, 0.0]), Interval::new(0.0, 2.0), 1e-9);
+        let skew = curve_curve(
+            &line([0.0; 3], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            &line([1.0, -1.0, 0.5], [0.0, 1.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            1e-9,
+        );
         assert!(skew.points.is_empty());
-        let far = curve_curve(&line([0.0; 3], [1.0, 0.0, 0.0]), Interval::new(0.0, 0.5), &line([1.0, -1.0, 0.0], [0.0, 1.0, 0.0]), Interval::new(0.0, 2.0), 1e-9);
+        let far = curve_curve(
+            &line([0.0; 3], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 0.5),
+            &line([1.0, -1.0, 0.0], [0.0, 1.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            1e-9,
+        );
         assert!(far.points.is_empty());
     }
 
     #[test]
     fn collinear_lines_overlap() {
-        let r = curve_curve(&line([0.0; 3], [1.0, 0.0, 0.0]), Interval::new(0.0, 2.0), &line([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]), Interval::new(0.0, 3.0), 1e-9);
+        let r = curve_curve(
+            &line([0.0; 3], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 2.0),
+            &line([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 3.0),
+            1e-9,
+        );
         assert_eq!(r.overlaps.len(), 1);
         assert!((r.overlaps[0].lo - 1.0).abs() < 1e-12 && (r.overlaps[0].hi - 2.0).abs() < 1e-12);
     }
@@ -244,16 +332,31 @@ mod tests {
     #[test]
     fn line_through_circle() {
         let c = CurveDef::Circle(Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
-        let r = curve_curve(&line([-2.0, 0.0, 0.0], [1.0, 0.0, 0.0]), Interval::new(0.0, 4.0), &c, Interval::new(0.0, std::f64::consts::TAU), 1e-9);
+        let r = curve_curve(
+            &line([-2.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 4.0),
+            &c,
+            Interval::new(0.0, std::f64::consts::TAU),
+            1e-9,
+        );
         assert_eq!(r.points.len(), 2, "{r:?}");
         let ts: Vec<f64> = r.points.iter().map(|h| h.t1).collect();
-        assert!((ts[0] - 1.0).abs() < 1e-9 && (ts[1] - 3.0).abs() < 1e-9, "{ts:?}");
+        assert!(
+            (ts[0] - 1.0).abs() < 1e-9 && (ts[1] - 3.0).abs() < 1e-9,
+            "{ts:?}"
+        );
     }
 
     #[test]
     fn tangent_line_touches_the_circle_once() {
         let c = CurveDef::Circle(Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
-        let r = curve_curve(&line([-2.0, 1.0, 0.0], [1.0, 0.0, 0.0]), Interval::new(0.0, 4.0), &c, Interval::new(0.0, std::f64::consts::TAU), 1e-6);
+        let r = curve_curve(
+            &line([-2.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+            Interval::new(0.0, 4.0),
+            &c,
+            Interval::new(0.0, std::f64::consts::TAU),
+            1e-6,
+        );
         assert_eq!(r.points.len(), 1, "{r:?}");
         assert!((r.points[0].t1 - 2.0).abs() < 1e-5);
     }
@@ -262,7 +365,13 @@ mod tests {
     fn circles_meet_in_two_points() {
         let a = CurveDef::Circle(Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
         let b = CurveDef::Circle(Circle::new(Frame::at(Point3::new(1.0, 0.0, 0.0)), 1.0).unwrap());
-        let r = curve_curve(&a, Interval::new(0.0, std::f64::consts::TAU), &b, Interval::new(0.0, std::f64::consts::TAU), 1e-9);
+        let r = curve_curve(
+            &a,
+            Interval::new(0.0, std::f64::consts::TAU),
+            &b,
+            Interval::new(0.0, std::f64::consts::TAU),
+            1e-9,
+        );
         assert_eq!(r.points.len(), 2, "{r:?}");
         for h in &r.points {
             assert!((h.p.x - 0.5).abs() < 1e-9 && (h.p.y.abs() - 0.75f64.sqrt()).abs() < 1e-9);
@@ -272,7 +381,13 @@ mod tests {
     #[test]
     fn equal_circles_overlap() {
         let a = CurveDef::Circle(Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
-        let r = curve_curve(&a, Interval::new(0.0, 1.0), &a, Interval::new(0.5, 2.0), 1e-9);
+        let r = curve_curve(
+            &a,
+            Interval::new(0.0, 1.0),
+            &a,
+            Interval::new(0.5, 2.0),
+            1e-9,
+        );
         assert_eq!(r.overlaps.len(), 1, "{r:?}");
         assert!((r.overlaps[0].lo - 0.5).abs() < 1e-6 && (r.overlaps[0].hi - 1.0).abs() < 1e-6);
     }

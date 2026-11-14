@@ -14,7 +14,7 @@ use crate::bodies;
 use crate::error::BooleanError;
 use crate::faceclass;
 use crate::merge::{MergeKinds, MergeOptions, MergeReport, merge};
-use crate::pieces::{self, PairSpec, Other, Share};
+use crate::pieces::{self, Other, PairSpec, Share};
 
 /// Options of [`imprint_bodies`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -51,9 +51,15 @@ pub struct ImprintOutcome {
 /// # Errors
 /// `Unsupported` for operands that are not manifold solids or for geometry the face arrangement
 /// cannot express; `Ssi` if two surfaces cannot be intersected; `Topo` if an edit is refused.
-pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[EntityId], o: &ImprintOptions) -> Result<ImprintOutcome, BooleanError> {
+pub fn imprint_bodies<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    bodies_in: &[EntityId],
+    o: &ImprintOptions,
+) -> Result<ImprintOutcome, BooleanError> {
     if bodies_in.len() < 2 {
-        return Err(BooleanError::Invalid("imprint needs at least two bodies".into()));
+        return Err(BooleanError::Invalid(
+            "imprint needs at least two bodies".into(),
+        ));
     }
     // One group per operand.
     let mut groups: Vec<Vec<EntityId>> = Vec::new();
@@ -64,7 +70,10 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
         }
         groups.push(vols);
     }
-    let group_faces: Vec<Vec<EntityId>> = groups.iter().map(|g| bodies::faces_of_volumes(&*topo, g)).collect();
+    let group_faces: Vec<Vec<EntityId>> = groups
+        .iter()
+        .map(|g| bodies::faces_of_volumes(&*topo, g))
+        .collect();
     // A face that belongs to two operands is already shared: leave it out.
     let mut owner: BTreeMap<EntityId, Vec<usize>> = BTreeMap::new();
     for (gi, fs) in group_faces.iter().enumerate() {
@@ -72,18 +81,33 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
             owner.entry(f).or_default().push(gi);
         }
     }
-    let faces_for: Vec<Vec<EntityId>> = group_faces.iter().map(|fs| fs.iter().copied().filter(|f| owner[f].len() == 1).collect()).collect();
+    let faces_for: Vec<Vec<EntityId>> = group_faces
+        .iter()
+        .map(|fs| fs.iter().copied().filter(|f| owner[f].len() == 1).collect())
+        .collect();
     let tol = *topo.tolerance();
     let mut pairs: Vec<PairSpec> = Vec::new();
     for i in 0..groups.len() {
         for j in (i + 1)..groups.len() {
-            for (a, b) in pieces::candidate_pairs(&*topo, &faces_for[i], &faces_for[j], tol.linear_max) {
-                pairs.push(PairSpec { a, b: Other::Face(b) });
+            for (a, b) in
+                pieces::candidate_pairs(&*topo, &faces_for[i], &faces_for[j], tol.linear_max)
+            {
+                pairs.push(PairSpec {
+                    a,
+                    b: Other::Face(b),
+                });
             }
         }
     }
-    let group_of = |f: EntityId| -> usize { owner.get(&f).and_then(|g| g.first()).copied().unwrap_or(0) };
-    let computed = pieces::compute(&*topo, &pairs, Share::Private, &group_of, 10.0 * tol.linear_max)?;
+    let group_of =
+        |f: EntityId| -> usize { owner.get(&f).and_then(|g| g.first()).copied().unwrap_or(0) };
+    let computed = pieces::compute(
+        &*topo,
+        &pairs,
+        Share::Private,
+        &group_of,
+        10.0 * tol.linear_max,
+    )?;
     let mut out = ImprintOutcome::default();
     let mut fragments: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
     for (g, faces) in faces_for.iter().enumerate().take(groups.len()) {
@@ -99,9 +123,13 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
         let fa = fragments.get(&a).cloned().unwrap_or_else(|| vec![a]);
         let fb = fragments.get(&b).cloned().unwrap_or_else(|| vec![b]);
         for &x in &fa {
-            let Some(p) = faceclass::interior_point(&*topo, &cache, x)? else { continue };
+            let Some(p) = faceclass::interior_point(&*topo, &cache, x)? else {
+                continue;
+            };
             for &y in &fb {
-                if crate::locate::on_face(&*topo, &cache, y, p, lin)? && same_boundary(&*topo, x, y, lin) {
+                if crate::locate::on_face(&*topo, &cache, y, p, lin)?
+                    && same_boundary(&*topo, x, y, lin)
+                {
                     topo.record_coincidence(x.min(y), x.max(y), Coincidence::ImprintedNotMerged)?;
                 }
             }
@@ -118,7 +146,10 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
         for g in &groups {
             scope.extend(g.iter().copied());
         }
-        let opts = MergeOptions { tol: o.tol, kinds: MergeKinds::default() };
+        let opts = MergeOptions {
+            tol: o.tol,
+            kinds: MergeKinds::default(),
+        };
         out.merge = Some(merge(topo, &scope, &[], &opts)?);
     }
     out.faces = faces.into_iter().filter(|f| topo.is_alive(*f)).collect();
@@ -133,10 +164,15 @@ fn same_boundary<V: TopologyView + ?Sized>(view: &V, x: EntityId, y: EntityId, t
     let pts = |f: EntityId| -> Vec<sm_core::Point3> {
         let mut v = Vec::new();
         for l in view.loops(f) {
-            v.extend(l.entries.iter().filter_map(|e| view.edge_ends(e.cell).and_then(|(s, _)| crate::geo::vertex_point(view, s))));
+            v.extend(l.entries.iter().filter_map(|e| {
+                view.edge_ends(e.cell)
+                    .and_then(|(s, _)| crate::geo::vertex_point(view, s))
+            }));
         }
         v
     };
     let (a, b) = (pts(x), pts(y));
-    a.len() == b.len() && a.iter().all(|p| b.iter().any(|q| crate::geo::dist(*p, *q) <= tol))
+    a.len() == b.len()
+        && a.iter()
+            .all(|p| b.iter().any(|q| crate::geo::dist(*p, *q) <= tol))
 }

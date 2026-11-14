@@ -552,7 +552,10 @@ fn agglomerate_reports_merge_counts() {
     assert_eq!(coarse, 36);
     assert_eq!(coarse as usize, mesh_of(&s, m2()).as_read().cell_count());
     assert_eq!(fine as usize, mesh_of(&s, m1()).as_read().cell_count());
-    assert_eq!(v["merged_groups"].as_u64().unwrap() + v["single_cells"].as_u64().unwrap(), coarse);
+    // Per pin, x4: every one of the 36 coarse cells is a merge of fine / 36 cells, none single.
+    assert_eq!(v["merged_groups"].as_u64().unwrap(), 36, "{v}");
+    assert_eq!(v["single_cells"].as_u64().unwrap(), 0, "{v}");
+    assert_eq!(v["largest_group"].as_u64().unwrap(), fine / 36, "{v}");
     assert_eq!(v["dissolved_groups"].as_u64().unwrap(), 0);
 }
 
