@@ -106,3 +106,48 @@ let m = mesh.run(targets: all volumes)
     let v = model.topo().cells(Dim::Volume)[0];
     assert!(mesh.mesh_of(v).is_some(), "the volume has a mesh");
 }
+
+/// Cut every body in `bodies` at `axis = 0`, returning all the pieces.
+fn cut_all(r: &mut Rig, bodies: Vec<EntityId>, axis: PlaneAxis) -> Vec<EntityId> {
+    let plane = PlaneSpec::Axis(AxisPlane { axis, offset: 0.0 });
+    let d = r.run(&WebcutPlane { targets: bodies, plane, keep: None, merge: None, imprint: None }).unwrap();
+    d.outputs["positive"].iter().chain(&d.outputs["negative"]).copied().collect()
+}
+
+/// Several joins in one pass chain (keep of one pair is the drop of the next); the roles must
+/// list only the survivors.
+#[test]
+fn regularize_survives_chained_joins_of_quartered_and_octant_bodies() {
+    let mut reference = Rig::cc();
+    reference.cylinder(H, R, [0.0, 0.0, 0.0]);
+    let want = counts(reference.topo());
+    assert_eq!(want, [2, 3, 3, 1].map(|x| x).to_vec().into_iter().rev().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().as_slice().try_into().unwrap_or(want));
+
+    let mut r = Rig::cc();
+    let c = r.cylinder(H, R, [0.0, 0.0, 0.0]);
+    let q = cut_all(&mut r, vec![c.body], PlaneAxis::X);
+    let q = cut_all(&mut r, q, PlaneAxis::Y);
+    assert_eq!(q.len(), 4);
+    let u = r.run(&Unite { bodies: q, keep: None, regularize: Some(false), tol: None }).unwrap();
+    let v = u.outputs["volumes"][0];
+    r.run(&Regularize { volumes: vec![v] }).unwrap();
+    let t = r.topo();
+    assert_valid(t);
+    assert_eq!((counts(t)[0], counts(t)[1], counts(t)[2]), (2, 3, 3));
+    assert_eq!(counts(t), want, "quartered cylinder returns to create_cylinder counts");
+    let vol = volume_of(t, v);
+    assert!((vol - PI * R * R * H).abs() <= 1e-12 * PI * R * R * H, "volume {vol}");
+
+    let mut r = Rig::cc();
+    let b = r.brick([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    let o = cut_all(&mut r, vec![b.body], PlaneAxis::X);
+    let o = cut_all(&mut r, o, PlaneAxis::Y);
+    let o = cut_all(&mut r, o, PlaneAxis::Z);
+    assert_eq!(o.len(), 8);
+    let u = r.run(&Unite { bodies: o, keep: None, regularize: Some(false), tol: None }).unwrap();
+    let v = u.outputs["volumes"][0];
+    r.run(&Regularize { volumes: vec![v] }).unwrap();
+    let t = r.topo();
+    assert_valid(t);
+    assert_eq!(counts(t)[2], 6, "octant brick regularizes to 6 faces");
+}

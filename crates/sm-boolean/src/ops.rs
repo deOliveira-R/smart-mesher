@@ -408,8 +408,10 @@ impl TypedOp for Regularize {
         resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         guard_volumes(ctx, &self.volumes)?;
         let (rep, txn) = topo_txn(ctx, |topo, _model| crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from))?;
+        // A later join in the same pass can retire an earlier keep (5+7 -> 5, then 3+5 -> 3).
         let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
-            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).collect();
+            let dropped: BTreeSet<EntityId> = l.iter().map(|p| p.drop).collect();
+            let s: BTreeSet<EntityId> = l.iter().map(|p| p.keep).filter(|k| !dropped.contains(k)).collect();
             s.into_iter().collect()
         };
         let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
