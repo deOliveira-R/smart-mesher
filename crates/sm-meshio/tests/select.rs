@@ -226,6 +226,36 @@ fn companion_sets_follow_the_cells_and_keep_their_names() {
     assert!(!names(&out.mesh).contains(&"region/a".to_owned()));
 }
 
+/// The face that stands in for a cut interior face (inside one volume, so classified on the cell)
+/// gets a `TopoFace` id above every `TopoFace` of the source (the dropped part included), so it
+/// never names a real model face. Here the volume's faces with the highest ids are on the cells
+/// that are dropped.
+#[test]
+fn the_synthetic_cut_face_never_collides_with_a_source_face() {
+    use sm_core::EntityKind;
+    let (pts, cells) = rig::row_points_cells(&[1, 1, 1]);
+    let mesh = sm_testkit::meshes::build_mesh_volumes(&pts, &cells, &mut SerialAlloc::new()).expect("mesh");
+    let mut specs = rig::plane_sidesets(&mesh);
+    specs.push(SetSpec::new("A", SetMembers::Cells(vec![CellIx::new(0)])));
+    specs.push(SetSpec::new("B", SetMembers::Cells(vec![CellIx::new(1), CellIx::new(2)])));
+    let host = with_sets(rig::fixture(mesh, 3), &specs).expect("sets").mesh;
+    let faces_of = |m: &dyn MeshRead| -> std::collections::BTreeSet<sm_core::EntityId> {
+        (0..m.face_count())
+            .map(|f| m.face_class(FaceIx::new(f)).entity)
+            .filter(|e| e.kind() == EntityKind::TopoFace)
+            .collect()
+    };
+    let host_ids = faces_of(&host);
+    let host_top = host_ids.iter().map(|e| e.serial()).max().expect("a model face");
+    for pick in [&["A"][..], &["B"][..]] {
+        let sel = apply(&host, &blocks(pick), &Roles::by_kind()).expect("select");
+        // The cut face is the one TopoFace id of the result that no source face of the kept side
+        // had: the result's highest id must lie above every source id (else it names a real face).
+        let sel_top = faces_of(&sel.mesh).iter().map(|e| e.serial()).max().expect("a face");
+        assert!(sel_top > host_top, "{pick:?}: the synthetic id {sel_top} must exceed the source's highest {host_top}");
+    }
+}
+
 #[test]
 fn selection_is_deterministic_across_threads() {
     let host = rig::row(&[1, 2, 3, 2, 1], &["A", "B", "C"]);
