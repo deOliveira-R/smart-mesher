@@ -58,7 +58,10 @@ pub struct DecomposePlanReport {
 }
 
 /// Plan one volume of `topo`.
-pub(crate) fn volume_cuts(topo: &dyn TopologyView, volume: EntityId) -> Result<VolumeCuts, OpError> {
+pub(crate) fn volume_cuts(
+    topo: &dyn TopologyView,
+    volume: EntityId,
+) -> Result<VolumeCuts, OpError> {
     let row = |status, steps: Vec<CutStep>, reason| VolumeCuts {
         volume,
         status,
@@ -74,7 +77,9 @@ pub(crate) fn volume_cuts(topo: &dyn TopologyView, volume: EntityId) -> Result<V
             Vec::new(),
             Some(reason),
         )),
-        Err(DecompError::NotAVolume(v)) => Err(OpError::Invalid(format!("{v} is not a live volume"))),
+        Err(DecompError::NotAVolume(v)) => {
+            Err(OpError::Invalid(format!("{v} is not a live volume")))
+        }
     }
 }
 

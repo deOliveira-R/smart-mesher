@@ -112,5 +112,10 @@ fn the_same_request_on_neighbouring_volumes_writes_no_edge_rows() {
         .expect("size");
     }
     let l = s.state().layer::<IntentLayer>().expect("intent");
-    assert_eq!(l.intent().entities.len(), 2, "{:?}", l.intent().entities.keys());
+    assert_eq!(
+        l.intent().entities.len(),
+        2,
+        "{:?}",
+        l.intent().entities.keys()
+    );
 }
