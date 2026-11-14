@@ -204,9 +204,10 @@ class ModelOps:
         """`model.region_clear {volumes?}`: drop region tags and lattice frames."""
 
     def regularize(self, *, volumes: Sequence[EntityId | str]) -> ApplyResult:
-        """`model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes within the model tolerance, moving nothing beyond it (an exact host join: no virtual topology). A pair on the same geometry that the topology refuses is left as it is. Outputs: the surviving joined `faces` and `edges`.
+        """`model.regularize {volumes}`: join the co-surface faces and degree-2 edges of the volumes within the model tolerance, moving nothing beyond it (an exact host join: no virtual topology). A pair on the same geometry that the topology refuses is left as it is. Outputs: the surviving joined `faces` and `edges`, and the `refused` cells (both faces or edges of every pair on the same geometry that the topology refused to join; the reasons are in the library's `RegularizeReport`).
         Output `faces` (many, TopoFace): The surviving faces of joined pairs.
-        Output `edges` (many, TopoEdge): The surviving edges of joined pairs."""
+        Output `edges` (many, TopoEdge): The surviving edges of joined pairs.
+        Output `refused` (many, TopoFace/TopoEdge): The faces and edges of pairs on the same geometry that the topology refused to join."""
 
     def rotate(self, *, angle_deg: float, axis: Sequence[float], entities: Sequence[EntityId | str], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.rotate`: rotate volumes by `angle_deg` degrees (right-hand rule) about the axis through `origin` (default the origin) with direction `axis`.
@@ -256,7 +257,7 @@ class ModelOps:
         Output `bodies` (many, TopoBody): Pieces on neither side (empty for plane, surface and cylinder tools)."""
 
     def webcut_surface(self, *, face: EntityId | str, imprint: bool | None = ..., keep: Literal['both', 'positive', 'negative'] | None = ..., merge: bool | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
-        """`model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the plane of a planar face (its normal gives the positive side).
+        """`model.webcut_surface {targets, face, keep?, merge?, imprint?}`: split with the surface of a face (its normal gives the positive side). A planar face gives its plane; a sphere, torus, cone, cylinder or elliptic face gives that whole surface (a cone is one nappe: the solid cone is the negative side). A face whose carrier is reversed swaps the sides.
         Output `positive` (many, TopoBody): Bodies on the side the tool normal points to.
         Output `negative` (many, TopoBody): Bodies on the opposite side.
         Output `volumes` (many, TopoVolume): The volumes of every piece.
