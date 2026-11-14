@@ -434,6 +434,7 @@ W4-0b (ACR-LEVELMAP, ACR-V1, ACR-V3) lands first.
 
 ### W4-VTOPO-OPS. `sm-model`: virtual-topology ops on the layer's overlay
 - **Scope / acceptance:** `drafts/vtopo.md` §T1 VTOPO-OPS, acceptance 1-6. **Gates:** after ACR-V1, ACR-V3, and after W4-REGIONS-SPLIT (same crate). **Hash impact:** none on existing.
+- **Plan delta (W4-0b review):** the typed refusal for acceptance 4 is `LayerError::OverlayRebase(TopoError::Dead(id))` from `topo_txn`, not a new error in `sm-model`. The overlay digest is quantized (`write_canonical`); revisit it for cached meshes over partitions in VTOPO-MESH / ACR-V2a.
 
 ### W4-MOD-REFINE-U. `sm-modify`: uniform `mesh.refine` with `LevelMap`
 - **Scope / acceptance:** `drafts/meshops.md` §MOD-REFINE-U, acceptance 1-7. It builds the D1 pass core (`drafts/meshops.md` ordering delta). **Gates:** after ACR-LEVELMAP. The `.smsh` level-map passthrough in `sm-fem` (`drafts/meshops.md` §MOD-0 follow-up) is done by the W4-EXPORT-SELECT worker, who owns `sm-fem` in W4b. **Hash impact:** none on existing.

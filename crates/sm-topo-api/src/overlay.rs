@@ -1468,6 +1468,12 @@ impl Overlay {
         // Commit.
         let order: Vec<EntityId> = chain.iter().map(|&(i, _)| members[i]).collect();
         let down = vec![Incidence::new(va, Side::Left, 0), Incidence::new(vb, Side::Right, 0)];
+        // Like a composite face: the largest member tolerance override above linear (replay too).
+        let linear = self.host.tolerance().linear;
+        let inherited = members.iter().filter_map(|&e| self.tolerance_override(e)).fold(linear, f64::max);
+        if inherited > linear {
+            self.layer.tol.insert(id, inherited);
+        }
         self.add_virtual(id, Dim::Edge, down, Carrier::Composite(order.iter().copied().collect()), order);
         for (p, row) in new_rows {
             self.set_down(p, row);

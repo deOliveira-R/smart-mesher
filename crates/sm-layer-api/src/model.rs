@@ -137,7 +137,9 @@ impl ModelLayer {
         self.overlay.as_ref()
     }
 
-    /// Set the overlay, replacing any previous one. It must have been built on this layer's
+    /// Set the overlay, replacing any previous one. Not transactional and it does not touch the
+    /// entity table (virtual ids are neither adopted nor retired): ops go through
+    /// [`model_overlay_txn`]. It must have been built on this layer's
     /// current host: same revision and content hash, else [`LayerError::Overlay`].
     pub fn set_overlay(&mut self, overlay: Overlay) -> Result<(), LayerError> {
         let host = (*self.topo).as_view();
@@ -154,7 +156,10 @@ impl ModelLayer {
         Ok(())
     }
 
-    /// Drop the overlay (and its id counters), returning it. The view returns to the host's;
+    /// Drop the overlay (and its id counters), returning it. Not transactional, and the entity
+    /// table keeps the dropped virtual ids. The counters reset, so a later overlay re-mints the
+    /// same ids: ops must use `Overlay::clear` / `Overlay::remove` inside [`model_overlay_txn`]
+    /// instead. The view returns to the host's;
     /// the digest returns to the no-overlay value.
     pub fn clear_overlay(&mut self) -> Option<Arc<Overlay>> {
         self.overlay.take()
@@ -182,13 +187,10 @@ impl ModelLayer {
     /// Like [`overlay_mut`](Self::overlay_mut), with the model tables as well: the shape
     /// `Model::split_realized(piece, plane, overlay)` and `unsplit_realized` need.
     pub fn model_and_overlay_mut<R>(&mut self, f: impl FnOnce(&mut Model, &mut Overlay) -> R) -> R {
-        self.overlay_or_new();
-        let model = Arc::make_mut(&mut self.model);
-        let overlay = self.overlay.as_mut().map(Arc::make_mut);
-        match overlay {
-            Some(o) => f(model, o),
-            None => unreachable!("overlay_or_new just set it"),
-        }
+        let host: Arc<dyn TopologyView> = self.topo.clone();
+        let (model, slot) = (&mut self.model, &mut self.overlay);
+        let overlay = Arc::make_mut(slot.get_or_insert_with(|| Arc::new(Overlay::new(host))));
+        f(Arc::make_mut(model), overlay)
     }
 
     /// The shared topology host, for readers that keep it alive beyond the borrow of the layer
@@ -353,8 +355,7 @@ fn minted(before: &IdAlloc, after: &IdAlloc) -> Vec<EntityId> {
     out
 }
 
-/// Ids the overlay minted between two `next_serial` states (rank 0, 1, 2 = vertex, edge, face).
-/// Live virtual (partition) vertices, edges and faces of an overlay.
+/// Live virtual (partition) vertices, edges and faces of an overlay, in dim then cell order.
 fn live_virtual(o: &Overlay) -> Vec<EntityId> {
     [Dim::Vertex, Dim::Edge, Dim::Face]
         .into_iter()
@@ -368,6 +369,8 @@ fn live_virtual(o: &Overlay) -> Vec<EntityId> {
         .collect()
 }
 
+/// Ids the overlay minted between two `next_serial` states (rank 0, 1, 2 = vertex, edge, face),
+/// ascending by `(kind, serial)`, whether or not they are still live.
 fn minted_virtual(before: [u64; 3], after: [u64; 3]) -> Vec<EntityId> {
     const KINDS: [EntityKind; 3] =
         [EntityKind::PartitionVertex, EntityKind::PartitionEdge, EntityKind::PartitionFace];
@@ -692,7 +695,9 @@ pub fn model_txn<R>(
 /// resolve in THE layer's overlay (ACR-V1, vtopo finding 3). Same adoption, roles and
 /// atomicity as [`model_txn`], and the virtual ids `f` drops from the overlay (live before or
 /// minted here, dead after) are retired like removed records; on `Err` the overlay is restored too (to "none" if it did not
-/// exist). No topology operation is opened and the host is untouched.
+/// exist). No topology operation is opened and the host is untouched. It always creates an
+/// overlay if none exists, which moves the state hash even if `f` edits nothing: read-only
+/// callers use `layer.topo()` instead.
 pub fn model_overlay_txn<R>(
     ctx: &mut ApplyCtx<'_>,
     f: impl FnOnce(&mut Model, &mut Overlay) -> Result<R, OpError>,
