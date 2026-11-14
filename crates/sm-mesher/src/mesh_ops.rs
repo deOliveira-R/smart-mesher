@@ -4,10 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
+use sm_poly::{DualPoints, PolyOptions, TopologyResolver};
 use sm_mesh::MeshBuilder;
 use sm_mesh_api::{MeshEntityKind, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_poly::{DualPoints, PolyOptions, TopologyResolver};
 use sm_scheme_api::{
     Driver, DriverOptions, MeshInput, MeshIntent, Plan, SchemeError, SizeField, WholeFaces,
 };
@@ -406,10 +406,7 @@ fn insert_scratch(
                 .collect();
             ctx.adopt(&ids)?;
         } else {
-            ctx.adopt_range(
-                EntityId::new(kind, first).ok_or(OpError::IdExhausted)?,
-                next - first,
-            )?;
+            ctx.adopt_range(EntityId::new(kind, first).ok_or(OpError::IdExhausted)?, next - first)?;
         }
     }
     ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;

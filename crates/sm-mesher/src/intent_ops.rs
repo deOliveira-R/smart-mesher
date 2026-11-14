@@ -370,8 +370,10 @@ impl From<RelationArg> for Rel {
 /// `mesh.interval_relation`: a relative interval between curves, `sum(a) rel ratio * sum(b)`.
 ///
 /// Adds one linear row to the IIA system (origin `intent`), so `ratio 2` with one curve on each
-/// side gives `n_a = 2 n_b` exactly, whatever else fixes `n_b`. An edge listed on both sides
-/// cancels; repeated edges add. The row is dropped when one of its curves is retired.
+/// side gives `n_a = 2 n_b` exactly, whatever else fixes `n_b`. Coefficients add: an edge listed
+/// on both sides has coefficient `1 - ratio`, so it cancels only at `ratio` 1 (and the op is
+/// refused when every term cancels); repeated edges add. The row is dropped when one of its
+/// curves is retired.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MeshIntervalRelation {
@@ -511,14 +513,11 @@ impl TypedOp for MeshScheme {
                     && dim == SchemeDim::Volume
                     && cfg.registry().get(dim, crate::polyscheme::TET).is_some())
         };
-        if self
-            .fallbacks
-            .iter()
-            .any(|f| f == crate::polyscheme::POLYHEDRON)
-        {
-            return Err(OpError::Invalid(
-                " cannot be a fallback; it changes the cell type".into(),
-            ));
+        if self.fallbacks.iter().any(|f| f == crate::polyscheme::POLYHEDRON) {
+            return Err(OpError::Invalid(format!(
+                "{} cannot be a fallback; it changes the cell type",
+                crate::polyscheme::POLYHEDRON
+            )));
         }
         if self.scheme == crate::polyscheme::POLYHEDRON
             && let Some(p) = &self.params

@@ -7,19 +7,12 @@ use sm_protocol::{Endpoint, Request, RpcError};
 use sm_server::{Server, standard_with};
 
 fn server() -> Server {
-    Server::new(standard_with(
-        Some("tester".into()),
-        Some("2026-11-12T00:00:00Z".into()),
-    ))
-    .expect("server")
+    Server::new(standard_with(Some("tester".into()), Some("2026-11-12T00:00:00Z".into())))
+        .expect("server")
 }
 
 fn script(s: &mut Server, text: &str) -> Result<Value, RpcError> {
-    s.call(Request::ScriptRun {
-        text: text.into(),
-        path: None,
-        includes: Default::default(),
-    })
+    s.call(Request::ScriptRun { text: text.into(), path: None, includes: Default::default() })
 }
 
 fn brief(e: &RpcError) -> String {
@@ -27,12 +20,8 @@ fn brief(e: &RpcError) -> String {
 }
 
 fn query(s: &mut Server, name: &str, input: Value) -> Value {
-    s.call(Request::Query {
-        name: name.into(),
-        input,
-        at: None,
-    })
-    .unwrap_or_else(|e| panic!("{name}: {}", brief(&e)))
+    s.call(Request::Query { name: name.into(), input, at: None })
+        .unwrap_or_else(|e| panic!("{name}: {}", brief(&e)))
 }
 
 const PRE: &str = "let b = model.create_brick(x: 1.0, y: 1.0, z: 1.0)\n\
@@ -71,21 +60,11 @@ fn two_steps(dual: Option<&str>) -> Server {
 }
 
 fn meshes_hash(s: &Server) -> String {
-    format!(
-        "{:?}",
-        s.workspace()
-            .state()
-            .layer_hash("meshes")
-            .expect("meshes layer")
-    )
+    format!("{:?}", s.workspace().state().layer_hash("meshes").expect("meshes layer"))
 }
 
 fn mesh_count(s: &Server) -> usize {
-    s.workspace()
-        .state()
-        .layer::<MeshLayer>()
-        .expect("layer")
-        .len()
+    s.workspace().state().layer::<MeshLayer>().expect("layer").len()
 }
 
 #[test]
@@ -93,11 +72,7 @@ fn one_step_equals_tetmesh_then_to_poly() {
     for dual in [None, Some("barycentric")] {
         let (a, b) = (one_step(dual), two_steps(dual));
         assert_eq!(mesh_count(&a), 1, "one mesh entry");
-        assert_eq!(
-            meshes_hash(&a),
-            meshes_hash(&b),
-            "mesh layer, dual {dual:?}"
-        );
+        assert_eq!(meshes_hash(&a), meshes_hash(&b), "mesh layer, dual {dual:?}");
         assert_eq!(
             a.workspace().state().entity_count(),
             b.workspace().state().entity_count(),
@@ -111,37 +86,15 @@ fn the_polyhedral_mesh_has_the_analytic_volume_and_one_cell_per_tet_vertex() {
     let mut a = one_step(None);
     let st = query(&mut a, "mesh.poly_info", json!({"mesh": "Mesh#2"}));
     let tets = two_steps(None); // same plan: tet vertex count = poly cell count
-    let id = tets
-        .workspace()
-        .state()
-        .layer::<MeshLayer>()
-        .expect("l")
-        .meshes()
-        .next()
-        .expect("m")
-        .0;
-    let n_cells = tets
-        .workspace()
-        .state()
-        .layer::<MeshLayer>()
-        .expect("l")
-        .get(id)
-        .expect("e")
-        .mesh()
-        .cell_count();
+    let id = tets.workspace().state().layer::<MeshLayer>().expect("l").meshes().next().expect("m").0;
+    let n_cells = tets.workspace().state().layer::<MeshLayer>().expect("l").get(id).expect("e").mesh().cell_count();
     assert_eq!(st["cells"].as_u64(), Some(n_cells as u64), "{st}");
     eprintln!("poly_info: {st}");
     let vol = st["volume_sum"].as_f64().expect("volume");
     assert!((vol - 1.0).abs() < 1e-12, "unit brick volume, got {vol}");
     let area = st["boundary_area"].as_f64().expect("area");
-    assert!(
-        (area - 6.0).abs() < 1e-12,
-        "unit brick boundary area, got {area}"
-    );
-    assert!(
-        st["max_nonplanarity"].as_f64().expect("planarity") < 1e-9,
-        "{st}"
-    );
+    assert!((area - 6.0).abs() < 1e-12, "unit brick boundary area, got {area}");
+    assert!(st["max_nonplanarity"].as_f64().expect("planarity") < 1e-9, "{st}");
     // `session.export` needs no mesh name: there is one entry.
     assert_eq!(mesh_count(&a), 1);
 }
@@ -175,20 +128,11 @@ fn circumcentric_follows_the_strict_gate_like_to_poly() {
          let m = mesh.run(targets: all volumes)\n\
          let p = mesh.to_poly(mesh: m.mesh[0], keep_source: false, dual: \"circumcentric\")\n"
     ));
-    assert_eq!(
-        a.is_ok(),
-        b.is_ok(),
-        "both pass the gate or both refuse: {:?} / {:?}",
-        a.as_ref().err(),
-        b.as_ref().err()
-    );
+    assert_eq!(a.is_ok(), b.is_ok(), "both pass the gate or both refuse: {:?} / {:?}", a.as_ref().err(), b.as_ref().err());
     match (a, b) {
         (Ok(a), Ok(b)) => assert_eq!(meshes_hash(&a), meshes_hash(&b)),
         (Err(a), Err(b)) => {
-            assert!(
-                a.contains("circumcentric") || a.contains("orthogonal") || a.contains("Delaunay"),
-                "{a}"
-            );
+            assert!(a.contains("circumcentric") || a.contains("orthogonal") || a.contains("Delaunay"), "{a}");
             assert!(b.contains("mesh.to_poly"), "{b}");
             // A refused run leaves nothing behind (atomic).
         }
@@ -201,31 +145,18 @@ fn bad_use_is_refused_with_a_message() {
     let mut s = server();
     script(&mut s, PRE).expect("setup");
     let err = |s: &mut Server, text: &str| script(s, text).expect_err("refused").to_string();
-    let e = err(
-        &mut s,
-        "mesh.scheme(targets: all volumes, scheme: \"polyhedron\", params: {dual: \"voronoi\"})",
-    );
+    let e = err(&mut s, "mesh.scheme(targets: all volumes, scheme: \"polyhedron\", params: {dual: \"voronoi\"})");
     assert!(e.contains("barycentric"), "{e}");
-    let e = err(
-        &mut s,
-        "mesh.scheme(targets: all volumes, scheme: \"tetmesh\", fallbacks: [\"polyhedron\"])",
-    );
+    let e = err(&mut s, "mesh.scheme(targets: all volumes, scheme: \"tetmesh\", fallbacks: [\"polyhedron\"])");
     assert!(e.contains("fallback"), "{e}");
-    let e = err(
-        &mut s,
-        "mesh.scheme(targets: topo.related(kind: \"TopoFace\", within: all volumes), scheme: \"polyhedron\")",
-    );
+    let e = err(&mut s, "mesh.scheme(targets: topo.related(kind: \"TopoFace\", within: all volumes), scheme: \"polyhedron\")");
     assert!(e.contains("polyhedron"), "{e}");
 }
 
 #[test]
 fn mesh_plan_accepts_the_polyhedron_scheme() {
     let mut s = server();
-    script(
-        &mut s,
-        &format!("{PRE}mesh.scheme(targets: all volumes, scheme: \"polyhedron\")\n"),
-    )
-    .expect("setup");
+    script(&mut s, &format!("{PRE}mesh.scheme(targets: all volumes, scheme: \"polyhedron\")\n")).expect("setup");
     let p = query(&mut s, "mesh.plan", json!({"targets": ["TopoVolume#1"]}));
     assert!(p["blockers"].as_array().is_some_and(Vec::is_empty), "{p}");
 }

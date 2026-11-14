@@ -36,24 +36,19 @@ pub use auto::{
     StrategyRegistry, TET_STRATEGY, replan_budget,
 };
 pub use census::{CensusOutcome, CensusReport, CensusRow, census};
+pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
-pub use decompose_query::{
-    DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts,
-};
 pub use exec::RayonExec;
+pub use polyscheme::POLYHEDRON;
+pub use volfit::MeshPreserveVolume;
 pub use info::{MeshInfo, MeshInfoQuery};
 pub use intent_layer::IntentLayer;
-pub use intent_ops::{
-    FirmnessArg, MeshDefaultSize, MeshIntervalRelation, MeshIntervals, MeshScheme, MeshSize,
-    RelationArg,
-};
+pub use intent_ops::{FirmnessArg, MeshDefaultSize, MeshIntervalRelation, MeshIntervals, MeshScheme, MeshSize, RelationArg};
 pub use mesh_ops::{MeshDelete, MeshRun};
 pub use plan_query::{
     Alternative, ElementsInfo, EntityPlan, IntervalRequestRow, IntervalWhy, MeshPlanQuery, PlanDim,
     PlanFailure, PlanNote, PlanReport, PlanStatus, WhyKind, explain_plan,
 };
-pub use polyscheme::POLYHEDRON;
-pub use volfit::MeshPreserveVolume;
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 

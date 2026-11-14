@@ -111,20 +111,11 @@ fn circle_of(t: &dyn TopologyView, e: EntityId) -> Option<Circle> {
     let radius = off.norm();
     let axis = n * (1.0 / n2.sqrt());
     let tol = SAME * radius.max(f64::MIN_POSITIVE);
-    if radius <= 0.0
-        || ((d - center).norm() - radius).abs() > tol
-        || (d - center).dot(axis).abs() > tol
-    {
+    if radius <= 0.0 || ((d - center).norm() - radius).abs() > tol || (d - center).dot(axis).abs() > tol {
         return None;
     }
     let coverage = (cc.range.hi - cc.range.lo).abs() / period;
-    Some(Circle {
-        center,
-        axis,
-        radius,
-        edges: vec![e],
-        coverage,
-    })
+    Some(Circle { center, axis, radius, edges: vec![e], coverage })
 }
 
 fn same_circle(a: &Circle, b: &Circle) -> bool {
@@ -161,11 +152,7 @@ fn group_circles(t: &dyn TopologyView, edges: &[EntityId]) -> Result<Vec<Circle>
 
 /// In-plane angle of `p` about the circle, from a fixed reference direction.
 fn frame_of(axis: Vector3) -> (Vector3, Vector3) {
-    let h = if axis.x.abs() < 0.6 {
-        Vector3::new(1.0, 0.0, 0.0)
-    } else {
-        Vector3::new(0.0, 1.0, 0.0)
-    };
+    let h = if axis.x.abs() < 0.6 { Vector3::new(1.0, 0.0, 0.0) } else { Vector3::new(0.0, 1.0, 0.0) };
     let u = h - axis * h.dot(axis);
     let u = u * (1.0 / u.norm());
     (u, axis.cross(u))
@@ -188,32 +175,20 @@ struct Node {
 fn scales(nodes: &[Node], what: &str) -> Result<Vec<f64>, OpError> {
     let n = nodes.len();
     if n < 3 {
-        return Err(bad(format!(
-            "{what} has {n} node(s); at least 3 are needed"
-        )));
+        return Err(bad(format!("{what} has {n} node(s); at least 3 are needed")));
     }
-    let gap = |i: usize| {
-        if i + 1 < n {
-            nodes[i + 1].theta - nodes[i].theta
-        } else {
-            nodes[0].theta + TAU - nodes[i].theta
-        }
-    };
+    let gap = |i: usize| if i + 1 < n { nodes[i + 1].theta - nodes[i].theta } else { nodes[0].theta + TAU - nodes[i].theta };
     let mut sum = 0.0;
     for i in 0..n {
         let g = gap(i);
         if g >= std::f64::consts::PI {
-            return Err(bad(format!(
-                "{what} has an angular gap of {g:.3} rad; refine it first"
-            )));
+            return Err(bad(format!("{what} has an angular gap of {g:.3} rad; refine it first")));
         }
         sum += g.sin();
     }
     let f = (TAU / sum).sqrt();
     let mut out = vec![f; n];
-    let Some(first) = nodes.iter().position(|x| x.junction) else {
-        return Ok(out);
-    };
+    let Some(first) = nodes.iter().position(|x| x.junction) else { return Ok(out) };
     // Walk the wedges from junction to junction, cyclically.
     let mut start = first;
     loop {
@@ -227,11 +202,7 @@ fn scales(nodes: &[Node], what: &str) -> Result<Vec<f64>, OpError> {
             let inner: f64 = g[1..m - 1].iter().map(|x| x.sin()).sum();
             let b = (g[0].sin() + g[m - 1].sin()) * f;
             // inner rho^2 + b rho - theta = 0 in units of r (rho = scale).
-            let rho = if inner.abs() < 1e-14 {
-                theta / b
-            } else {
-                (-b + (b * b + 4.0 * inner * theta).sqrt()) / (2.0 * inner)
-            };
+            let rho = if inner.abs() < 1e-14 { theta / b } else { (-b + (b * b + 4.0 * inner * theta).sqrt()) / (2.0 * inner) };
             for k in 1..m {
                 out[(start + k) % n] = rho;
             }
@@ -246,17 +217,12 @@ fn scales(nodes: &[Node], what: &str) -> Result<Vec<f64>, OpError> {
 
 /// True if a region boundary (an edge in the plane of the circle) ends at topology vertex `tv`.
 fn is_junction(t: &dyn TopologyView, tv: EntityId, own: &[EntityId], axis: Vector3) -> bool {
-    t.coboundary(tv)
-        .iter()
-        .filter(|i| i.cell.kind() == EntityKind::TopoEdge && !own.contains(&i.cell))
-        .any(|i| {
-            let (Ok(p0), Ok(p1)) = (edge_point(t, i.cell, 0.0), edge_point(t, i.cell, 1.0)) else {
-                return false;
-            };
-            let d = p1 - p0;
-            let len = d.norm();
-            len > 1e-12 && d.dot(axis).abs() <= 1e-9 * len
-        })
+    t.coboundary(tv).iter().filter(|i| i.cell.kind() == EntityKind::TopoEdge && !own.contains(&i.cell)).any(|i| {
+        let (Ok(p0), Ok(p1)) = (edge_point(t, i.cell, 0.0), edge_point(t, i.cell, 1.0)) else { return false };
+        let d = p1 - p0;
+        let len = d.norm();
+        len > 1e-12 && d.dot(axis).abs() <= 1e-9 * len
+    })
 }
 
 /// A node's move: the axis line and the radial scale.
@@ -306,12 +272,7 @@ fn plan(
         if !t.is_alive(f) || f.kind() != EntityKind::TopoFace {
             return Err(bad(format!("{f} is not a live face")));
         }
-        let circ: Vec<EntityId> = t
-            .face_edges(f)
-            .iter()
-            .copied()
-            .filter(|&e| circle_of(t, e).is_some())
-            .collect();
+        let circ: Vec<EntityId> = t.face_edges(f).iter().copied().filter(|&e| circle_of(t, e).is_some()).collect();
         if circ.is_empty() {
             return Err(bad(format!("face {f} has no circular boundary edge")));
         }
@@ -329,17 +290,12 @@ fn plan(
     // Mesh vertices by the model entity they are classified on.
     let mut on: BTreeMap<EntityId, Vec<usize>> = BTreeMap::new();
     for v in 0..m.count(MeshEntityKind::Vertex) {
-        on.entry(m.vertex_class(VertexIx::new(v)).entity)
-            .or_default()
-            .push(v);
+        on.entry(m.vertex_class(VertexIx::new(v)).entity).or_default().push(v);
     }
     let nodes_of = |id: EntityId| on.get(&id).map_or(&[][..], Vec::as_slice);
 
     let mut claims: BTreeMap<usize, Claim> = BTreeMap::new();
-    let mut report = Report {
-        circles: Vec::new(),
-        moved: 0,
-    };
+    let mut report = Report { circles: Vec::new(), moved: 0 };
     let mut tables: Vec<Table> = Vec::new();
     for c in &circles {
         let mut vs: Vec<(usize, bool)> = Vec::new();
@@ -358,9 +314,7 @@ fn plan(
         let mut nodes = Vec::with_capacity(vs.len());
         for &(v, junction) in &vs {
             let d = m.point(v) - c.center;
-            let dev = ((d - c.axis * d.dot(c.axis)).norm() - c.radius)
-                .abs()
-                .max(d.dot(c.axis).abs());
+            let dev = ((d - c.axis * d.dot(c.axis)).norm() - c.radius).abs().max(d.dot(c.axis).abs());
             if dev > ON_CIRCLE * c.radius {
                 return Err(bad(format!(
                     "node {v} of circle {:?} is {dev:.3e} off the model circle (radius {}); \
@@ -368,23 +322,12 @@ fn plan(
                     c.edges, c.radius
                 )));
             }
-            nodes.push(Node {
-                v,
-                theta: d.dot(w).atan2(d.dot(u)),
-                junction,
-            });
+            nodes.push(Node { v, theta: d.dot(w).atan2(d.dot(u)), junction });
         }
         nodes.sort_by(|a, b| a.theta.total_cmp(&b.theta).then(a.v.cmp(&b.v)));
         let sc = scales(&nodes, &format!("circle {:?}", c.edges))?;
         for (nd, s) in nodes.iter().zip(&sc) {
-            claims.insert(
-                nd.v,
-                Claim {
-                    center: c.center,
-                    axis: c.axis,
-                    s: *s,
-                },
-            );
+            claims.insert(nd.v, Claim { center: c.center, axis: c.axis, s: *s });
         }
         let smax = sc.iter().copied().fold(f64::MIN, f64::max);
         report.circles.push(CircleReport {
@@ -400,11 +343,7 @@ fn plan(
             axis: c.axis,
             u,
             w,
-            rows: nodes
-                .iter()
-                .zip(&sc)
-                .map(|(nd, s)| (nd.theta, *s))
-                .collect(),
+            rows: nodes.iter().zip(&sc).map(|(nd, s)| (nd.theta, *s)).collect(),
         });
     }
 
@@ -443,14 +382,7 @@ fn plan(
                 let sc = tab.scale_at(d).ok_or_else(|| {
                     bad(format!("node {v} of face {s} is not in a column of a node of its circle; the face mesh is not a sweep of the circle"))
                 })?;
-                claims.insert(
-                    v,
-                    Claim {
-                        center: tab.center,
-                        axis: tab.axis,
-                        s: sc,
-                    },
-                );
+                claims.insert(v, Claim { center: tab.center, axis: tab.axis, s: sc });
             }
         }
     }
@@ -475,33 +407,20 @@ impl TypedOp for MeshPreserveVolume {
         let (curves, surfaces) = match (&self.curves, &self.surfaces) {
             (Some(c), None) if !c.is_empty() => (c.as_slice(), &[][..]),
             (None, Some(s)) if !s.is_empty() => (&[][..], s.as_slice()),
-            _ => {
-                return Err(bad(
-                    "give exactly one non-empty list, `curves` or `surfaces`",
-                ));
-            }
+            _ => return Err(bad("give exactly one non-empty list, `curves` or `surfaces`")),
         };
         let (moves, report, host, alloc) = {
             let meshes = ctx.layer::<MeshLayer>()?;
-            let entry = meshes
-                .get(self.mesh)
-                .ok_or(OpError::UnknownEntity(self.mesh))?;
+            let entry = meshes.get(self.mesh).ok_or(OpError::UnknownEntity(self.mesh))?;
             let model = ctx.layer::<ModelLayer>()?;
             let (moves, report) = plan(entry.mesh(), model.topo(), curves, surfaces)?;
-            (
-                moves,
-                report,
-                entry.mesh.clone_host(),
-                meshes.alloc().clone(),
-            )
+            (moves, report, entry.mesh.clone_host(), meshes.alloc().clone())
         };
         let mut host = host;
-        let before: Vec<f64> = (0..host.count(MeshEntityKind::Cell))
-            .map(|c| cell_volume(&*host, CellIx::new(c)))
-            .collect();
+        let before: Vec<f64> =
+            (0..host.count(MeshEntityKind::Cell)).map(|c| cell_volume(&*host, CellIx::new(c))).collect();
         for (v, p) in &moves {
-            host.set_point(PointIx::new(*v), *p)
-                .map_err(|e| bad(e.to_string()))?;
+            host.set_point(PointIx::new(*v), *p).map_err(|e| bad(e.to_string()))?;
         }
         for (c, b) in before.iter().enumerate() {
             let a = cell_volume(&*host, CellIx::new(c));
@@ -511,14 +430,8 @@ impl TypedOp for MeshPreserveVolume {
                 )));
             }
         }
-        ctx.layer_mut::<MeshLayer>()?
-            .replace_mesh(self.mesh, Arc::from(host), alloc)
-            .or_op()?;
-        ctx.info(
-            "preserve_volume.report",
-            serde_json::to_string(&report).unwrap_or_default(),
-            &[self.mesh],
-        );
+        ctx.layer_mut::<MeshLayer>()?.replace_mesh(self.mesh, Arc::from(host), alloc).or_op()?;
+        ctx.info("preserve_volume.report", serde_json::to_string(&report).unwrap_or_default(), &[self.mesh]);
         Ok(())
     }
 }
