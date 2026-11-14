@@ -278,11 +278,18 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   their centres: the element the direction enters comes first. Elements within `1e-12 p^2` of each other
   (a direction along the shared face) are ordered by descending `(r, q)`, the descending linear index. With
   `dir = 0` (`find_instance_with_face`) the point itself orders them. The first candidate whose leaf
-  claims the point wins; a point on a flat moving along it is ruled on by each leaf's own tangential rule (a
-  hashed direction of the local point), so it can be claimed by either element or by neither. A ray exactly
-  along a shared face (every ray from an element centre through a vertex leaves along one) is not carried
-  across it: it ends at the world boundary after a zero-length chord, as along a wall of a Cartesian
-  lattice. Tested: `tests/hex_world.rs::vertex_ties_follow_the_documented_rule`.
+  claims the point wins. A point on a flat moving along it is ruled on by each leaf's own tangential rule
+  (a hashed direction of the local point), so the first pass can find no claimant. The point is then
+  still inside the lattice footprint, so a second pass takes the first non-excluded in-range candidate in
+  the same order and asks its leaf with the direction nudged toward the candidate's centre (the particle's
+  direction is unchanged), provided the ray stays within `tol` of that hexagon over the next `4 tol` (a
+  ray leaving at a vertex is not carried into it). So a ray along a shared face, which every ray from an
+  element centre through a vertex does for one run, is carried along it and never ends with a
+  `Boundary` (vacuum) inside the lattice; a ray that runs along an outer flat of the lattice may end there
+  or continue (tolerance-ambiguous, as along a Cartesian wall). Cartesian lattices are unchanged. Tested:
+  `tests/hex_world.rs::rays_along_or_near_shared_faces_reach_the_lattice_boundary` (both orientations, six
+  vertex directions and +-1e-15..1e-9 rad off them, closed-form totals) and
+  `tests/hex_world.rs::vertex_ties_follow_the_documented_rule` (the ordering).
 * **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
   circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh
   fill lies in the hexagon; a leaf fill has no cell at 12 probe points just outside the six flats and

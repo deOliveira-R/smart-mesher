@@ -959,6 +959,36 @@ impl WorldTracker {
                         }
                     }
                 }
+                // A hex point on a shared flat, with the direction along it: each leaf rules on
+                // its own tangential tie and may refuse. The point is still inside the footprint
+                // (a candidate other than the excluded one holds it within `tol`), so take the
+                // first candidate in order, ruled on with the direction nudged toward its centre
+                // (the state's direction is not changed), provided the ray stays within `tol` of
+                // its hexagon over the next `4 tol`.
+                if let Shape::Hex(or) = l.shape {
+                    for idx in l.cands(p, dir, self.tol) {
+                        if !l.in_range(idx) {
+                            continue;
+                        }
+                        let lin = l.lin(idx);
+                        if excl.and_then(|r| r.split_first()).is_some_and(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin) {
+                            continue;
+                        }
+                        let q = sub(p, l.center(idx));
+                        let n = norm(q);
+                        // Only a ray that keeps running within `tol` of this hexagon (along the
+                        // flat): a ray leaving it at a vertex is not carried into it.
+                        let ahead = [q[0] + 4.0 * self.tol * dir[0], q[1] + 4.0 * self.tol * dir[1]];
+                        if n <= 0.0 || hexlat::sd(or, l.pitch[0], ahead) > self.tol {
+                            continue;
+                        }
+                        if let Loc::Hit(mut h) = self.locate_rec(l.fill[lin] as usize, q, scale(q, -1.0 / n), sc, None) {
+                            h.base += self.cell_off_in_lattice(l, lin);
+                            h.levels.insert(0, Level::new(ComponentId::new(comp), InstanceId::new(lin), idx));
+                            return Loc::Hit(h);
+                        }
+                    }
+                }
                 Loc::Miss
             }
         }

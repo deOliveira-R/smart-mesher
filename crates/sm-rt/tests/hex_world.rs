@@ -334,9 +334,9 @@ fn vertex_ties_follow_the_documented_rule() {
         let first = cell_of(w.locate(m, Some(along), None, &mut sc).unwrap());
         assert!(first == lin(2, 2) || first == lin(3, 2) || first == CellId::new(CellId::NONE.0 as usize & !1), "{o:?}: {first:?}");
         assert_eq!(first, cell_of(w.locate(m, Some(along), None, &mut sc).unwrap()));
-        // A walk from a centre through the vertex does not get lost; it leaves along a face
-        // (a particle moving exactly along a wall is not carried across it, as in a Cartesian
-        // lattice), and repeats exactly.
+        // A walk from a centre through the vertex is carried along the shared face (not lost, not
+        // ended mid-lattice: `rays_along_or_near_shared_faces_reach_the_lattice_boundary` has the
+        // closed-form totals), and repeats exactly.
         let d = v3(v.x - a.x, v.y - a.y, 0.0);
         let n = d.x.hypot(d.y);
         let d = v3(d.x / n, d.y / n, 0.0);
@@ -429,4 +429,99 @@ fn slot_changes_count_the_elements_visited() {
         }
     }
     assert_eq!(changes, 4);
+}
+
+/// Closed-form `(lo, hi)` lengths from `org` along `d` of the chain of closed hexagons (slack
+/// `slack`, zero-width along-face runs included) that starts at `t = 0`. `hi` is where the ray
+/// leaves the lattice footprint; `lo` is where it first runs along an outer flat (only one element
+/// holds the run), where ending is as legitimate as continuing, as along a Cartesian wall. Without
+/// such a run `lo == hi`.
+fn footprint_run(o: Or, l: &Lattice, org: Point3, d: [f64; 2], slack: f64) -> (f64, f64) {
+    let nl = flats(o);
+    let n = l.dims[0] as usize;
+    let centres: Vec<Point3> = (0..l.element_count().unwrap()).map(|lin| l.element_center([(lin % n) as i32, ((lin / n) % l.dims[1] as usize) as i32, 0])).collect();
+    let mut ivs: Vec<(f64, f64)> = Vec::new();
+    for c in &centres {
+        let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
+        let mut ok = true;
+        for f in &nl {
+            let a = (org.x - c.x) * f[0] + (org.y - c.y) * f[1];
+            let b = d[0] * f[0] + d[1] * f[1];
+            match clip(t0, t1, a, b, -0.5 * P - slack, 0.5 * P + slack) {
+                Some((x, y)) => (t0, t1) = (x, y),
+                None => ok = false,
+            }
+        }
+        if ok {
+            ivs.push((t0, t1));
+        }
+    }
+    ivs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let sd = |c: &Point3, t: f64| nl.iter().map(|f| ((org.x + t * d[0] - c.x) * f[0] + (org.y + t * d[1] - c.y) * f[1]).abs()).fold(0.0, f64::max) - 0.5 * P;
+    let (mut end, mut lo) = (0.0, f64::INFINITY);
+    for (a, b) in ivs {
+        if a > end + 1e-9 {
+            break;
+        }
+        // The first place where only one element holds the ray and it is on that element's flat.
+        let on_outer1 = |t: f64| {
+            let h: Vec<&Point3> = centres.iter().filter(|c| sd(c, t) <= slack).collect();
+            h.len() == 1 && sd(h[0], t) >= -slack
+        };
+        // A run, not a grazing pass of a vertex: it holds over the next 0.05 as well.
+        let on_outer = |t: f64| on_outer1(t) && on_outer1(t + 0.05);
+        let steps = ((b - a) / 1e-2).ceil() as usize + 1;
+        if let Some(k) = (0..=steps).find(|&k| on_outer((a + 1e-2 * k as f64).min(b))) {
+            let (mut u, mut v) = ((a + 1e-2 * (k as f64 - 1.0)).max(a), (a + 1e-2 * k as f64).min(b));
+            for _ in 0..60 {
+                let m = 0.5 * (u + v);
+                if on_outer(m) { v = m } else { u = m }
+            }
+            lo = lo.min(v);
+        }
+        end = end.max(b);
+    }
+    (lo.min(end), end)
+}
+
+/// Rays from interior element centres along the six vertex directions and a band of directions
+/// around them leave at the outer boundary of the lattice, never through a `Boundary` mid-lattice.
+#[test]
+fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
+    let mut exact = 0;
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 1, ORIGIN());
+        let base = if o == Or::X { 30.0f64 } else { 0.0 };
+        for (ci, cj) in [(3, 3), (2, 3), (3, 2)] {
+            let c = l.element_center([ci, cj, 0]);
+            let org = p3(c.x, c.y, 0.1);
+            for k in 0..6 {
+                for eps in [0.0, 1e-15, -1e-15, 1e-13, -1e-13, 1e-11, -1e-11, 1e-9, -1e-9] {
+                    let a = (base + 60.0 * f64::from(k)).to_radians() + eps;
+                    let d = [a.cos(), a.sin()];
+                    let what = format!("{o:?} centre ({ci},{cj}) dir {k} eps {eps:e}");
+                    // A run within 1e-7 of an outer flat is ambiguous (the tolerance band, 1e-9,
+                    // blurs where a ray along a flat is judged to leave it): ending there or
+                    // continuing along it are both fine, truncating before it is not.
+                    let (lo, wide) = footprint_run(o, &l, org, d, 1e-7);
+                    let tight = footprint_run(o, &l, org, d, 1e-12).1;
+                    assert!(lo > 1.0, "{what}: closed form {lo}");
+                    let (got, end) = trace(&w, org, v3(d[0], d[1], 0.0)).unwrap();
+                    assert_ne!(end, "lost", "{what}");
+                    assert_eq!(end, "boundary", "{what}");
+                    let total: f64 = got.iter().map(|g| g.1).sum();
+                    if lo < wide - 1e-6 {
+                        assert!(total >= lo - 1e-6 && total <= wide + 1e-6, "{what}: total {total} outside [{lo}, {wide}]");
+                    } else {
+                        // The tolerance band also blurs the exit of a ray 1e-9 rad off a flat.
+                        let tol = if eps.abs() >= 1e-9 { 2e-8 } else { 2e-9 };
+                        assert!((total - tight).abs() < tol, "{what}: total {total} vs closed form {tight}");
+                        exact += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Most rays have no ambiguity at all: those must match the closed form.
+    assert!(exact > 150, "{exact}");
 }
