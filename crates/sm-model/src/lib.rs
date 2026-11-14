@@ -10,8 +10,11 @@ mod prim2;
 mod queries;
 mod region;
 mod sphere_part;
+mod vtopo;
+mod vtopo_query;
 mod xform;
 mod xform2;
+mod xform_overlay;
 
 pub use copy::{CopyXform, ModelCopy};
 pub use delete::Delete;
@@ -20,6 +23,8 @@ pub use prim2::{CreateFrustum, CreatePrism, CreatePyramid, CreateTorus};
 pub use queries::{BBox, Measurement, ModelList, ModelMeasure, TopoRelated};
 pub use region::{FrameRow, HexOrientSpec, LatticeDefine, LatticeTag, LayoutSpec, Outside, RegionClear, RegionTable, RegionTags, TagRow};
 pub use sphere_part::{CreateSpherePart, HalfSpace, Octants};
+pub use vtopo::{CollapseEdge, CompositeEdges, CompositeFaces, PartitionEdge, PartitionFace, RemoveVirtual, SplitRealized, UnsplitRealized};
+pub use vtopo_query::{VirtualInfo, VirtualInfoOut, VirtualOpInfo};
 pub use xform::{Move, Reflect, Rotate, Scale, XformError};
 pub use xform2::{Anchor, AxisName, AxisSpec, MoveTarget, MoveTo, PointSpec, RotateAbout};
 
@@ -54,6 +59,15 @@ impl Plugin for ModelPlugin {
         registry.register::<LatticeDefine>()?;
         registry.register::<LatticeTag>()?;
         registry.register::<RegionClear>()?;
+        registry.register::<CompositeFaces>()?;
+        registry.register::<CompositeEdges>()?;
+        registry.register::<PartitionEdge>()?;
+        registry.register::<PartitionFace>()?;
+        registry.register::<CollapseEdge>()?;
+        registry.register::<RemoveVirtual>()?;
+        registry.register::<SplitRealized>()?;
+        registry.register::<UnsplitRealized>()?;
+        registry.register_query::<VirtualInfo>()?;
         registry.register_query::<TopoRelated>()?;
         registry.register_query::<ModelList>()?;
         registry.register_query::<ModelMeasure>()?;
@@ -76,6 +90,9 @@ mod tests {
         assert_eq!(
             ops,
             [
+                "model.collapse_edge",
+                "model.composite_edges",
+                "model.composite_faces",
                 "model.copy",
                 "model.create_brick",
                 "model.create_cylinder",
@@ -90,16 +107,21 @@ mod tests {
                 "model.lattice_tag",
                 "model.move",
                 "model.move_to",
+                "model.partition_edge",
+                "model.partition_face",
                 "model.reflect",
                 "model.region_clear",
+                "model.remove_virtual",
                 "model.rotate",
                 "model.rotate_about",
-                "model.scale"
+                "model.scale",
+                "model.split_realized",
+                "model.unsplit_realized"
             ]
         );
         let mut qs = reg.query_names();
         qs.sort_unstable();
-        assert_eq!(qs, ["model.list", "model.measure", "model.region_tags", "topo.related"]);
+        assert_eq!(qs, ["model.list", "model.measure", "model.region_tags", "model.virtual_info", "topo.related"]);
     }
 
     #[test]

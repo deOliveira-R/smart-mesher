@@ -78,7 +78,8 @@ impl TypedQuery for TopoRelated {
 
 /// `model.list {kind}`: every live entity of `kind` owned by the model layer, ascending.
 ///
-/// Topology kinds come from the cell complex; `Color`, `Group`, `Boundary`, `Prototype`,
+/// Topology kinds come from the cell complex; `PartitionVertex`, `PartitionEdge` and
+/// `PartitionFace` are the virtual cells of the layer's overlay; `Color`, `Group`, `Boundary`, `Prototype`,
 /// `Lattice`, `Instance`, `Cluster` and `PartitionCell` from the model tables.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -94,7 +95,18 @@ impl TypedQuery for ModelList {
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<Vec<EntityId>, OpError> {
         let layer = model_layer(state)?;
         if let Some(d) = Dim::of_real_kind(self.kind) {
-            return Ok(layer.topo().cells(d).to_vec());
+            // The overlay view lists virtual cells of the rank too; a real kind lists real cells.
+            return Ok(layer.topo().cells(d).iter().copied().filter(|c| c.kind() == self.kind).collect());
+        }
+        let virt_dim = match self.kind {
+            EntityKind::PartitionVertex => Some(Dim::Vertex),
+            EntityKind::PartitionEdge => Some(Dim::Edge),
+            EntityKind::PartitionFace => Some(Dim::Face),
+            _ => None,
+        };
+        if let Some(d) = virt_dim {
+            // Virtual cells of the layer's overlay (composites, partitions), from the view.
+            return Ok(layer.topo().cells(d).iter().copied().filter(|c| c.kind() == self.kind).collect());
         }
         let m = layer.model();
         let ins = m.instancing();

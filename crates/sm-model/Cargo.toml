@@ -26,6 +26,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 sm-topo = { path = "../sm-topo" }
 sm-testkit = { path = "../sm-testkit" }
 sm-mesh-api = { path = "../sm-mesh-api" }
+sm-boolean = { path = "../sm-boolean" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
