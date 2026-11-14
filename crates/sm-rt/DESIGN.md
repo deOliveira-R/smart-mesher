@@ -303,6 +303,34 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   surface at the wall (the point inside the hexagon) still moves to the next layer. Tested:
   `tests/hex_world.rs::rays_on_the_layer_interface_reach_the_lattice_boundary` (7x7x2, both orientations,
   generic rays and rays along shared flats, closed-form footprint totals, none lost).
+* **Grazing traps: a ray is carried, or ends in a typed, located error.** Whatever the tolerance rules
+  of the leaves, two nets stand behind them (structural, not another band):
+  1. *No vacuum inside the lattice.* When the exit point of a leaf finds no instance (`Boundary` from the
+     root locate) but lies inside a hex lattice of the path by more than `10 tol` on the ideal hexagons
+     (and inside its z range), and the model holds the 26 points of the sphere of radius `10 tol` about it
+     (a gap in a fill, or the top of a leaf, is a boundary), the stop is no boundary of the model: the
+     state is nudged along the ray by `tol 2^k` (`k < 6`, the first point the model holds, located from the
+     root with nothing excluded) and the step ends `SlotChange` with the nudge added to its length (a chord
+     error of a few `tol`, which the leaves' own bands already allow). If no nudge is held the step ends
+     `Lost` with `LostCause::RecoveryFailed`, located at the exit point.
+  2. *Bounded hand-backs.* `WorldTracker::trace` and `fire` count consecutive steps of at most `tol`
+     (instances handing the ray back and forth; a vertex legitimately gives two or three). After 8 they
+     nudge the ray on the same way (at most 4 times per trace, the hop recorded as a chord of the cell
+     the ray was in); a trap that cannot be left ends `Lost` with `RecoveryFailed`, never the million
+     steps of `TraceOptions::default().max_steps`.
+  The z-wall rules follow the path, not the leaf: the inward nudge of the direction is applied for a hex
+  stack at any level of the path (a fill wrapped in a union or a nested lattice), mapped to the leaf frame,
+  and the flat the ray runs along is found in the leaf frame of the carried instance. A carried candidate
+  is not given a layer the ray leaves through the z-wall (`|dz|` beyond the parallel limit, outward). Tested
+  by `tests/hex_world.rs::grazing_rays_direct_leaf` and `grazing_rays_union_fill` (debug-size grids) and
+  their `_full` twins (`--release --ignored`): all six flat directions, perpendicular offsets
+  `0, 1e-12, -1e-9, +-9.99e-7, 1.01e-6, -3e-6`, rotations `0, 1e-15, -1e-12, 1e-9, -1e-8`, `dz` across the
+  angular tolerance and the parallel limit, z mid-layer and on or near the wall, vertex starts and rays
+  through vertices, both orientations, a bare-leaf and a union-wrapped fill. The oracle is the strict
+  footprint (slack `1e-7`) with an interior-stop check (a `Boundary` whose `1e-5` disk is covered by
+  in-range hexagons is a false vacuum). Before the nets: 140 (bare leaf) and 1655 (union) false vacuums in
+  the debug grid, 36 and 29 rays lost; after: none, and no typed error either (the nets fire for about
+  0.5% of the grids, always at the first nudge).
 * **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
   circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh
   fill lies in the hexagon; a leaf fill has no cell at 12 probe points just outside the six flats and

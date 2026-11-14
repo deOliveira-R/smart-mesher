@@ -45,6 +45,13 @@ type Levels = SmallVec<[Level; LEVEL_INLINE]>;
 /// Largest global cell count (ids are `u32`; `NONE` and `COMPLEMENT` are reserved).
 const MAX_CELLS: u64 = u32::MAX as u64 - 2;
 const MAX_ISSUES: usize = 16;
+/// Consecutive steps of at most `tol` that a trace follows before it treats the run as a
+/// grazing trap (zero-length hand-backs between instances) and nudges out of it.
+const ZERO_RUN_MAX: u32 = 8;
+/// Nudge attempts (`tol * 2^k`, `k < GRAZE_TRIES`) out of a grazing trap, and the traps one trace
+/// may leave this way before it ends in a typed error.
+const GRAZE_TRIES: u32 = 6;
+const GRAZE_HOPS: u32 = 4;
 
 // ---- affine maps -----------------------------------------------------------------------
 
@@ -346,6 +353,18 @@ impl Lat {
     fn n(&self) -> usize {
         self.fill.len()
     }
+    /// Does the closed hexagon of an in-range element hold `u` (relative to the centre of element
+    /// `(0, 0)`)? Exact, no tolerance.
+    fn covers_xy(&self, u: [f64; 2]) -> bool {
+        let Shape::Hex(o) = self.shape else { return false };
+        let p = self.pitch[0];
+        let (q0, r0) = hexlat::round_axial(o, p, u);
+        std::iter::once((0, 0)).chain(hexlat::NEIGHBOURS).any(|(dq, dr)| {
+            let (q, r) = (q0.saturating_add(dq), r0.saturating_add(dr));
+            let c = hexlat::center(o, p, q, r);
+            q >= 0 && r >= 0 && (q as u32) < self.dims[0] && (r as u32) < self.dims[1] && hexlat::sd(o, p, [u[0] - c[0], u[1] - c[1]]) <= 0.0
+        })
+    }
     /// Candidate indices along axis `a` for coordinate `p`: the containing slab, or both slabs
     /// of a wall within `tol`, the one the direction enters first. Axis z of a single-layer
     /// lattice is unconstrained (index 0). A hex z layer is centred on its index, so its walls
@@ -480,6 +499,10 @@ pub struct WorldTracker {
     tol: f64,
     block_size: usize,
     any_partners: bool,
+    /// Some lattice is hexagonal (the grazing-trap nets look at the path only then).
+    has_hex: bool,
+    /// Some hexagonal lattice is stacked in z (the z-wall rules look at the path only then).
+    hex_stack: bool,
     overlap_vertex_tests: u64,
     /// The majorant node tables (`PartitionOptions::enabled`).
     hier: Option<WorldHier>,
@@ -609,6 +632,8 @@ impl WorldTracker {
         if comps[root].cells == 0 {
             return Err(issue("world.empty", "the world has no cells".into()));
         }
+        let has_hex = comps.iter().any(|c| matches!(&c.kind, Kind::Lattice(l) if matches!(l.shape, Shape::Hex(_))));
+        let hex_stack = comps.iter().any(|c| matches!(&c.kind, Kind::Lattice(l) if matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0));
         let any_partners = comps.iter().any(|c| matches!(&c.kind, Kind::Union { partners, .. } if partners.iter().any(|p| !p.is_empty())));
 
         // Info.
@@ -638,6 +663,8 @@ impl WorldTracker {
             tol,
             block_size: opts.block_size as usize,
             any_partners,
+            has_hex,
+            hex_stack,
             overlap_vertex_tests: 0,
             hier: None,
         };
@@ -786,7 +813,13 @@ impl WorldTracker {
 
     /// Resolve a level path to its leaf prototype, the global-to-leaf map and the cell base.
     fn frame_of(&self, levels: &[Level]) -> Result<Frame> {
-        let mut comp = self.root;
+        self.frame_from(self.root, levels)
+    }
+
+    /// [`Self::frame_of`] for a path that starts at the component `comp` (its frame is the origin
+    /// of the returned map).
+    fn frame_from(&self, start: usize, levels: &[Level]) -> Result<Frame> {
+        let mut comp = start;
         let mut aff = Aff::ID;
         let mut base = 0u64;
         let mut checks: SmallVec<[Check; 2]> = SmallVec::new();
@@ -977,16 +1010,18 @@ impl WorldTracker {
                         // For each flat within `tol` of the point, the distance outside it plus
                         // the sideways drift over a run of one edge (`p / sqrt 3`, the longest run
                         // along a flat) stays within `tol`, however grazing the departure. A ray
-                        // leaving at a vertex is not carried into it.
+                        // leaving at a vertex is not carried into it, nor a ray leaving through
+                        // the z-wall of the layer it would be given.
                         let edge = l.pitch[0] / 3.0_f64.sqrt();
-                        if n <= 0.0 || hexlat::run_leaves(or, l.pitch[0], [q[0], q[1]], [dir[0], dir[1]], edge, self.tol) {
+                        if n <= 0.0 || hexlat::run_leaves(or, l.pitch[0], [q[0], q[1]], [dir[0], dir[1]], edge, self.tol) || self.leaves_through_z(l, q[2], dir[2]) {
                             continue;
                         }
                         if let Loc::Hit(mut h) = self.locate_rec(l.fill[lin] as usize, q, scale(q, -1.0 / n), sc, None, false) {
                             // The leaf must know it is on the flat the ray runs along, or it may
                             // end the run at once through that plane (rounding in the direction).
-                            if let (Body::Csg(a), Kind::Leaf(_)) = (&self.protos[h.proto].tracker, &self.comps[l.fill[lin] as usize].kind)
-                                && let Some(f) = a.on_face_along(h.local.cell, p3(q), v3(dir))
+                            if let Ok(fr) = self.frame_from(l.fill[lin] as usize, &h.levels)
+                                && let Body::Csg(a) = &self.protos[fr.proto].tracker
+                                && let Some(f) = a.on_face_along(h.local.cell, p3(fr.g2l.pt(q)), v3(fr.g2l.vec(dir)))
                             {
                                 h.local.on_face = Some(f);
                             }
@@ -1051,6 +1086,124 @@ impl WorldTracker {
     fn zwall_nudge(&self, l: &Lat, qz: f64, dz: f64) -> Option<f64> {
         let ang = self.info.tol.angular;
         (matches!(l.shape, Shape::Hex(_)) && l.pitch[2] > 0.0 && dz.abs() <= self.zpar_limit(l) && (qz.abs() - 0.5 * l.pitch[2]).abs() <= self.tol).then(|| -qz.signum() * 10.0 * ang)
+    }
+
+    /// Whether a ray with z-component `dz` leaves the layer it would be given through the z-wall
+    /// at `qz` (relative to the element centre): on the wall (within `tol`), moving out by more
+    /// than the parallel limit. Such a ray belongs to the next layer; handing the point back to
+    /// this one only ends the step at once.
+    fn leaves_through_z(&self, l: &Lat, qz: f64, dz: f64) -> bool {
+        l.pitch[2] > 0.0 && dz.abs() > self.zpar_limit(l) && qz.abs() - 0.5 * l.pitch[2] >= -self.tol && qz.signum() * dz > 0.0
+    }
+
+    /// For a state (global position `o`, direction `d`) whose path holds a hex stack with the point
+    /// on a z-wall and the ray parallel to it: the global direction to rule with, the direction
+    /// with the lattice-frame z-component replaced by the inward nudge (see [`Self::zwall_nudge`]).
+    fn zwall_dir(&self, levels: &[Level], o: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+        if !self.hex_stack {
+            return None;
+        }
+        let mut comp = self.root;
+        let mut aff = Aff::ID;
+        for lvl in levels {
+            match &self.comps[comp].kind {
+                Kind::Union { places, .. } => {
+                    let pl = places.get(lvl.instance.get())?;
+                    aff = aff.then(&pl.inv);
+                    comp = pl.child;
+                }
+                Kind::Lattice(l) => {
+                    let el = aff.then(&Aff::shift_by(l.center(lvl.lattice)));
+                    let mut dl = el.vec(d);
+                    if let Some(nz) = self.zwall_nudge(l, el.pt(o)[2], dl[2]) {
+                        dl[2] = nz;
+                        return Some(el.vec_back(dl));
+                    }
+                    aff = el;
+                    comp = l.fill[lvl.instance.get()] as usize;
+                }
+                Kind::Leaf(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// A stop of a ray at the global point `g` (leaving the model there): does it lie strictly
+    /// inside a hex lattice of its path, so that it is no boundary of the model but a failure to
+    /// carry a grazing ray? Inside by more than `10 tol` on the ideal hexagons (cheap, exact), and
+    /// the model holds every point of the sphere of that radius about it (a gap in a fill is a
+    /// boundary, a ray ending on the top of a leaf is a boundary).
+    fn stop_inside_hex_lattice(&self, levels: &[Level], g: [f64; 3], d: [f64; 3], sc: &mut Scratch) -> bool {
+        if !self.has_hex {
+            return false;
+        }
+        let r = 10.0 * self.tol;
+        let mut comp = self.root;
+        let mut aff = Aff::ID;
+        let mut ideal = false;
+        for lvl in levels {
+            match &self.comps[comp].kind {
+                Kind::Union { places, .. } => {
+                    let Some(pl) = places.get(lvl.instance.get()) else { return false };
+                    aff = aff.then(&pl.inv);
+                    comp = pl.child;
+                }
+                Kind::Lattice(l) => {
+                    if matches!(l.shape, Shape::Hex(_)) {
+                        let pl = aff.pt(g);
+                        let u = [pl[0] - l.origin[0], pl[1] - l.origin[1]];
+                        let z_ok = l.pitch[2] <= 0.0 || {
+                            let lo = l.origin[2] - 0.5 * l.pitch[2];
+                            pl[2] >= lo + r && pl[2] <= lo + f64::from(l.dims[2]) * l.pitch[2] - r
+                        };
+                        ideal |= z_ok && l.covers_xy(u) && (0..16).all(|k| {
+                            let a = std::f64::consts::PI * f64::from(k) / 8.0;
+                            l.covers_xy([u[0] + r * a.cos(), u[1] + r * a.sin()])
+                        });
+                    }
+                    aff = aff.then(&Aff::shift_by(l.center(lvl.lattice)));
+                    comp = l.fill[lvl.instance.get()] as usize;
+                }
+                Kind::Leaf(_) => break,
+            }
+        }
+        if !ideal {
+            return false;
+        }
+        // The model holds the whole sphere: 26 points of a 3 x 3 x 3 grid of directions.
+        (-1..=1).all(|i| {
+            (-1..=1).all(|j| {
+                (-1..=1).all(|k| {
+                    let v = [f64::from(i), f64::from(j), f64::from(k)];
+                    let n = norm(v);
+                    n == 0.0 || matches!(self.locate_rec(self.root, madd(g, v, r / n), d, sc, None, false), Loc::Hit(_))
+                })
+            })
+        })
+    }
+
+    /// Nudge out of a grazing trap: the first of the points `tol * 2^k` ahead of the state along its
+    /// direction (at most `room` away, `k < GRAZE_TRIES`) that the model holds, located from the
+    /// root with nothing excluded. Moves the state there and returns the distance, or leaves it.
+    fn graze_hop(&self, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Option<f64> {
+        let (o, d) = (a3(st.pos), av3(st.dir));
+        for k in 0..GRAZE_TRIES {
+            let nd = self.tol * f64::from(1u32 << k);
+            if nd > room {
+                break;
+            }
+            let q = madd(o, d, nd);
+            if let Loc::Hit(h) = self.locate_rec(self.root, q, d, sc, None, false) {
+                let to = self.global_located(h);
+                st.pos = p3(q);
+                st.cell = to.cell;
+                st.region = to.region;
+                st.entered_via = to.on_face;
+                st.levels = to.levels;
+                return Some(nd);
+            }
+        }
+        None
     }
 
     fn global_located(&self, h: Hit) -> Located {
@@ -1472,14 +1625,11 @@ impl Tracker for WorldTracker {
         ls.cell = CellId(local_cell);
         ls.region = RegionId(local_region);
         ls.entered_via = st.entered_via.and_then(|f| f.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.n_faces()).map(FaceId));
-        // A ray along the z-wall of a hex stack: the leaf's tie on its z plane is hashed by
-        // position, which can end a run along the wall at once. Step with the direction nudged
-        // into the layer (the state's own direction is not changed).
-        if let Some(lv) = st.levels.last()
-            && let Kind::Lattice(l) = &self.comps[lv.component.get()].kind
-            && let Some(dz) = self.zwall_nudge(l, ls.pos.z, ls.dir.z)
-        {
-            ls.dir.z = dz;
+        // A ray along the z-wall of a hex stack (at any level of the path): the leaf's tie on its z
+        // plane is hashed by position, which can end a run along the wall at once. Step with the
+        // direction nudged into the layer (the state's own direction is not changed).
+        if let Some(dn) = self.zwall_dir(&st.levels, o, d) {
+            ls.dir = v3(fr.g2l.vec(dn));
         }
         let s = pr.tracker.step(&mut ls, max_dist, sc)?;
         let gface = |f: FaceId| FaceId(f.0 + pr.face_off);
@@ -1545,6 +1695,32 @@ impl Tracker for WorldTracker {
                         };
                         Ok(mk(end))
                     }
+                    Loc::Miss if self.stop_inside_hex_lattice(&st.levels, new_pos, d, sc) => {
+                        // The model holds the point and everything around it: no boundary but a
+                        // grazing ray no instance would take. Carry it a few tolerances on, or
+                        // end it in a typed, located error; never a vacuum inside the lattice.
+                        let mut moved = TrackState::new(p3(new_pos), st.dir);
+                        moved.cell = st.cell;
+                        moved.region = st.region;
+                        moved.entered_via = st.entered_via;
+                        match self.graze_hop(&mut moved, max_dist - s.dist, sc) {
+                            Some(nd) => {
+                                *st = moved;
+                                let end = if st.region == region_before {
+                                    StepEnd::SlotChange { to_cell: st.cell }
+                                } else {
+                                    StepEnd::RegionBoundary { surface: gsurf(surface), face: gface(face), to_region: st.region, to_cell: st.cell }
+                                };
+                                Ok(Step::new(s.dist + nd, cell_before, region_before, end))
+                            }
+                            None => {
+                                let mut li = lost(&moved, LostCause::RecoveryFailed).with_retries(GRAZE_TRIES);
+                                li.last_cell = st.cell;
+                                li.last_face = st.entered_via;
+                                Ok(Step::new(0.0, st.cell, region_before, StepEnd::Lost(li)))
+                            }
+                        }
+                    }
                     Loc::Miss => {
                         commit(st);
                         if matches!(self.exit_action, FaceAction::Reflect) {
@@ -1565,6 +1741,85 @@ impl Tracker for WorldTracker {
             // `StepEnd::SlotChange` and `Lost` never come from a prototype.
             _ => Ok(self.lost_step(st, LostCause::NoExitFace)),
         }
+    }
+
+    /// The provided `trace` with a bound on grazing traps: after `ZERO_RUN_MAX` consecutive steps of
+    /// at most `tol` (instances handing the ray back and forth), the ray is nudged on along its
+    /// direction (the hop is recorded as a chord of the cell it was in), at most `GRAZE_HOPS` times;
+    /// a trap that cannot be left ends the trace `Lost` with `LostCause::RecoveryFailed`.
+    fn trace(&self, st: &mut TrackState, opts: &TraceOptions, sink: &mut dyn sm_rt_api::SegmentSink, sc: &mut Scratch) -> Result<sm_rt_api::TraceEnd> {
+        use sm_rt_api::{Flow, Segment, TraceEnd};
+        let mut t = 0.0;
+        let (mut zero_run, mut hops) = (0u32, 0u32);
+        for _ in 0..opts.max_steps {
+            let face_in = st.entered_via;
+            let s = self.step(st, opts.max_dist - t, sc)?;
+            let face_out = match s.end {
+                StepEnd::CellFace { face, .. } | StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(face),
+                _ => None,
+            };
+            if !matches!(s.end, StepEnd::Lost(_)) && !(s.dist == 0.0 && matches!(s.end, StepEnd::Limit)) {
+                let seg = Segment::new(s.cell, s.region, t, s.dist).with_faces(face_in, face_out);
+                if sink.segment(&seg) == Flow::Stop {
+                    return Ok(TraceEnd::Stopped);
+                }
+            }
+            t += s.dist;
+            let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
+            if carried {
+                zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
+                if zero_run > ZERO_RUN_MAX {
+                    let (cell, region, from) = (st.cell, st.region, st.entered_via);
+                    match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
+                        Some(nd) => {
+                            hops += 1;
+                            zero_run = 0;
+                            let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
+                            if sink.segment(&seg) == Flow::Stop {
+                                return Ok(TraceEnd::Stopped);
+                            }
+                            t += nd;
+                        }
+                        None => return Ok(TraceEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops))),
+                    }
+                }
+            }
+            match s.end {
+                StepEnd::Limit => return Ok(TraceEnd::Limit),
+                StepEnd::CellFace { .. } | StepEnd::SlotChange { .. } => {}
+                StepEnd::RegionBoundary { .. } if st.cell.is_none() => return Ok(TraceEnd::LeftModel),
+                StepEnd::RegionBoundary { .. } => {}
+                StepEnd::Boundary { action, .. } if action.applied_in_step() && !opts.stop_at_deck => {}
+                StepEnd::Boundary { surface, face, action } => return Ok(TraceEnd::Boundary { surface, face, action }),
+                StepEnd::Lost(l) => return Ok(TraceEnd::Lost(l)),
+                _ => return Ok(TraceEnd::Lost(lost(st, LostCause::NoExitFace))),
+            }
+        }
+        Ok(TraceEnd::Lost(lost(st, LostCause::MaxStepsExceeded)))
+    }
+
+    fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, sc: &mut Scratch) -> Result<sm_rt_api::FireResult> {
+        let mut total = 0.0;
+        let (mut zero_run, mut hops) = (0u32, 0u32);
+        for _ in 0..max_steps {
+            let s = self.step(st, dist_limit - total, sc)?;
+            total += s.dist;
+            if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
+                return Ok(sm_rt_api::FireResult::new(total, s.end));
+            }
+            zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
+            if zero_run > ZERO_RUN_MAX {
+                match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
+                    Some(nd) => {
+                        hops += 1;
+                        zero_run = 0;
+                        total += nd;
+                    }
+                    None => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(hops)))),
+                }
+            }
+        }
+        Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded))))
     }
 
     fn closest(&self, p: Point3, region: Option<RegionId>, scratch: &mut Scratch) -> Result<Option<Closest>> {
