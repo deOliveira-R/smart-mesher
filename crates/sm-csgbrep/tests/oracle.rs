@@ -254,22 +254,33 @@ fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
 /// The 460 cm BEAVRS assembly imports (W4-BOOL-KFIX fixed the unsplit grid-layer pieces; the
 /// import's piece check stays as a guard): the Fuel 1.6% volumes total the analytic
 /// 264 pi 0.39218^2 (402.508 - 36.748) = 46657.4 cm3, and the 600 oracle points equal OpenMC's.
-/// The grid spacer boxes with their pin holes are checked on one pin cell in
-/// `beavrs_repro.rs` (exact fuel and end-grid Inconel).
+/// The whole deck is also totalled per material: Inconel 718 is the end-grid strips at all 289
+/// lattice positions (fuel, guide tube and instrument tube universes all wrap universe 6) plus
+/// the plenum springs, 289 (1.25984^2 - 1.2203^2) ((40.52 - 37.1621) + (415.164 - 411.806)) +
+/// 264 pi 0.06459^2 (417.164 - 402.508) = 241.04409 cm3, and all materials sum to the box
+/// 21.41728^2 460 = 211001.946 cm3. The grid spacer boxes with their pin holes are covered by
+/// these two sums and by the exact fuel volume (a hole off by any amount moves one of them).
 #[test]
 #[ignore = "slow: about 940 s in debug, 69 s in release; run with --ignored"]
 fn the_beavrs_assembly_imports_with_the_analytic_fuel_and_agrees_with_openmc() {
     let name = "ref_beavrs_assembly";
     let mut r = Rig::new();
     let d = r.import(&fixture(name, "geometry.xml"), Some(&fixture(name, "materials.xml"))).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let mut fuel_got = 0.0;
-    for c in r.model().colors().filter(|c| c.domain == Domain::Volume && c.name == "Fuel 1.6%") {
+    let mut by = std::collections::BTreeMap::<String, f64>::new();
+    for c in r.model().colors().filter(|c| c.domain == Domain::Volume) {
         for v in r.model().volumes_of_color(c.id) {
             if d.outputs["deck_volumes"].contains(&v) {
-                fuel_got += r.volume(v);
+                *by.entry(c.name.clone()).or_default() += r.volume(v);
             }
         }
     }
+    let fuel_got = by.get("Fuel 1.6%").copied().unwrap_or(0.0);
+    let pi = core::f64::consts::PI;
+    let inconel = 289.0 * (1.25984_f64.powi(2) - 1.2203_f64.powi(2)) * ((40.52 - 37.1621) + (415.164 - 411.806)) + 264.0 * pi * 0.06459_f64.powi(2) * (417.164 - 402.508);
+    let got = by.get("Inconel 718").copied().unwrap_or(0.0);
+    assert!((got - inconel).abs() < 1e-9 * inconel, "Inconel 718: {got} vs analytic {inconel}");
+    let (total, box_v) = (by.values().sum::<f64>(), 21.41728_f64.powi(2) * 460.0);
+    assert!((total - box_v).abs() < 1e-9 * box_v, "total {total} vs box {box_v}");
     let fuel = 264.0 * core::f64::consts::PI * 0.39218_f64.powi(2) * 365.76;
     assert!((fuel_got - fuel).abs() < 1e-6 * fuel, "Fuel 1.6%: {fuel_got} vs analytic {fuel} ({:.1}%)", 100.0 * (fuel_got - fuel) / fuel);
     let t = compare(name, &fixture(name, "geometry.xml")).unwrap_or_else(|e| panic!("{name}: {e}"));
