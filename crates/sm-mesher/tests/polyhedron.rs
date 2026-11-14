@@ -148,7 +148,7 @@ fn bad_use_is_refused_with_a_message() {
     let e = err(&mut s, "mesh.scheme(targets: all volumes, scheme: \"polyhedron\", params: {dual: \"voronoi\"})");
     assert!(e.contains("barycentric"), "{e}");
     let e = err(&mut s, "mesh.scheme(targets: all volumes, scheme: \"tetmesh\", fallbacks: [\"polyhedron\"])");
-    assert!(e.contains("fallback"), "{e}");
+    assert!(e.contains("polyhedron cannot be a fallback; it changes the cell type"), "{e}");
     let e = err(&mut s, "mesh.scheme(targets: topo.related(kind: \"TopoFace\", within: all volumes), scheme: \"polyhedron\")");
     assert!(e.contains("polyhedron"), "{e}");
 }
