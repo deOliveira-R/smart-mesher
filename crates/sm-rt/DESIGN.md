@@ -305,6 +305,7 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   generic rays and rays along shared flats, closed-form footprint totals, none lost).
 * **Grazing traps: a ray is carried, or ends in a typed, located error.** Whatever the tolerance rules
   of the leaves, two nets stand behind them (structural, not another band):
+  The nets apply to worlds with a hex lattice only (other worlds run the provided loops unchanged).
   1. *No vacuum inside the lattice.* When the exit point of a leaf finds no instance (`Boundary` from the
      root locate) but lies inside a hex lattice of the path by more than `10 tol` on the ideal hexagons
      (and inside its z range), and the model holds the 26 points of the sphere of radius `10 tol` about it
@@ -319,7 +320,7 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
      the ray was in); a trap that cannot be left ends `Lost` with `RecoveryFailed`, never the million
      steps of `TraceOptions::default().max_steps`.
   The z-wall rules follow the path, not the leaf: the inward nudge of the direction is applied for a hex
-  stack at any level of the path (a fill wrapped in a union or a nested lattice), mapped to the leaf frame,
+  stack at any level of the path (a fill wrapped in a union; nested lattices and mesh leaves are not probed), mapped to the leaf frame,
   and the flat the ray runs along is found in the leaf frame of the carried instance. A carried candidate
   is not given a layer the ray leaves through the z-wall (`|dz|` beyond the parallel limit, outward). Tested
   by `tests/hex_world.rs::grazing_rays_direct_leaf` and `grazing_rays_union_fill` (debug-size grids) and
@@ -328,9 +329,10 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   angular tolerance and the parallel limit, z mid-layer and on or near the wall, vertex starts and rays
   through vertices, both orientations, a bare-leaf and a union-wrapped fill. The oracle is the strict
   footprint (slack `1e-7`) with an interior-stop check (a `Boundary` whose `1e-5` disk is covered by
-  in-range hexagons is a false vacuum). Before the nets: 140 (bare leaf) and 1655 (union) false vacuums in
-  the debug grid, 36 and 29 rays lost; after: none, and no typed error either (the nets fire for about
-  0.5% of the grids, always at the first nudge).
+  in-range hexagons is a false vacuum). Before the nets: 18 (bare leaf) and 97 (union) false vacuums in
+  the debug grid (n = 3960), 8 and 7 rays lost (bare-leaf full grid: 734 and 182); after: none, and no typed
+  error either (the nets fired for about 0.5% of the rays of the larger grids this was first measured on, always at the
+  first nudge, so the `RecoveryFailed` path itself is not exercised by any test).
 * **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
   circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh
   fill lies in the hexagon; a leaf fill has no cell at 12 probe points just outside the six flats and

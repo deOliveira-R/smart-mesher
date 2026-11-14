@@ -1128,9 +1128,10 @@ fn a_grazing_ray_is_not_ended_at_a_mid_lattice_vertex() {
     let (got, end) = trace(&w, org, v3(a.cos(), a.sin(), 0.0)).unwrap();
     assert_eq!(end, "boundary");
     let total: f64 = got.iter().map(|g| g.1).sum();
-    // Past the vertex (2.2503) to the outer corner of the lattice, where the ray runs 1e-6 inside
-    // an outer flat that leaf judges it to be leaving: ending there is within the tolerance band.
-    assert!(total > 7.44 && total < 8.3126, "{total}");
+    // Past the vertex (2.2503), at one of two outcomes: the outer corner of the lattice (7.446502),
+    // where the ray runs 9.97e-7 inside an outer flat of (6,6) that its leaf judges it to be leaving
+    // (it drifts out at 1e-9 rad), or one edge further (8.312529, as at eps 0 and -1e-9).
+    assert!((total - 7.446502).abs() < 1e-5 || (total - 8.312529).abs() < 1e-5, "{total}");
 }
 
 /// Review repro: on the z-wall just outside the parallel band, at a hex vertex.

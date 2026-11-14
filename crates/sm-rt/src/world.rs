@@ -1743,7 +1743,8 @@ impl Tracker for WorldTracker {
         }
     }
 
-    /// The provided `trace` with a bound on grazing traps: after `ZERO_RUN_MAX` consecutive steps of
+    /// The provided `trace` with a bound on grazing traps in worlds with a hex lattice (others run the
+    /// provided loop unchanged): after `ZERO_RUN_MAX` consecutive steps of
     /// at most `tol` (instances handing the ray back and forth), the ray is nudged on along its
     /// direction (the hop is recorded as a chord of the cell it was in), at most `GRAZE_HOPS` times;
     /// a trap that cannot be left ends the trace `Lost` with `LostCause::RecoveryFailed`.
@@ -1768,7 +1769,7 @@ impl Tracker for WorldTracker {
             let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
             if carried {
                 zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
-                if zero_run > ZERO_RUN_MAX {
+                if self.has_hex && zero_run > ZERO_RUN_MAX {
                     let (cell, region, from) = (st.cell, st.region, st.entered_via);
                     match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
                         Some(nd) => {
@@ -1808,7 +1809,7 @@ impl Tracker for WorldTracker {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
             }
             zero_run = if s.dist > self.tol { 0 } else { zero_run + 1 };
-            if zero_run > ZERO_RUN_MAX {
+            if self.has_hex && zero_run > ZERO_RUN_MAX {
                 match (hops < GRAZE_HOPS).then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
                     Some(nd) => {
                         hops += 1;
