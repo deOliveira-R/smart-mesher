@@ -14,6 +14,7 @@ mod vtopo;
 mod vtopo_query;
 mod xform;
 mod xform2;
+mod xform_overlay;
 
 pub use copy::{CopyXform, ModelCopy};
 pub use delete::Delete;

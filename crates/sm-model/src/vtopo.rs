@@ -67,8 +67,17 @@ fn cut_owned(m: &Model, ov: &Overlay) -> BTreeSet<EntityId> {
         }
     }
     for piece in d.cells() {
-        for pf in piece.faces.iter().filter(|pf| matches!(pf, PieceFace::Part { .. } | PieceFace::CutPart { .. })) {
-            out.extend(d.piece_face_cells(pf, ov).unwrap_or_default());
+        let realized = d.parent_of(piece.id).is_some_and(|p| d.is_realized(p));
+        for pf in &piece.faces {
+            match pf {
+                PieceFace::Part { .. } | PieceFace::CutPart { .. } => out.extend(d.piece_face_cells(pf, ov).unwrap_or_default()),
+                // A whole face of a realized piece: partitioning or merging it would leave
+                // `piece_face_cells(Whole(f))` without a realization.
+                PieceFace::Whole(f) if realized => {
+                    out.insert(*f);
+                }
+                _ => {}
+            }
         }
     }
     for op in ov.ops() {
@@ -188,7 +197,7 @@ impl TypedOp for PartitionEdge {
     }
 }
 
-/// `model.partition_face {face, from, to}`: split a planar face by a straight virtual chord
+/// `model.partition_face {face, start, end}`: split a planar face by a straight virtual chord
 /// between two vertices of its outer loop, into two child faces `[first, second]`.
 ///
 /// Only faces on a plane are accepted: a chord on a curved face would need pcurves that
@@ -203,10 +212,10 @@ pub struct PartitionFace {
     pub face: EntityId,
     /// Chord start: a vertex on the face's outer loop (host or virtual).
     #[schemars(extend("x-entity-kind" = ["TopoVertex", "PartitionVertex"]))]
-    pub from: EntityId,
+    pub start: EntityId,
     /// Chord end: another vertex on the outer loop.
     #[schemars(extend("x-entity-kind" = ["TopoVertex", "PartitionVertex"]))]
-    pub to: EntityId,
+    pub end: EntityId,
 }
 
 impl TypedOp for PartitionFace {
@@ -215,13 +224,13 @@ impl TypedOp for PartitionFace {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         kind_is(self.face, &[EntityKind::TopoFace, EntityKind::PartitionFace], "face")?;
-        kind_is(self.from, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "from")?;
-        kind_is(self.to, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "to")?;
+        kind_is(self.start, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "start")?;
+        kind_is(self.end, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "end")?;
         model_overlay_txn(
             ctx,
             |m, ov| {
                 refuse_cut_cells(m, ov, &[self.face], "face")?;
-                let cut = chord(ov, self.face, self.from, self.to)?;
+                let cut = chord(ov, self.face, self.start, self.end)?;
                 let halves = ov.partition_face(self.face, cut).or_op()?;
                 // The chord is the one the overlay recorded for this partition.
                 let chord = ov.ops().iter().rev().find_map(|op| match op {

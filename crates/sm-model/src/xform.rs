@@ -338,10 +338,33 @@ pub(crate) fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf
     }
     xf.check_similarity()?;
     let sel = select(ctx, entities)?;
-    let ((), txn) = topo_txn(ctx, |topo, model| {
+    // Virtual ops that touch the selection carry absolute geometry: rewrite it and rebuild the
+    // overlay on the transformed host instead of letting `topo_txn` replay it unchanged.
+    let plan = crate::xform_overlay::transformed_ops(ctx.layer::<ModelLayer>()?, &sel.closure, &xf)?;
+    let saved = match &plan {
+        Some(_) => ctx.layer_mut::<ModelLayer>()?.clear_overlay(),
+        None => None,
+    };
+    let ran = topo_txn(ctx, |topo, model| {
         transform_cells(topo, &sel.closure, &xf)?;
         model.apply_transform(&xf.t, &sel.volumes, topo.as_view()).or_op()
-    })?;
+    });
+    let ((), txn) = match ran {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(o) = saved {
+                // Best effort: the engine discards the scratch state of a failed op anyway.
+                let _ = ctx.layer_mut::<ModelLayer>()?.set_overlay((*o).clone());
+            }
+            return Err(e);
+        }
+    };
+    if let Some(plan) = plan {
+        let layer = ctx.layer_mut::<ModelLayer>()?;
+        let host: std::sync::Arc<dyn sm_topo_api::TopologyView> = layer.topo_host().clone();
+        let ov = plan.build(host)?;
+        layer.set_overlay(ov).or_op()?;
+    }
     commit_topology(ctx, &txn, &[("volumes", &sel.volumes)])
 }
 
