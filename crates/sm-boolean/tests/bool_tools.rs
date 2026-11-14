@@ -257,6 +257,10 @@ fn body_tools_by_boolean_composition() {
         for crossing in [false, true] {
             let (vi, vo, shared) = cut_by_body(tool, crossing).unwrap_or_else(|e| panic!("{tool:?} crossing={crossing}: {e}"));
             assert!((vi + vo - 216.0).abs() < 1e-9, "{tool:?} crossing={crossing}: {vi} + {vo}");
+            // The composition shares the cut face for the frustum and the torus (not the sphere).
+            if matches!(tool, Tool::Frustum | Tool::Torus) {
+                assert!(shared > 0, "{tool:?} crossing={crossing}: no shared cut face");
+            }
             println!("{tool:?} crossing={crossing}: inside {vi:.9} outside {vo:.9} shared faces {shared}");
         }
     }

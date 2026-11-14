@@ -386,29 +386,75 @@ fn sphere_frame<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> 
     let (c, r) = (s.frame.origin, s.radius);
     // (unit direction of the circle's axis from the centre, angular radius)
     let mut circles: Vec<(Vector3, f64)> = Vec::new();
+    // Directions from the centre to sampled points of the curves that a cylinder or cone off the
+    // centre's axis cuts on the sphere (not circles: only their distance to the poles matters).
+    let mut pts: Vec<Vector3> = Vec::new();
+    let mut axes_hint: Vec<Vector3> = Vec::new();
     for &f in view.volume_faces(v) {
         let Carrier::Surface(sc) = view.carrier(f) else { continue };
-        let (n, h) = match view.shapes().surface_def(sc.surface) {
-            Some(SurfaceDef::Plane(p)) => (p.frame.z, p.frame.z.dot(p.frame.origin - c)),
+        // (axis, offset of the circle's plane from the centre) of each circle on `s`.
+        let mut found: Vec<(Vector3, f64)> = Vec::new();
+        match view.shapes().surface_def(sc.surface) {
+            Some(SurfaceDef::Plane(p)) => found.push((p.frame.z, p.frame.z.dot(p.frame.origin - c))),
             Some(SurfaceDef::Sphere(o)) => {
                 let d = o.frame.origin - c;
                 let dist = d.norm();
-                if dist <= 1e-12 * r {
-                    continue;
+                if dist > 1e-12 * r {
+                    found.push((d * (1.0 / dist), (dist * dist + r * r - o.radius * o.radius) / (2.0 * dist)));
                 }
-                (d * (1.0 / dist), (dist * dist + r * r - o.radius * o.radius) / (2.0 * dist))
             }
-            _ => continue,
-        };
-        if h.abs() < r * (1.0 - 1e-9) {
-            circles.push((n, (h / r).acos()));
+            // A cylinder or cone coaxial with the sphere meets it in circles about the axis.
+            Some(SurfaceDef::Cylinder(cy)) => {
+                let (u, w) = (cy.frame.z, c - cy.frame.origin);
+                if (w - u * w.dot(u)).norm() <= 1e-9 * r {
+                    let zc2 = r * r - cy.radius * cy.radius;
+                    if zc2 > 0.0 {
+                        let zc = zc2.sqrt();
+                        found.push((u, zc));
+                        found.push((u, -zc));
+                    }
+                } else {
+                    axes_hint.push(cy.frame.z);
+                    sample_axial(&mut pts, &cy.frame, cy.radius, 0.0, c, r);
+                }
+            }
+            Some(SurfaceDef::Cone(co)) => {
+                let (u, w) = (co.frame.z, c - co.frame.origin);
+                if (w - u * w.dot(u)).norm() <= 1e-9 * r {
+                    // Axial offsets z from the frame origin with (z - t)^2 + (radius + z k)^2 = R^2.
+                    let (t, k) = (w.dot(u), co.half_angle.tan());
+                    let (qa, qb, qc) = (1.0 + k * k, -2.0 * t + 2.0 * co.radius * k, t * t + co.radius * co.radius - r * r);
+                    let disc = qb * qb - 4.0 * qa * qc;
+                    if disc > 0.0 {
+                        for sg in [-1.0, 1.0] {
+                            let z = (-qb + sg * disc.sqrt()) / (2.0 * qa);
+                            if co.radius + z * k >= 0.0 {
+                                found.push((u, z - t));
+                            }
+                        }
+                    }
+                } else {
+                    axes_hint.push(co.frame.z);
+                    sample_axial(&mut pts, &co.frame, co.radius, co.half_angle.tan(), c, r);
+                }
+            }
+            _ => {}
+        }
+        for (n, h) in found {
+            if h.abs() < r * (1.0 - 1e-9) {
+                circles.push((n, (h / r).acos()));
+            }
         }
     }
-    if circles.is_empty() {
+    if circles.is_empty() && pts.is_empty() {
         return s.frame;
     }
     let half_pi = core::f64::consts::FRAC_PI_2;
     let margin = |p: Vector3| -> f64 {
+        let pole = pts.iter().map(|d| {
+            let th = p.dot(*d).clamp(-1.0, 1.0).acos();
+            th.min(core::f64::consts::PI - th)
+        });
         circles
             .iter()
             .map(|&(n, rho)| {
@@ -419,12 +465,14 @@ fn sphere_frame<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> 
                 }
                 (th - rho).abs().min((core::f64::consts::PI - th - rho).abs())
             })
+            .chain(pole)
             .fold(f64::INFINITY, f64::min)
     };
     // Axes along the circle normals first (the circles become latitudes), then the user's axis,
     // then a fixed fibonacci set.
     let mut cands: Vec<Vector3> = circles.iter().map(|c| c.0).collect();
     cands.push(s.frame.z);
+    cands.extend(axes_hint);
     const N: usize = 64;
     for i in 0..N {
         let z = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
@@ -448,6 +496,87 @@ fn sphere_frame<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> 
     Frame::from_z(c, best.0).unwrap_or(s.frame)
 }
 
+/// Unit directions from `c` to points where the sphere (centre `c`, radius `r`) meets the surface
+/// of revolution about `f.z` with radius `rad0 + z k` at axial coordinate `z` (a cylinder for
+/// `k = 0`, else a cone), sampled at 96 azimuths.
+fn sample_axial(out: &mut Vec<Vector3>, f: &Frame, rad0: f64, k: f64, c: Point3, r: f64) {
+    const M: usize = 96;
+    let w = c - f.origin;
+    let t = w.dot(f.z);
+    for i in 0..M {
+        let a = core::f64::consts::TAU * i as f64 / M as f64;
+        let e = f.x * a.cos() + f.y * a.sin();
+        // q = origin + (rad0 + z k) e + z u; |q - c|^2 = R^2 is a quadratic in z.
+        let (we, qa) = (w.dot(e), 1.0 + k * k);
+        let (qb, qc) = (2.0 * (rad0 * k - t - k * we), rad0 * rad0 - 2.0 * rad0 * we + w.dot(w) - r * r);
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc < 0.0 {
+            continue;
+        }
+        for sg in [-1.0, 1.0] {
+            let z = (-qb + sg * disc.sqrt()) / (2.0 * qa);
+            let rho = rad0 + z * k;
+            if rho < 0.0 {
+                continue;
+            }
+            let q = f.origin + e * rho + f.z * z;
+            let d = q - c;
+            let n = d.norm();
+            if n > 0.0 {
+                out.push(d * (1.0 / n));
+            }
+        }
+    }
+}
+
+/// `Some(true)` if the sphere cannot touch `v` and `v` lies outside it, `Some(false)` if `v`
+/// lies inside it, by the box of `v` (so the arrangement and a surface are not needed).
+fn sphere_clear_of<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) -> Option<bool> {
+    let mut b = sm_core::Aabb::empty();
+    for &f in view.volume_faces(v) {
+        let fb = geo::face_aabb(view, f, 0.0);
+        if fb.is_empty() {
+            return None;
+        }
+        b.extend(fb.lo);
+        b.extend(fb.hi);
+    }
+    if b.is_empty() {
+        return None;
+    }
+    let c = s.frame.origin;
+    let (lo, hi) = ([b.lo.x, b.lo.y, b.lo.z], [b.hi.x, b.hi.y, b.hi.z]);
+    let p = [c.x, c.y, c.z];
+    let (mut near2, mut far2) = (0.0f64, 0.0f64);
+    for k in 0..3 {
+        let d = (lo[k] - p[k]).max(p[k] - hi[k]).max(0.0);
+        near2 += d * d;
+        let f = (p[k] - lo[k]).abs().max((hi[k] - p[k]).abs());
+        far2 += f * f;
+    }
+    let slack = 1e-6 * s.radius.max(1.0);
+    if near2.sqrt() > s.radius + slack {
+        Some(true)
+    } else if far2.sqrt() < s.radius - slack {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The error for a split that left no inside piece, outside piece or cap. Fragments that lie on
+/// the tool surface mean the tool coincides with part of the boundary (`Unsupported`); with none
+/// the classification or the arrangement failed (`ResultInvalid`).
+fn degenerate_split(v: EntityId, class_a: &[(EntityId, crate::boolean::Class, Point3, Vector3)], class_b: &[(EntityId, crate::boolean::Class, Point3, Vector3)]) -> BooleanError {
+    use crate::boolean::Class;
+    let on = |c: &[(EntityId, Class, Point3, Vector3)]| c.iter().any(|x| matches!(x.1, Class::OnSame | Class::OnOpposite));
+    if on(class_a) || on(class_b) {
+        BooleanError::Unsupported("the tool surface coincides with the boundary of the volume")
+    } else {
+        BooleanError::ResultInvalid { volume: v, rule: "webcut" }
+    }
+}
+
 /// What [`split_closed`] did to one volume.
 enum Closed {
     /// The tool does not cross the volume; it lies on the positive side (`true`) or the negative.
@@ -465,6 +594,10 @@ fn split_closed<E: TopologyEdit + ?Sized>(topo: &mut E, v: EntityId, def: &Surfa
     // (see `sphere_frame`), under a handle of its own.
     let (def, handle) = match def {
         SurfaceDef::Sphere(s) => {
+            // A target the sphere cannot touch adds no surface.
+            if let Some(positive) = sphere_clear_of(&*topo, v, s) {
+                return Ok(Closed::Untouched(positive));
+            }
             let f = sphere_frame(&*topo, v, s);
             let d = SurfaceDef::Sphere(Sphere::new(f, s.radius)?);
             let h = topo.shapes_mut()?.add_surface(d.clone())?;
@@ -517,7 +650,7 @@ fn split_closed<E: TopologyEdit + ?Sized>(topo: &mut E, v: EntityId, def: &Surfa
         }
     }
     if inside.is_empty() || outside.is_empty() || caps.is_empty() {
-        return Err(BooleanError::Unsupported("the tool surface coincides with the boundary of the volume"));
+        return Err(degenerate_split(v, &im.class_a, &im.class_b));
     }
     let kept: BTreeSet<EntityId> = inside.iter().chain(&outside).map(|k| k.0).collect();
     // Take the operands apart.
@@ -952,4 +1085,24 @@ fn unmerge_cap<E: TopologyEdit + ?Sized>(topo: &mut E, cap: EntityId, right_volu
         }
     }
     Ok(new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boolean::Class;
+
+    /// The degenerate split reports a coincident tool only when a fragment lies on the tool.
+    #[test]
+    fn degenerate_split_names_the_real_cause() {
+        let v = EntityId::new(sm_core::EntityKind::TopoVolume, 7).unwrap();
+        let (p, n) = (Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let row = |c| (v, c, p, n);
+        let plain = [row(Class::In), row(Class::Out)];
+        assert_eq!(degenerate_split(v, &plain, &plain), BooleanError::ResultInvalid { volume: v, rule: "webcut" });
+        for c in [Class::OnSame, Class::OnOpposite] {
+            assert!(matches!(degenerate_split(v, &[row(c)], &plain), BooleanError::Unsupported(m) if m.contains("coincides")));
+            assert!(matches!(degenerate_split(v, &plain, &[row(c)]), BooleanError::Unsupported(m) if m.contains("coincides")));
+        }
+    }
 }

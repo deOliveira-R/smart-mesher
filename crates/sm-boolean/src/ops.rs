@@ -410,7 +410,12 @@ impl TypedOp for Regularize {
         }
         resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         guard_volumes(ctx, &self.volumes)?;
-        let (rep, txn) = topo_txn(ctx, |topo, _model| crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from))?;
+        let ((rep, live), txn) = topo_txn(ctx, |topo, _model| {
+            let rep = crate::regularize::regularize_volumes(topo, &self.volumes).map_err(OpError::from)?;
+            // A refused cell can die later in the same pass (a neighbouring join absorbs it).
+            let live: BTreeSet<EntityId> = rep.refused.iter().flat_map(|r| [r.a, r.b]).filter(|&c| topo.is_alive(c)).collect();
+            Ok((rep, live))
+        })?;
         // A later join in the same pass can retire an earlier keep (5+7 -> 5, then 3+5 -> 3).
         let alive = |l: &[crate::regularize::JoinedPair]| -> Vec<EntityId> {
             let dropped: BTreeSet<EntityId> = l.iter().map(|p| p.drop).collect();
@@ -418,9 +423,9 @@ impl TypedOp for Regularize {
             s.into_iter().collect()
         };
         let (f, e) = (alive(&rep.joined_faces), alive(&rep.joined_edges));
-        // Cells of refused pairs that are still alive and were not absorbed by a later join.
+        // Cells of refused pairs that are still alive (`live`) and were not absorbed by a later join.
         let gone: BTreeSet<EntityId> = rep.joined_faces.iter().chain(&rep.joined_edges).map(|p| p.drop).collect();
-        let refused: Vec<EntityId> = rep.refused.iter().flat_map(|r| [r.a, r.b]).filter(|c| !gone.contains(c)).collect::<BTreeSet<_>>().into_iter().collect();
+        let refused: Vec<EntityId> = live.into_iter().filter(|c| !gone.contains(c)).collect();
         commit_topology(ctx, &txn, &[("faces", &f), ("edges", &e), ("refused", &refused)])
     }
 }
