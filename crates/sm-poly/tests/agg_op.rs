@@ -500,7 +500,6 @@ fn barycentric_dual_with_an_edge_table_and_two_volumes() {
     let s0 = session_with("bary2");
     let fine = mesh_of(&s0, m1());
     assert!(fine.as_read().edges().is_some(), "the source carries an edge table");
-    let nf = fine.as_read().cell_count();
     // One coarse cell per volume. The union of the barycentric dual cells of a 2 x 2 x 2 box is
     // the box itself, so it passes the convex gate with the default `convex: true`, and with
     // `convex: false` the result is the same (the gate only matters for non-convex unions).
@@ -516,10 +515,10 @@ fn barycentric_dual_with_an_edge_table_and_two_volumes() {
     r.expect("two star-shaped volumes");
     let c = mesh_of(&s, m2());
     assert_eq!(c.as_read().cell_count(), 2);
-    for i in 0..2 {
+    for (i, g) in gated.iter().enumerate() {
         let v = cell_volume(c.as_read(), CellIx::new(i));
         assert!(rel(v, 8.0) < 1e-12);
-        assert!(rel(gated[i], v) < 1e-12, "the lifted gate builds the same cells");
+        assert!(rel(*g, v) < 1e-12, "the lifted gate builds the same cells");
     }
     assert!(c.as_read().edges().is_some(), "the edge table is carried");
     check_link(&s, m1(), m2());

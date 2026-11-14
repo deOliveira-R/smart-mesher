@@ -153,17 +153,18 @@ impl TypedOp for Refine {
                     &[new],
                 );
             }
-            if let (Some(a), Some(b)) = (sj0, sj1) {
-                if a > 0.0 && b < QUALITY_DROP_FACTOR * a {
-                    ctx.warn(
-                        "refine.quality",
-                        format!(
-                            "level {level}: the minimum scaled Jacobian fell from {a:.4} to {b:.4} (below {QUALITY_DROP_FACTOR} of the parent's); \
-                             cells hugging a curved boundary flatten as the boundary polygon refines, and smoothing cannot repair that"
-                        ),
-                        &[new],
-                    );
-                }
+            if let (Some(a), Some(b)) = (sj0, sj1)
+                && a > 0.0
+                && b < QUALITY_DROP_FACTOR * a
+            {
+                ctx.warn(
+                    "refine.quality",
+                    format!(
+                        "level {level}: the minimum scaled Jacobian fell from {a:.4} to {b:.4} (below {QUALITY_DROP_FACTOR} of the parent's); \
+                         cells hugging a curved boundary flatten as the boundary polygon refines, and smoothing cannot repair that"
+                    ),
+                    &[new],
+                );
             }
             for (code, msg) in r.notes {
                 ctx.warn(code, msg, &[source]);
