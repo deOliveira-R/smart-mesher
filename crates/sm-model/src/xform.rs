@@ -286,7 +286,7 @@ pub(crate) fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Select
     if entities.is_empty() {
         return Err(XformError::EmptySelection.into());
     }
-    let topo = ctx.layer::<ModelLayer>()?.topo();
+    let topo = ctx.layer::<ModelLayer>()?.host();
     let mut seeds: BTreeSet<EntityId> = BTreeSet::new();
     for &e in entities {
         ctx.require(e)?;

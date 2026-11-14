@@ -108,6 +108,17 @@ fn link_stores_queries_and_restricts_analytically() {
 }
 
 #[test]
+fn a_cloned_layer_shares_its_level_maps() {
+    let mut l = layer_with_blocks();
+    let map = map_of(&l);
+    l.link(map).expect("link");
+    let copy = l.clone();
+    let (a, b) = (l.maps_from(fine_id()), copy.maps_from(fine_id()));
+    assert!(std::ptr::eq(a[0].1, b[0].1), "clone must not deep-copy the map");
+    assert_eq!(content(&l), content(&copy));
+}
+
+#[test]
 fn link_refusals_and_unsupported_entries() {
     let mut l = layer_with_blocks();
     let map = map_of(&l);

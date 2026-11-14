@@ -323,7 +323,7 @@ impl TypedOp for SubdividePin {
         let mut plan: Vec<(EntityId, Vec<f64>)> = Vec::new();
         {
             let layer = ctx.layer::<ModelLayer>()?;
-            let topo = layer.topo();
+            let topo = layer.host();
             let tol = layer.tolerance().linear.max(1e-9);
             for &v in &vols {
                 if let Some(t) = layer.model().region_tag(v)

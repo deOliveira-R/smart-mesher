@@ -40,7 +40,7 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
 /// Refuse operands that have a mesh, are decomposed or are instanced.
 pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
-    let topo = model_layer.topo();
+    let topo = model_layer.host();
     let model = model_layer.model();
     let decomposed = model.decomposition().decomposed_volumes();
     let mesh = ctx.state().layer::<MeshLayer>();
@@ -63,7 +63,7 @@ pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<
 }
 
 fn volumes_of_bodies(ctx: &ApplyCtx<'_>, bodies: &[EntityId]) -> Result<Vec<EntityId>, OpError> {
-    let topo = ctx.layer::<ModelLayer>()?.topo();
+    let topo = ctx.layer::<ModelLayer>()?.host();
     crate::bodies::volumes_of(topo, bodies).map_err(OpError::from)
 }
 
@@ -328,7 +328,7 @@ impl TypedOp for Merge {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let layer = ctx.layer::<ModelLayer>()?;
-        let scope = check_scope(layer.topo(), &self.entities)?;
+        let scope = check_scope(layer.host(), &self.entities)?;
         let skip = interface_faces(layer.model());
         let opts = MergeOptions { tol: self.tol, kinds: kinds_of(&self.kinds) };
         let max = layer.tolerance().linear_max;
@@ -371,9 +371,9 @@ impl TypedQuery for MergeCheck {
 
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<MergeReport, OpError> {
         let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer("model".to_owned()))?;
-        let scope = check_scope(layer.topo(), &self.entities)?;
+        let scope = check_scope(layer.host(), &self.entities)?;
         let skip = interface_faces(layer.model());
-        let rep = merge_check(layer.topo(), &scope, &skip, &MergeOptions { tol: self.tol, kinds: MergeKinds::default() });
+        let rep = merge_check(layer.host(), &scope, &skip, &MergeOptions { tol: self.tol, kinds: MergeKinds::default() });
         if let Some(e) = &rep.error {
             return Err(OpError::Invalid(e.clone()));
         }
@@ -607,7 +607,7 @@ impl TypedOp for WebcutPlane {
     const OUTPUTS: &'static [OutputRole] = WEBCUT_OUTPUTS;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let topo = ctx.layer::<ModelLayer>()?.topo();
+        let topo = ctx.layer::<ModelLayer>()?.host();
         let (origin, normal) = match &self.plane {
             PlaneSpec::Axis(a) => {
                 if !a.offset.is_finite() {
@@ -667,7 +667,7 @@ impl TypedOp for WebcutSurface {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         ctx.resolve_kind(self.face, EntityKind::TopoFace)?;
         let layer = ctx.layer::<ModelLayer>()?;
-        let topo = layer.topo();
+        let topo = layer.host();
         let tol = layer.tolerance().linear;
         let plane = topo.face_plane(self.face, tol.max(1e-9)).map_err(|e| OpError::Failed(e.to_string()))?;
         let Some((n, d)) = plane else {

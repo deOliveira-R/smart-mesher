@@ -108,6 +108,135 @@ pub struct PlaneCut {
     pub loop_vertices: Vec<EntityId>,
 }
 
+/// What [`Overlay::collapse_edge`] did.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Collapsed {
+    /// The end vertex that disappeared (the other end, `into_vertex`, survives).
+    pub dropped_vertex: EntityId,
+    /// The collapse gap (see [`Overlay::collapse_edge`]).
+    pub gap: f64,
+    /// `(edge, virtual copy)` for each other edge that ended at the dropped vertex, ascending.
+    pub repointed: Vec<(EntityId, EntityId)>,
+}
+
+struct CollapsePlan {
+    dropped: EntityId,
+    originals: Vec<EntityId>,
+}
+
+/// Oriented parameter ends `(start, end)` of an edge's curve range.
+fn curve_ends(cc: &CurveCarrier) -> (f64, f64) {
+    if cc.sense == Sense::Forward { (cc.range.lo, cc.range.hi) } else { (cc.range.hi, cc.range.lo) }
+}
+
+#[derive(Clone)]
+struct Piece<'a> {
+    curve: &'a dyn ParametricCurve,
+    t0: f64,
+    t1: f64,
+    off: [Vector3; 2],
+}
+
+/// Samples the curve of an overlay edge by the normalized position `s` in `[0, 1]` along the
+/// edge (start vertex to end vertex). A plain edge samples its curve linearly in its parameter.
+/// An edge re-pointed by a collapse adds the offset between its vertices and the raw curve ends,
+/// blended linearly in `s`, so `eval(0)` and `eval(1)` land on the edge's vertices. A composite
+/// edge splits `[0, 1]` over its members (in chain order) in proportion to each member's arc
+/// length (each member linear in its own parameter within its share), so `s` is a length
+/// fraction between members whatever their parametrization (circle angles, NURBS knots). If any
+/// member's length is not finite or the length query fails, the members share `s` evenly.
+#[derive(Clone)]
+pub struct EdgeSampler<'a> {
+    pieces: Vec<Piece<'a>>,
+    /// Cumulative end of each piece's share of `s`, normalized so the last is exactly 1.
+    cum: Vec<f64>,
+    /// Tolerance handed to the curves' arc-length queries.
+    tol: f64,
+}
+
+impl std::fmt::Debug for EdgeSampler<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeSampler").field("pieces", &self.pieces.len()).finish()
+    }
+}
+
+impl<'a> EdgeSampler<'a> {
+    /// Build from pieces and their arc lengths (empty `lens` or any missing, non-finite or
+    /// negative length gives an even split).
+    fn new(pieces: Vec<Piece<'a>>, lens: &[Option<f64>], tol: f64) -> Self {
+        let k = pieces.len();
+        let w: Option<Vec<f64>> = if lens.len() == k {
+            lens.iter().map(|l| l.filter(|x| x.is_finite() && *x >= 0.0)).collect()
+        } else {
+            None
+        };
+        let total = w.as_ref().map_or(0.0, |w| w.iter().sum());
+        let mut cum: Vec<f64> = match w {
+            Some(w) if total > 0.0 && total.is_finite() => {
+                let mut acc = 0.0;
+                w.iter().map(|x| { acc += x / total; acc }).collect()
+            }
+            _ => (1..=k).map(|i| i as f64 / k as f64).collect(),
+        };
+        if let Some(l) = cum.last_mut() {
+            *l = 1.0;
+        }
+        EdgeSampler { pieces, cum, tol }
+    }
+
+    /// Sampler of one plain curve piece: parameter `t0` to `t1` with end `offsets` blended in.
+    pub(crate) fn single(curve: &'a dyn ParametricCurve, t0: f64, t1: f64, off: [Vector3; 2], tol: f64) -> Self {
+        EdgeSampler { pieces: vec![Piece { curve, t0, t1, off }], cum: vec![1.0], tol }
+    }
+
+    /// Piece index, its share of `s` (`lo`, width) and the local parameter `u` for `s`.
+    fn locate(&self, s: f64) -> (usize, f64, f64) {
+        let s = s.clamp(0.0, 1.0);
+        let k = self.pieces.len();
+        let i = if s >= 1.0 { k - 1 } else { self.cum.iter().position(|&c| s < c).unwrap_or(k - 1) };
+        let lo = if i == 0 { 0.0 } else { self.cum[i - 1] };
+        let w = self.cum[i] - lo;
+        let u = if s >= 1.0 { 1.0 } else { ((s - lo) / w).clamp(0.0, 1.0) };
+        (i, w, u)
+    }
+
+    /// Arc length of the edge: the sum of the member arc lengths (for a plain edge, the length
+    /// of its curve over the edge range). A collapse offset is not counted (it is at most the
+    /// recorded gap). If a curve's length query fails, that piece is measured by a 64-segment
+    /// polyline of the raw curve.
+    pub fn length(&self) -> f64 {
+        self.pieces
+            .iter()
+            .map(|p| {
+                let r = Interval::new(p.t0.min(p.t1), p.t0.max(p.t1));
+                p.curve.length(r, self.tol).ok().filter(|l| l.is_finite()).unwrap_or_else(|| {
+                    let pt = |i: usize| p.curve.eval(p.t0 + (p.t1 - p.t0) * i as f64 / 64.0);
+                    (0..64).map(|i| (pt(i + 1) - pt(i)).norm()).sum()
+                })
+            })
+            .sum()
+    }
+
+    /// The derivative `d eval / d s` at `s` (clamped to `[0, 1]`): the member's curve tangent
+    /// scaled by its parameter span and divided by its share of `s`, plus the blended end offset
+    /// term `(off[1] - off[0])` over the share. At a member joint it is the derivative of the
+    /// member that `eval` selects (the later one, the last at `s = 1`), so it may jump there.
+    pub fn tangent(&self, s: f64) -> Vector3 {
+        let (i, w, u) = self.locate(s);
+        let p = &self.pieces[i];
+        (p.curve.d1(p.t0 + u * (p.t1 - p.t0)) * (p.t1 - p.t0) + (p.off[1] - p.off[0])) * (1.0 / w)
+    }
+
+    /// The point at normalized position `s` (clamped to `[0, 1]`).
+    pub fn eval(&self, s: f64) -> Point3 {
+        let (i, _, u) = self.locate(s);
+        let p = &self.pieces[i];
+        let base = p.curve.eval(p.t0 + u * (p.t1 - p.t0));
+        base + p.off[0] * (1.0 - u) + p.off[1] * u
+    }
+}
+
 /// One recorded virtual operation, with the ids it allocated, so replay reproduces them.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -154,6 +283,30 @@ pub enum VirtualOp {
         /// face's left.
         children: [EntityId; 2],
     },
+    /// A virtual curve over a chain of host edges joined at degree-2 vertices (the inner
+    /// vertices are hidden in the view).
+    CompositeEdges {
+        /// The chained host edges, ascending.
+        edges: Vec<EntityId>,
+        /// The virtual edge, running from the lower-id end vertex of the chain to the other.
+        id: EntityId,
+    },
+    /// A virtual edge collapse: the short edge disappears from the view and its two end vertices
+    /// become one (`into_vertex` survives, the other end is hidden). No host entity moves.
+    CollapseEdge {
+        /// The collapsed edge (host or virtual).
+        edge: EntityId,
+        /// The surviving end vertex of `edge`.
+        into_vertex: EntityId,
+        /// The collapse gap recorded when the op was made: the largest distance a curve end
+        /// moved (at least the distance between the two end vertices). Replay recomputes it and
+        /// refuses a mismatch; [`Overlay::rebase`] refreshes it.
+        gap: f64,
+        /// `(original, copy)` pairs: the other edges that ended at the dropped vertex and the
+        /// virtual stand-ins (ids minted by the overlay) that replace them, ascending by
+        /// original. The originals are inputs of the op (see [`Overlay::remove`]).
+        repointed: Vec<(EntityId, EntityId)>,
+    },
 }
 
 impl VirtualOp {
@@ -167,6 +320,8 @@ impl VirtualOp {
             VirtualOp::PartitionEdge { vertex, halves, .. } => SmallVec::from_slice(&[*vertex, halves[0], halves[1]]),
             VirtualOp::PartitionFace { chord, halves, .. } => SmallVec::from_slice(&[*chord, halves[0], halves[1]]),
             VirtualOp::PartitionVolume { face, children, .. } => SmallVec::from_slice(&[*face, children[0], children[1]]),
+            VirtualOp::CompositeEdges { id, .. } => SmallVec::from_slice(&[*id]),
+            VirtualOp::CollapseEdge { repointed, .. } => repointed.iter().map(|&(_, new)| new).collect(),
         }
     }
 
@@ -176,8 +331,87 @@ impl VirtualOp {
             VirtualOp::PartitionEdge { edge, .. } => SmallVec::from_slice(&[*edge]),
             VirtualOp::PartitionFace { face, cut, .. } => SmallVec::from_slice(&[*face, cut.from, cut.to]),
             VirtualOp::PartitionVolume { volume, cut, .. } => std::iter::once(*volume).chain(cut.edges.iter().copied()).chain(std::iter::once(cut.seed)).collect(),
+            VirtualOp::CompositeEdges { edges, .. } => edges.iter().copied().collect(),
+            VirtualOp::CollapseEdge { edge, into_vertex, repointed, .. } => {
+                [*edge, *into_vertex].into_iter().chain(repointed.iter().map(|&(orig, _)| orig)).collect()
+            }
         }
     }
+
+    /// Append the canonical bytes of this op (exhaustive: a new variant fails to compile here).
+    fn write_canonical(&self, out: &mut Vec<u8>, tol: &ModelTolerance) {
+        let id = |out: &mut Vec<u8>, e: &EntityId| out.extend_from_slice(&e.to_raw().to_le_bytes());
+        let ids = |out: &mut Vec<u8>, v: &[EntityId]| {
+            out.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            v.iter().for_each(|e| out.extend_from_slice(&e.to_raw().to_le_bytes()));
+        };
+        match self {
+            VirtualOp::Composite { faces, id: vf } => {
+                put_u64(out, 1);
+                ids(out, faces);
+                id(out, vf);
+            }
+            VirtualOp::PartitionEdge { edge, param, vertex, halves } => {
+                put_u64(out, 2);
+                id(out, edge);
+                put_i64(out, tol.quantize_param(*param));
+                id(out, vertex);
+                ids(out, halves);
+            }
+            VirtualOp::PartitionFace { face, cut, chord, halves } => {
+                put_u64(out, 3);
+                id(out, face);
+                id(out, &cut.from);
+                id(out, &cut.to);
+                put_codes(out, |f| cut.curve.quantized_values(tol, f));
+                put_i64(out, tol.quantize_param(cut.range.lo));
+                put_i64(out, tol.quantize_param(cut.range.hi));
+                id(out, chord);
+                ids(out, halves);
+            }
+            VirtualOp::PartitionVolume { volume, cut, face, children } => {
+                put_u64(out, 4);
+                id(out, volume);
+                ids(out, &cut.edges);
+                put_codes(out, |f| cut.surface.quantized_values(tol, f));
+                id(out, &cut.seed);
+                id(out, face);
+                ids(out, children);
+            }
+            VirtualOp::CompositeEdges { edges, id: ve } => {
+                put_u64(out, 5);
+                ids(out, edges);
+                id(out, ve);
+            }
+            VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed } => {
+                put_u64(out, 6);
+                id(out, edge);
+                id(out, into_vertex);
+                put_i64(out, tol.quantize(*gap));
+                out.extend_from_slice(&(repointed.len() as u64).to_le_bytes());
+                for (orig, new) in repointed {
+                    id(out, orig);
+                    id(out, new);
+                }
+            }
+        }
+    }
+}
+
+fn put_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_i64(out: &mut Vec<u8>, v: i64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// A definition's quantized codes (`quantized_values`), prefixed by their count.
+fn put_codes(out: &mut Vec<u8>, visit: impl Fn(&mut dyn FnMut(i64))) {
+    let mut codes = Vec::new();
+    visit(&mut |c| codes.push(c));
+    put_u64(out, codes.len() as u64);
+    codes.into_iter().for_each(|c| put_i64(out, c));
 }
 
 /// The persisted form of an overlay: the host revision, the operation history and the id
@@ -198,6 +432,30 @@ impl OverlayData {
     /// Persisted overlay data from its parts.
     pub fn new(host_revision: OpId, ops: Vec<VirtualOp>, next_serial: [u64; 3]) -> Self {
         Self { host_revision, ops, next_serial }
+    }
+
+    /// Append the canonical byte form of this record to `out`. **This is the one digest of an
+    /// overlay that a state layer (ACR-V1, `sm-layer-api`) must use**: it matches every
+    /// [`VirtualOp`] variant exhaustively inside this crate, so a variant added later cannot be
+    /// skipped silently by a downstream wildcard arm.
+    ///
+    /// Covered, in order: the host revision, the number of ops, each op (a variant tag, then
+    /// every field in declaration order; ids by their raw value, id lists and `(original, copy)`
+    /// pairs with their count), and the three `next_serial` counters. Floats are quantized the
+    /// way the geometry digests do it, with `tol` ([`ModelTolerance`]): edge parameters and cut
+    /// ranges by `quantize_param`, cut curve and surface definitions by `CurveDef` /
+    /// `SurfaceDef::quantized_values` (scale-free per class), the collapse gap by `quantize`
+    /// (length). Equal overlays give equal bytes on every platform. `tol` itself is not
+    /// written; fold it into the digest separately if it can vary.
+    pub fn write_canonical(&self, out: &mut Vec<u8>, tol: &ModelTolerance) {
+        put_u64(out, self.host_revision.0);
+        put_u64(out, self.ops.len() as u64);
+        for op in &self.ops {
+            op.write_canonical(out, tol);
+        }
+        for n in self.next_serial {
+            put_u64(out, n);
+        }
     }
 }
 
@@ -302,6 +560,10 @@ struct Layer {
     cover: BTreeMap<EntityId, SmallVec<[EntityId; 2]>>,
     live: [Vec<EntityId>; 5],
     shapes: Layered,
+    /// Cell -> view tolerance raised by a collapse (already `max(own, gap)`).
+    tol: BTreeMap<EntityId, f64>,
+    /// Virtual edge copy -> offset of the vertex point from the raw curve end, `[start, end]`.
+    offsets: BTreeMap<EntityId, [Vector3; 2]>,
 }
 
 /// A virtual topology layer over an immutable host snapshot. See the module docs.
@@ -386,6 +648,7 @@ impl Overlay {
         let mut fresh = Self::new(host);
         fresh.next_serial = self.next_serial;
         for op in self.ops.clone() {
+            let op = fresh.refreshed(op)?;
             fresh.apply(&op)?;
             fresh.ops.push(op);
         }
@@ -808,11 +1071,422 @@ impl Overlay {
         Ok(PlaneCut { face, children, split_edges, split_faces, loop_edges, loop_vertices })
     }
 
+    /// Chain `edges` (live host edges, at least two) into one virtual edge. The chain must be
+    /// one open path: connected, without branches, and every inner vertex must have degree 2
+    /// in the view (exactly the two chain edges) and no embedded parent. The inner vertices
+    /// and the member edges are hidden; every face using the chain gets one coedge of the
+    /// virtual edge in place of the run of member coedges (the run must be contiguous and all
+    /// faces must use the whole chain). The virtual edge runs from the lower-id end vertex to
+    /// the other; its carrier is `Carrier::Composite(members in chain order)`, sampled by
+    /// [`Overlay::edge_sampler`].
+    ///
+    /// This and [`Overlay::collapse_edge`] are exclusive at a dropped vertex, in both orders: a
+    /// collapse refuses a dropped vertex next to a composite edge, and a composite refuses a
+    /// chain containing a collapse copy.
+    ///
+    /// Rejected: fewer than two edges, edges that are not live host edges (a collapse copy is
+    /// virtual, so it is refused as `WrongDim` or `Dead`), a closed chain or
+    /// closed member edge, a disconnected set, a vertex where three or more members meet, an
+    /// inner vertex of degree other than 2, and chain edges whose parents differ or use them
+    /// inconsistently (a seam, a gap in the run).
+    pub fn composite_edges(&mut self, edges: &[EntityId]) -> Result<EntityId, TopoError> {
+        let mut members: Vec<EntityId> = edges.to_vec();
+        members.sort();
+        members.dedup();
+        let id = self.peek(Dim::Edge, 0)?;
+        let done = self.atomic(VirtualOp::CompositeEdges { edges: members, id }, [0, 1, 0])?;
+        self.ops.push(done);
+        self.rebuild_live();
+        Ok(id)
+    }
+
+    /// Collapse `edge` virtually: it disappears from the view and its end vertices become one,
+    /// `into_vertex` (which must be an end of `edge`). Every other edge that ended at the dropped
+    /// vertex is replaced by a virtual copy (same curve, new id, ends re-pointed); the faces
+    /// using them are rewritten in the layer. Moves no host entity and is undone by
+    /// [`Overlay::remove`] (name the collapsed edge or any copy).
+    ///
+    /// The **gap** is the largest distance a curve end moves (at least the distance between the
+    /// two end vertices). The view reports the tolerance of the surviving vertex, of the copies
+    /// and of every face whose loop changed as `max(own, gap)` (never above `linear_max`). A gap
+    /// above `linear_max` is refused with [`TopoError::ToleranceTooLarge`]. The copies' samplers
+    /// ([`Overlay::edge_sampler`]) blend the end offset linearly so sampled ends land on
+    /// `into_vertex`. Copies have no pcurves.
+    ///
+    /// This and [`Overlay::composite_edges`] are exclusive at a dropped vertex, in both orders: a
+    /// composite refuses a chain containing a collapse copy, and a collapse refuses a dropped
+    /// vertex next to a composite edge.
+    ///
+    /// Rejected: a closed edge, `into_vertex` not an end, a dropped vertex next to a composite
+    /// edge (`Unsupported("collapse next to a composite edge")`), a dropped vertex with a non-edge parent,
+    /// another edge joining the same two vertices, an edge used twice by one face, a face loop that
+    /// would become empty (composite or remove such a sliver face first), vertices without a point,
+    /// and a gap that is not finite.
+    pub fn collapse_edge(&mut self, edge: EntityId, into_vertex: EntityId) -> Result<Collapsed, TopoError> {
+        let plan = self.collapse_plan(edge, into_vertex)?;
+        let gap = self.collapse_gap(&plan, into_vertex)?;
+        self.check_gap(gap)?;
+        let n = plan.originals.len();
+        let mut repointed: Vec<(EntityId, EntityId)> = Vec::with_capacity(n);
+        for (i, &orig) in plan.originals.iter().enumerate() {
+            repointed.push((orig, self.peek(Dim::Edge, i as u64)?));
+        }
+        let op = VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed: repointed.clone() };
+        let done = self.atomic(op, [0, n as u64, 0])?;
+        self.ops.push(done);
+        self.rebuild_live();
+        Ok(Collapsed { dropped_vertex: plan.dropped, gap, repointed })
+    }
+
+    /// A sampler for the curve of live edge `edge`: `None` for a dead edge or one without a
+    /// curve (degenerate). See [`EdgeSampler`]. Same as [`TopologyView::edge_sampler`], which
+    /// reaches it through `&dyn TopologyView`.
+    pub fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
+        if self.dim_of(edge) != Some(Dim::Edge) || !self.is_live(edge) {
+            return None;
+        }
+        let mut pieces = Vec::new();
+        let mut lens: Vec<Option<f64>> = Vec::new();
+        let lin = self.host.tolerance().linear;
+        match self.carrier_of(edge) {
+            Carrier::Curve(cc) => {
+                let (t0, t1) = curve_ends(cc);
+                pieces.push(Piece { curve: self.layer.shapes.curve(cc.curve)?, t0, t1, off: self.layer.offsets.get(&edge).copied().unwrap_or_default() });
+            }
+            Carrier::Composite(members) => {
+                let (mut cur, _) = self.edge_ends_of(edge)?;
+                for &m in members {
+                    let (s, t) = match self.host.boundary(m) {
+                        [only] if only.side == Side::Both => (only.cell, only.cell),
+                        [a, b] => (a.cell, b.cell),
+                        _ => return None,
+                    };
+                    let Carrier::Curve(cc) = self.host.carrier(m) else { return None };
+                    let (t0, t1) = curve_ends(cc);
+                    let curve = self.layer.shapes.curve(cc.curve)?;
+                    let tol = self.host.tolerance_override(m).unwrap_or(lin).max(lin);
+                    let len = curve.length(Interval::new(t0.min(t1), t0.max(t1)), tol).ok();
+                    lens.push(len);
+                    let (t0, t1) = if s == cur { (t0, t1) } else { (t1, t0) };
+                    pieces.push(Piece { curve, t0, t1, off: [Vector3::default(); 2] });
+                    cur = if s == cur { t } else { s };
+                }
+            }
+            _ => return None,
+        }
+        Some(EdgeSampler::new(pieces, &lens, lin))
+    }
+
+    fn check_gap(&self, gap: f64) -> Result<(), TopoError> {
+        let max = self.host.tolerance().linear_max;
+        if !gap.is_finite() {
+            return Err(TopoError::InvalidParameter("collapse gap is not finite"));
+        }
+        if gap > max {
+            return Err(TopoError::ToleranceTooLarge { wanted: gap, max });
+        }
+        Ok(())
+    }
+
+    /// `op` with a collapse's recorded gap recomputed against the current layer (rebase and
+    /// remove replay on changed geometry); other ops unchanged.
+    fn refreshed(&self, op: VirtualOp) -> Result<VirtualOp, TopoError> {
+        match op {
+            VirtualOp::CollapseEdge { edge, into_vertex, repointed, .. } => {
+                let plan = self.collapse_plan(edge, into_vertex)?;
+                let gap = self.collapse_gap(&plan, into_vertex)?;
+                Ok(VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed })
+            }
+            other => Ok(other),
+        }
+    }
+
+    fn collapse_plan(&self, edge: EntityId, into: EntityId) -> Result<CollapsePlan, TopoError> {
+        if self.dim_of(edge) != Some(Dim::Edge) {
+            return Err(TopoError::WrongDim { id: edge, expected: Dim::Edge });
+        }
+        if !self.is_live(edge) {
+            return Err(TopoError::Dead(edge));
+        }
+        let (a, b) = self.edge_ends_of(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
+        if a == b {
+            return Err(TopoError::Unsupported("collapse of a closed edge"));
+        }
+        let dropped = if into == a {
+            b
+        } else if into == b {
+            a
+        } else {
+            return Err(TopoError::InvalidParameter("into_vertex is not an end of the edge"));
+        };
+        let mut originals: Vec<EntityId> = Vec::new();
+        for inc in self.up_of(dropped) {
+            if inc.cell == edge || originals.contains(&inc.cell) {
+                continue;
+            }
+            if self.dim_of(inc.cell) != Some(Dim::Edge) {
+                return Err(TopoError::Unsupported("collapse of a vertex embedded in a face or volume"));
+            }
+            originals.push(inc.cell);
+        }
+        originals.sort();
+        for &e in &originals {
+            let (s, t) = self.edge_ends_of(e).ok_or(TopoError::WrongDim { id: e, expected: Dim::Edge })?;
+            if matches!(self.carrier_of(e), Carrier::Composite(_)) {
+                return Err(TopoError::Unsupported("collapse next to a composite edge"));
+            }
+            if s == into || t == into {
+                return Err(TopoError::Unsupported("a second edge joins the two vertices of the collapsed edge"));
+            }
+        }
+        self.point_of(into)?;
+        self.point_of(dropped)?;
+        let mut faces: Vec<EntityId> = Vec::new();
+        for inc in self.up_of(edge) {
+            if faces.contains(&inc.cell) {
+                return Err(TopoError::Unsupported("the collapsed edge is used twice by one cell"));
+            }
+            faces.push(inc.cell);
+            if self.dim_of(inc.cell) != Some(Dim::Face) || inc.ring == Incidence::EMBEDDED {
+                return Err(TopoError::Unsupported("the collapsed edge is embedded in a cell"));
+            }
+            if self.down_of(inc.cell).iter().filter(|e| e.ring == inc.ring).count() < 2 {
+                return Err(TopoError::EmptyLoop);
+            }
+        }
+        Ok(CollapsePlan { dropped, originals })
+    }
+
+    /// The oriented raw curve end point of `cc` (`false`: start, `true`: end).
+    fn raw_end(&self, cc: &CurveCarrier, end: bool) -> Result<Point3, TopoError> {
+        let curve = self.layer.shapes.curve(cc.curve).ok_or(TopoError::Geom(GeomError::Invalid("curve not in store")))?;
+        let (t0, t1) = curve_ends(cc);
+        Ok(curve.eval(if end { t1 } else { t0 }))
+    }
+
+    fn collapse_gap(&self, plan: &CollapsePlan, into: EntityId) -> Result<f64, TopoError> {
+        let into_pt = self.point_of(into)?;
+        let mut gap = (into_pt - self.point_of(plan.dropped)?).norm();
+        for &e in &plan.originals {
+            let (s, t) = self.edge_ends_of(e).ok_or(TopoError::WrongDim { id: e, expected: Dim::Edge })?;
+            if let Carrier::Curve(cc) = self.carrier_of(e) {
+                for (v, end) in [(s, false), (t, true)] {
+                    if v == plan.dropped {
+                        gap = gap.max((into_pt - self.raw_end(cc, end)?).norm());
+                    }
+                }
+            }
+        }
+        Ok(gap)
+    }
+
+    /// Replace `old` by `new` in the boundary row of every parent of `old` (same side and ring).
+    fn swap_in_parents(&mut self, old: EntityId, new: EntityId, touched: &mut BTreeSet<EntityId>) {
+        let parents: Vec<Incidence> = self.up_of(old).to_vec();
+        for par in parents {
+            let is_face = self.dim_of(par.cell) == Some(Dim::Face);
+            let mut row: Vec<Incidence> = self.down_of(par.cell).iter().map(|e| if e.cell == old { Incidence { cell: new, ..*e } } else { *e }).collect();
+            if is_face {
+                normalize_row(Dim::Face, &mut row);
+                touched.insert(par.cell);
+            } else {
+                row.sort_by_key(|e| (e.ring, e.cell, e.side));
+            }
+            self.set_down(par.cell, row);
+        }
+    }
+
+    fn apply_collapse(&mut self, edge: EntityId, into: EntityId, recorded_gap: f64, repointed: &[(EntityId, EntityId)]) -> Result<(), TopoError> {
+        let plan = self.collapse_plan(edge, into)?;
+        if plan.originals.len() != repointed.len() || plan.originals.iter().zip(repointed).any(|(o, r)| *o != r.0) {
+            return Err(TopoError::InvalidParameter("collapse replay: the re-pointed edges differ from the recorded ones"));
+        }
+        let gap = self.collapse_gap(&plan, into)?;
+        self.check_gap(gap)?;
+        if (gap - recorded_gap).abs().is_nan() || (gap - recorded_gap).abs() > 1e-12 * (1.0 + gap.abs()) {
+            return Err(TopoError::InvalidParameter("collapse replay: the recorded gap does not match the geometry"));
+        }
+        let dropped = plan.dropped;
+        let into_pt = self.point_of(into)?;
+        let mut touched: BTreeSet<EntityId> = BTreeSet::new();
+        let mut copies: Vec<(EntityId, EntityId, f64)> = Vec::new();
+        for &(orig, new) in repointed {
+            let (s, t) = self.edge_ends_of(orig).ok_or(TopoError::WrongDim { id: orig, expected: Dim::Edge })?;
+            let (s2, t2) = (if s == dropped { into } else { s }, if t == dropped { into } else { t });
+            let down = if s2 == t2 { vec![Incidence::new(s2, Side::Both, 0)] } else { vec![Incidence::new(s2, Side::Left, 0), Incidence::new(t2, Side::Right, 0)] };
+            let carrier = self.carrier_of(orig).clone();
+            let mut offsets = None;
+            if let Carrier::Curve(cc) = &carrier {
+                let pt = |v: EntityId| if v == into { Ok(into_pt) } else { self.point_of(v) };
+                offsets = Some([pt(s2)? - self.raw_end(cc, false)?, pt(t2)? - self.raw_end(cc, true)?]);
+            }
+            let own = self.tolerance_of(orig);
+            self.add_virtual(new, Dim::Edge, down, carrier, vec![orig]);
+            if let Some(o) = offsets {
+                self.layer.offsets.insert(new, o);
+            }
+            self.swap_in_parents(orig, new, &mut touched);
+            copies.push((orig, new, own));
+        }
+        for (orig, new, _) in &copies {
+            self.hide(*orig, &[*new]);
+        }
+        let parents: Vec<Incidence> = self.up_of(edge).to_vec();
+        for par in parents {
+            let row: Vec<Incidence> = self.down_of(par.cell).iter().copied().filter(|e| e.cell != edge).collect();
+            touched.insert(par.cell);
+            self.set_down(par.cell, row);
+        }
+        self.hide(edge, &[into]);
+        self.hide(dropped, &[into]);
+        // Tolerances: the copies, the survivor and the faces whose loops changed.
+        let linear = self.host.tolerance().linear;
+        for (_, new, own) in copies {
+            let v = own.max(gap);
+            if v != linear {
+                self.layer.tol.insert(new, v);
+            }
+        }
+        for c in std::iter::once(into).chain(touched) {
+            if gap > self.tolerance_of(c) {
+                self.layer.tol.insert(c, gap);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_composite_edges(&mut self, members: &[EntityId], id: EntityId) -> Result<(), TopoError> {
+        if members.len() < 2 {
+            return Err(TopoError::InvalidParameter("a composite edge needs at least two edges"));
+        }
+        if members.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(TopoError::InvalidParameter("composite edges must be ascending and distinct"));
+        }
+        let mut ends: Vec<(EntityId, EntityId)> = Vec::with_capacity(members.len());
+        for &e in members {
+            if self.host.dim_of(e) != Some(Dim::Edge) {
+                return Err(TopoError::WrongDim { id: e, expected: Dim::Edge });
+            }
+            if !self.is_live(e) || self.layer.cells.get(&e).is_some_and(|c| c.is_virtual) {
+                return Err(TopoError::Dead(e));
+            }
+            let (a, b) = self.edge_ends_of(e).ok_or(TopoError::WrongDim { id: e, expected: Dim::Edge })?;
+            if a == b {
+                return Err(TopoError::Unsupported("a closed edge cannot join a composite edge"));
+            }
+            ends.push((a, b));
+        }
+        let mut at: BTreeMap<EntityId, Vec<usize>> = BTreeMap::new();
+        for (i, (a, b)) in ends.iter().enumerate() {
+            at.entry(*a).or_default().push(i);
+            at.entry(*b).or_default().push(i);
+        }
+        if at.values().any(|v| v.len() > 2) {
+            return Err(TopoError::Unsupported("the chain branches at a vertex"));
+        }
+        let tips: Vec<EntityId> = at.iter().filter(|(_, v)| v.len() == 1).map(|(k, _)| *k).collect();
+        if tips.is_empty() {
+            return Err(TopoError::Unsupported("a closed chain cannot be a composite edge"));
+        }
+        if tips.len() != 2 {
+            return Err(TopoError::InvalidParameter("edges are not connected into one chain"));
+        }
+        // Walk from the lower tip: (member index, traversed start-to-end).
+        let (va, vb) = (tips[0], tips[1]);
+        let mut chain: Vec<(usize, bool)> = Vec::with_capacity(members.len());
+        let mut cur = va;
+        while let Some(&i) = at[&cur].iter().find(|i| !chain.iter().any(|c| c.0 == **i)) {
+            let fwd = ends[i].0 == cur;
+            chain.push((i, fwd));
+            cur = if fwd { ends[i].1 } else { ends[i].0 };
+        }
+        if chain.len() != members.len() || cur != vb {
+            return Err(TopoError::InvalidParameter("edges are not connected into one chain"));
+        }
+        let inner: Vec<EntityId> = at.iter().filter(|(_, v)| v.len() == 2).map(|(k, _)| *k).collect();
+        for &v in &inner {
+            let mut degree = 0;
+            for inc in self.up_of(v) {
+                if self.dim_of(inc.cell) != Some(Dim::Edge) {
+                    return Err(TopoError::Unsupported("an inner vertex of the chain is embedded in a face or volume"));
+                }
+                degree += if inc.side == Side::Both { 2 } else { 1 };
+            }
+            if degree != 2 {
+                return Err(TopoError::Unsupported("an inner vertex of the chain has degree other than 2"));
+            }
+        }
+        // Parents: the same cells for every member.
+        let parents_of = |o: &Self, e: EntityId| -> Vec<EntityId> {
+            let mut p: Vec<EntityId> = o.up_of(e).iter().map(|u| u.cell).collect();
+            p.sort();
+            p
+        };
+        let mut parents = parents_of(self, members[0]);
+        if members.iter().any(|&e| parents_of(self, e) != parents) {
+            return Err(TopoError::Unsupported("chain edges are used by different cells"));
+        }
+        parents.dedup();
+        let fwd_of: BTreeMap<EntityId, bool> = chain.iter().map(|&(i, f)| (members[i], f)).collect();
+        let mut new_rows: Vec<(EntityId, Vec<Incidence>)> = Vec::new();
+        for &p in &parents {
+            if self.dim_of(p) != Some(Dim::Face) {
+                return Err(TopoError::Unsupported("a chain edge is used by a cell that is not a face"));
+            }
+            let row = self.down_of(p).to_vec();
+            let hits: Vec<usize> = row.iter().enumerate().filter(|(_, e)| fwd_of.contains_key(&e.cell)).map(|(i, _)| i).collect();
+            if hits.len() != members.len() || hits.iter().any(|&i| row[i].ring == Incidence::EMBEDDED) {
+                return Err(TopoError::Unsupported("a face does not use every chain edge exactly once"));
+            }
+            let ring = row[hits[0]].ring;
+            if hits.iter().any(|&i| row[i].ring != ring) {
+                return Err(TopoError::Unsupported("the chain spans several loops of a face"));
+            }
+            let lp: Vec<Incidence> = row.iter().copied().filter(|e| e.ring == ring).collect();
+            let m = lp.len();
+            let is_hit = |e: &Incidence| fwd_of.contains_key(&e.cell);
+            let starts: Vec<usize> = (0..m).filter(|&i| is_hit(&lp[i]) && !is_hit(&lp[(i + m - 1) % m])).collect();
+            if starts.len() != 1 {
+                return Err(TopoError::Unsupported("the chain is not contiguous in a face loop"));
+            }
+            let mut along: Option<bool> = None;
+            for e in lp.iter().filter(|e| is_hit(e)) {
+                let a = (e.side == Side::Left) == fwd_of[&e.cell];
+                if *along.get_or_insert(a) != a {
+                    return Err(TopoError::Unsupported("a face uses the chain inconsistently"));
+                }
+            }
+            let side = if along == Some(true) { Side::Left } else { Side::Right };
+            let mut ring_new = vec![Incidence::new(id, side, ring)];
+            ring_new.extend((members.len()..m).map(|k| lp[(starts[0] + k) % m]));
+            let mut out: Vec<Incidence> = row.iter().copied().filter(|e| e.ring < ring).collect();
+            out.extend(ring_new);
+            out.extend(row.iter().copied().filter(|e| e.ring > ring));
+            normalize_row(Dim::Face, &mut out);
+            new_rows.push((p, out));
+        }
+        // Commit.
+        let order: Vec<EntityId> = chain.iter().map(|&(i, _)| members[i]).collect();
+        let down = vec![Incidence::new(va, Side::Left, 0), Incidence::new(vb, Side::Right, 0)];
+        self.add_virtual(id, Dim::Edge, down, Carrier::Composite(order.iter().copied().collect()), order);
+        for (p, row) in new_rows {
+            self.set_down(p, row);
+        }
+        for &e in members {
+            self.hide(e, &[id]);
+        }
+        for v in inner {
+            self.hide(v, &[id]);
+        }
+        Ok(())
+    }
+
     /// Undo the operation that created virtual cell `virt` (any of the cells it created names
-    /// it), restoring the cells it hid. Fails with `StillReferenced` if a later operation uses
+    /// it; for a collapse also the collapsed edge itself), restoring the cells it hid. Fails with `StillReferenced` if a later operation uses
     /// one of its cells. The id is not reused.
     pub fn remove(&mut self, virt: EntityId) -> Result<(), TopoError> {
-        let Some(idx) = self.ops.iter().position(|o| o.created().contains(&virt)) else { return Err(TopoError::NoSuchCell(virt)) };
+        let found = |o: &VirtualOp| o.created().contains(&virt) || matches!(o, VirtualOp::CollapseEdge { edge, .. } if *edge == virt);
+        let Some(idx) = self.ops.iter().position(found) else { return Err(TopoError::NoSuchCell(virt)) };
         let created = self.ops[idx].created();
         if self.ops[idx + 1..].iter().any(|later| later.inputs().iter().any(|i| created.contains(i))) {
             return Err(TopoError::StillReferenced(virt));
@@ -821,10 +1495,13 @@ impl Overlay {
         ops.remove(idx);
         let mut fresh = Self::new(self.host.clone());
         fresh.next_serial = self.next_serial;
-        for op in &ops {
-            fresh.apply(op)?;
+        let mut kept = Vec::with_capacity(ops.len());
+        for op in ops {
+            let op = fresh.refreshed(op)?;
+            fresh.apply(&op)?;
+            kept.push(op);
         }
-        fresh.ops = ops;
+        fresh.ops = kept;
         fresh.rebuild_live();
         *self = fresh;
         Ok(())
@@ -850,6 +1527,8 @@ impl Overlay {
             VirtualOp::PartitionEdge { edge, param, vertex, halves } => self.apply_partition_edge(*edge, *param, *vertex, *halves),
             VirtualOp::PartitionFace { face, cut, chord, halves } => self.apply_partition_face(*face, cut, *chord, *halves),
             VirtualOp::PartitionVolume { volume, cut, face, children } => self.apply_partition_volume(*volume, cut, *face, *children),
+            VirtualOp::CompositeEdges { edges, id } => self.apply_composite_edges(edges, *id),
+            VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed } => self.apply_collapse(*edge, *into_vertex, *gap, repointed),
         }?;
         self.rebuild_live();
         Ok(())
@@ -975,6 +1654,13 @@ impl Overlay {
             }
         }
         let carrier = Carrier::Composite(members.iter().copied().collect());
+        // A composite inherits the largest tolerance override among its members (a collapse
+        // raises its touched faces above the linear tolerance).
+        let linear = self.host.tolerance().linear;
+        let inherited = members.iter().filter_map(|&f| self.tolerance_override(f)).fold(linear, f64::max);
+        if inherited > linear {
+            self.layer.tol.insert(vf, inherited);
+        }
         self.add_virtual(vf, Dim::Face, down, carrier, members.to_vec());
         for p in parents {
             let mut row = self.down_of(p.cell).to_vec();
@@ -991,6 +1677,9 @@ impl Overlay {
         }
         if !self.is_live(edge) {
             return Err(TopoError::Dead(edge));
+        }
+        if self.layer.offsets.contains_key(&edge) {
+            return Err(TopoError::Unsupported("partition_edge of an edge whose end a collapse moved"));
         }
         let (start, end) = self.edge_ends_of(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
         let Carrier::Curve(cc) = self.carrier_of(edge).clone() else { return Err(TopoError::Unsupported("partition_edge needs a curve carrier")) };
@@ -1238,7 +1927,7 @@ impl Overlay {
 
 impl Layer {
     fn fresh(host: &Arc<dyn TopologyView>) -> Self {
-        Self { cells: BTreeMap::new(), hidden: BTreeSet::new(), covering: BTreeMap::new(), cover: BTreeMap::new(), live: Default::default(), shapes: Layered::new(host.clone()) }
+        Self { cells: BTreeMap::new(), hidden: BTreeSet::new(), covering: BTreeMap::new(), cover: BTreeMap::new(), live: Default::default(), shapes: Layered::new(host.clone()), tol: BTreeMap::new(), offsets: BTreeMap::new() }
     }
 }
 
@@ -1303,6 +1992,14 @@ impl TopologyView for Overlay {
         if self.layer.cells.get(&id).is_some_and(|c| c.is_virtual) { CellFlags::NONE } else { self.host.flags(id) }
     }
 
+    fn edge_end_offsets(&self, edge: EntityId) -> Option<[Vector3; 2]> {
+        self.layer.offsets.get(&edge).copied()
+    }
+
+    fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
+        Overlay::edge_sampler(self, edge)
+    }
+
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve> {
         let virt = |id: EntityId| self.layer.cells.get(&id).is_some_and(|c| c.is_virtual);
         if virt(k.face) || virt(k.edge) { None } else { self.host.pcurve(k) }
@@ -1329,7 +2026,7 @@ impl TopologyView for Overlay {
     }
 
     fn tolerance_override(&self, id: EntityId) -> Option<f64> {
-        self.host.tolerance_override(id)
+        self.layer.tol.get(&id).copied().or_else(|| self.host.tolerance_override(id))
     }
 
     fn coincidences(&self) -> &[FacePair] {

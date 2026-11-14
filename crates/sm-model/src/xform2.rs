@@ -150,7 +150,7 @@ impl TypedOp for MoveTo {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let sel = select(ctx, &self.entities)?;
         let delta = {
-            let topo = ctx.layer::<ModelLayer>()?.topo();
+            let topo = ctx.layer::<ModelLayer>()?.host();
             let anchor = match self.anchor.unwrap_or_default() {
                 Anchor::Centroid => volumes_centroid(topo, &sel.volumes)?,
                 Anchor::BboxCenter => {
@@ -283,7 +283,7 @@ pub(crate) fn resolve_rotation(ctx: &ApplyCtx<'_>, f: &RotationForm) -> Result<c
     if let Some(a) = f.axis {
         return Ok(rotation_xf(a.vector(), f.angle_deg, f.origin)?);
     }
-    let topo = ctx.layer::<ModelLayer>()?.topo();
+    let topo = ctx.layer::<ModelLayer>()?.host();
     let (axis, pivot) = if let Some([a, b]) = f.vertices {
         ctx.require(a)?;
         ctx.require(b)?;
