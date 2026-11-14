@@ -175,7 +175,7 @@ const IMPORTING: &[(&str, usize)] = &[
     ("ref_mini3x3_h2", 590),
     ("ref_assembly17_h2", 590),
     ("ref_mini3x3", 0),
-    ("ref_assembly17", 0),
+    ("ref_assembly17", 590),
 ];
 
 #[test]
@@ -209,34 +209,23 @@ fn membership_at_the_600_oracle_points_equals_openmc() {
 }
 
 /// Without the bounding-box prefilter (`locate_point` against every volume), the 600 oracle
-/// points of `ref_mini3x3_h2` have `CONTESTED` points that two volumes claim: the direction
-/// dependent false `In` of `sm_boolean::locate_point` on the thin annulus (DESIGN.md, "Open
-/// findings"; owner sm-boolean). The prefiltered run of `membership_at_the_600_oracle_points_
-/// equals_openmc` hides it. Pinned by count so a kernel fix shows up here.
-const CONTESTED: usize = 3;
+/// points of `ref_mini3x3_h2` have `CONTESTED` points that two volumes claim. Before W4-BOOL-KFIX
+/// the direction dependent false `In` of `sm_boolean::locate_point` on the thin annulus gave 3;
+/// the kernel fix made it 0.
+const CONTESTED: usize = 0;
 
 #[test]
-fn locate_point_without_the_prefilter_still_has_the_false_in_on_mini3x3_h2() {
-    let t = compare_ex("ref_mini3x3_h2", &fixture("ref_mini3x3_h2", "geometry.xml"), false).unwrap_or_else(|e| panic!("{e}"));
-    eprintln!("ref_mini3x3_h2 unfiltered: {} points, {} contested, {} disagreements: {:?}", t.points, t.contested, t.disagreements.len(), t.disagreements);
-    assert_eq!(t.contested, CONTESTED, "the unfiltered locate_point contest count moved (kernel fix? then set it to 0 and drop the ignore below)");
-}
-
-/// The wanted behaviour of the test above: no point is claimed by two volumes.
-#[test]
-#[ignore = "sm-boolean finding: locate_point false In (3 of 600 oracle points without the prefilter)"]
 fn locate_point_without_the_prefilter_has_no_contested_points_on_mini3x3_h2() {
     let t = compare_ex("ref_mini3x3_h2", &fixture("ref_mini3x3_h2", "geometry.xml"), false).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(t.contested, 0, "{} contested, disagreements {:?}", t.contested, t.disagreements);
+    eprintln!("ref_mini3x3_h2 unfiltered: {} points, {} contested, {} disagreements: {:?}", t.points, t.contested, t.disagreements.len(), t.disagreements);
+    assert_eq!(t.contested, CONTESTED, "{} contested, disagreements {:?}", t.contested, t.disagreements);
 }
 
 /// The partition probe of the false `In`: 72 angles x 7 radii x 3 heights around each of the nine
 /// pin centres of `ref_mini3x3_h2` (13608 points, none on a deck surface), each located against
-/// every volume. A point in two volumes is a `locate_point` false `In` (15 points here, 9 in the reviewer run at other angles,
-/// for example Borated water claiming UO2 at r = 0.2, Helium claiming UO2 at r = 0.405, Zircaloy
-/// claiming water at r = 0.58). Prints the count; wanted: none.
+/// every volume. A point in two volumes is a `locate_point` false `In` (15 points before
+/// W4-BOOL-KFIX, for example Borated water claiming UO2 at r = 0.2). Wanted, and now true: none.
 #[test]
-#[ignore = "sm-boolean finding: locate_point false In (15 of 13608 partition-probe points)"]
 fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
     let name = "ref_mini3x3_h2";
     let mut r = Rig::new();
@@ -262,32 +251,17 @@ fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
     assert!(contested.is_empty(), "{} points in two volumes, first {:?}", contested.len(), contested.iter().take(3).collect::<Vec<_>>());
 }
 
-/// The 460 cm BEAVRS assembly (the refusal comes in about 4 s; a successful import took about
-/// 11 minutes in a debug build, so mark the test `ignore` when the kernel is fixed). Since the
-/// W4-BOOL-TOOLS kernel fix it no longer fails in the kernel at once, but `webcut` by a cylinder
-/// leaves a grid-layer piece unsplit (a body whose cap planes the neighbours' cuts already
-/// imprinted with the circle; reproduced small in `beavrs_repro.rs`). Without the import's piece
-/// check the import returned `Ok` with every grid layer's pin interior missing: the Fuel 1.6%
-/// volumes totalled 41854.96 cm3 against the analytic 264 pi 0.39218^2 (402.508 - 36.748) =
-/// 46657.44 (-10.3%, the share of the active length in grid layers), and 24 of the 600 oracle
-/// points disagreed, spread over all eight grid layers and both ways (fuel, clad and helium
-/// became water; water became Zircaloy). The point count is a symptom, the per-material volume
-/// is the measure, so this test pins the outcome by it: a typed `csg.kernel` refusal today, and
-/// once the kernel is fixed the import must have the analytic fuel and agree at the 600 points
-/// (then move the deck to `IMPORTING`).
+/// The 460 cm BEAVRS assembly imports (W4-BOOL-KFIX fixed the unsplit grid-layer pieces; the
+/// import's piece check stays as a guard): the Fuel 1.6% volumes total the analytic
+/// 264 pi 0.39218^2 (402.508 - 36.748) = 46657.4 cm3, and the 600 oracle points equal OpenMC's.
+/// The grid spacer boxes with their pin holes are checked on one pin cell in
+/// `beavrs_repro.rs` (exact fuel and end-grid Inconel).
 #[test]
-fn the_beavrs_assembly_is_refused_typed_or_exact() {
+#[ignore = "slow: about 940 s in debug, 69 s in release; run with --ignored"]
+fn the_beavrs_assembly_imports_with_the_analytic_fuel_and_agrees_with_openmc() {
     let name = "ref_beavrs_assembly";
     let mut r = Rig::new();
-    let d = match r.import(&fixture(name, "geometry.xml"), Some(&fixture(name, "materials.xml"))) {
-        Err(e) => {
-            let e = e.to_string();
-            assert!(e.contains("csg.kernel") && e.contains("left the piece unsplit") && e.contains("surface ids"), "{e}");
-            eprintln!("{name}: refused typed: {e}");
-            return;
-        }
-        Ok(d) => d,
-    };
+    let d = r.import(&fixture(name, "geometry.xml"), Some(&fixture(name, "materials.xml"))).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut fuel_got = 0.0;
     for c in r.model().colors().filter(|c| c.domain == Domain::Volume && c.name == "Fuel 1.6%") {
         for v in r.model().volumes_of_color(c.id) {
@@ -296,10 +270,12 @@ fn the_beavrs_assembly_is_refused_typed_or_exact() {
             }
         }
     }
-    let fuel = 264.0 * core::f64::consts::PI * 0.39218_f64.powi(2) * (402.508 - 36.748);
+    let fuel = 264.0 * core::f64::consts::PI * 0.39218_f64.powi(2) * 365.76;
     assert!((fuel_got - fuel).abs() < 1e-6 * fuel, "Fuel 1.6%: {fuel_got} vs analytic {fuel} ({:.1}%)", 100.0 * (fuel_got - fuel) / fuel);
     let t = compare(name, &fixture(name, "geometry.xml")).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert!(t.points >= 595 && t.undecided <= 5 && t.contested == 0, "{name}: {} decided, {} undecided, {} contested", t.points, t.undecided, t.contested);
     assert!(t.disagreements.is_empty(), "{name}: {} disagreements, first {:?}", t.disagreements.len(), t.disagreements.iter().take(3).collect::<Vec<_>>());
+    assert!(t.lattice_checked >= 590, "{name}: {} lattice checks", t.lattice_checked);
 }
 
 /// The text between `<universes>` and `</universes>`, mapped by `f` on its rows.

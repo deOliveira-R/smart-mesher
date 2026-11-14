@@ -119,7 +119,7 @@ fn equal_radii_in_two_universes_placed_coaxially_import() {
 /// The literal draft rows: a gap of 1e-3 and an overlap sliver of 1e-4 in a box of 10 (the
 /// kernel cuts a brick by a plane this close to a parallel face since W4-BOOL-TOOLS).
 #[test]
-fn the_draft_thin_rows_wait_for_the_kernel() {
+fn the_literal_draft_thin_rows_gap_and_sliver_import_with_exact_volumes() {
     let mut r = Rig::new();
     let d = r.import(&two_boxes("4.9995", "5.0005"), Some(&materials(2))).unwrap();
     close("gap volume", piece_volume(diag(&d, "import.gap")[0]), 1e-3 * 100.0, 1e-9);

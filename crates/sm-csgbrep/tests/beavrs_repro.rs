@@ -7,10 +7,9 @@
 //! box fill in one layer) hits this in every grid layer: the layer's whole box goes to the fuel
 //! cell and the pin hole of the grid water vanishes.
 //!
-//! The import therefore checks every piece it hands to a cell (a vertex outside the region of its
-//! cell is a kernel defect) and refuses with a typed `csg.kernel` error instead of returning wrong
-//! geometry. These tests hold both facts: the refusal today, exact volumes once the kernel is
-//! fixed (the `#[ignore]` tests then pass and the refusal branches are never taken).
+//! Fixed by W4-BOOL-KFIX. The import still checks every piece it hands to a cell (a vertex outside
+//! the region of its cell is a kernel defect, refused as `csg.kernel`), but the check no longer
+//! fires here: these tests hold the exact volumes.
 mod common;
 use common::*;
 use core::f64::consts::PI;
@@ -65,32 +64,8 @@ fn per_material(geometry: &str, materials: &str) -> Result<BTreeMap<String, f64>
     Ok(by)
 }
 
-/// The refusal of a piece the kernel left unsplit: typed, naming the cell and the surface ids.
-fn assert_typed_refusal(e: &str) {
-    assert!(e.contains("csg.kernel") && e.contains("left the piece unsplit") && e.contains("surface ids"), "{e}");
-}
-
+/// The small pin imports with its analytic fuel and clad, and the total is the box.
 #[test]
-fn a_grid_layer_pin_is_never_imported_with_wrong_volumes() {
-    let (rp, rc) = (0.39218_f64, 0.4572_f64);
-    match per_material(&deck(), &materials(4)) {
-        Err(e) => assert_typed_refusal(&e),
-        Ok(by) => {
-            let want = [("m1", PI * rp * rp * 10.0), ("m2", PI * (rc * rc - rp * rp) * 10.0)];
-            for (m, w) in want {
-                let got = by.get(m).copied().unwrap_or(0.0);
-                assert!((got - w).abs() < 1e-9 * w, "{m}: {got} vs analytic {w} ({by:?})");
-            }
-            let total: f64 = by.values().sum();
-            assert!((total - (2.0 * 0.62992_f64).powi(2) * 10.0).abs() < 1e-9, "total {total}");
-        }
-    }
-}
-
-/// Wanted: the small pin imports with its analytic fuel and clad (fails today, see the module
-/// doc: the refusal is the best the import can do until sm-boolean is fixed).
-#[test]
-#[ignore = "sm-boolean finding: webcut by a cylinder on a body between two bodies it already cut"]
 fn the_grid_layer_pin_imports_with_exact_volumes() {
     let (rp, rc) = (0.39218_f64, 0.4572_f64);
     let by = per_material(&deck(), &materials(4)).unwrap_or_else(|e| panic!("{e}"));
@@ -98,6 +73,8 @@ fn the_grid_layer_pin_imports_with_exact_volumes() {
         let got = by.get(m).copied().unwrap_or(0.0);
         assert!((got - w).abs() < 1e-9 * w, "{m}: {got} vs analytic {w} ({by:?})");
     }
+    let total: f64 = by.values().sum();
+    assert!((total - (2.0 * 0.62992_f64).powi(2) * 10.0).abs() < 1e-9, "total {total}");
 }
 
 /// The bare kernel cut behind it: a box `[-h, h]^2 x [0, 10]` is cut by the planes z = 3 and
@@ -138,11 +115,9 @@ fn slab_after_neighbours(trim: bool, r: f64) -> (Vec<f64>, Vec<f64>) {
     (c.negative.iter().map(|&b| vol(&t, b)).collect(), c.positive.iter().map(|&b| vol(&t, b)).collect())
 }
 
-/// KERNEL FINDING for sm-boolean: expected the negative piece to be the cylinder, `pi r^2 (4 - 3)
-/// = 0.4832`, and one positive piece; today `webcut` returns the whole slab unsplit (as the
-/// positive piece for the untrimmed slab, as the negative piece for the trimmed one).
+/// The negative piece is the cylinder, `pi r^2 (4 - 3) = 0.4832`, with one positive piece (before
+/// W4-BOOL-KFIX `webcut` returned the whole slab unsplit).
 #[test]
-#[ignore = "sm-boolean finding: webcut by a cylinder on a body between two bodies it already cut"]
 fn the_cylinder_cuts_a_slab_between_two_bodies_it_has_already_cut() {
     let want = PI * 0.39218_f64.powi(2);
     for trim in [false, true] {
@@ -174,17 +149,19 @@ fn beavrs_pin(h: f64) -> String {
     out
 }
 
-/// One real BEAVRS pin cell (universe 15, 460 cm, eight grid layers): the Fuel 1.6% volume must
-/// be the analytic `pi * 0.39218^2 * (402.508 - 36.748)`; today the import refuses it.
+/// One real BEAVRS pin cell (universe 15, 460 cm, eight grid layers): the Fuel 1.6% volume is the
+/// analytic `pi * 0.39218^2 * (402.508 - 36.748)`, and the two end grids' Inconel (the box
+/// 0.61015 outside, the pin cell 0.62992 half-pitch) is the exact strip, pin hole or not, plus the plenum spring (cylinder 38).
 #[test]
-fn the_beavrs_pin_cell_is_refused_or_has_the_analytic_fuel() {
+fn the_beavrs_pin_cell_has_the_analytic_fuel_and_end_grid_strips() {
     let materials = fixture("ref_beavrs_assembly", "materials.xml");
-    match per_material(&beavrs_pin(0.62992), &materials) {
-        Err(e) => assert_typed_refusal(&e),
-        Ok(by) => {
-            let fuel = PI * 0.39218_f64.powi(2) * (402.508 - 36.748);
-            let got = by["Fuel 1.6%"];
-            assert!((got - fuel).abs() < 1e-6 * fuel, "Fuel 1.6%: {got} vs analytic {fuel} ({by:?})");
-        }
-    }
+    let by = per_material(&beavrs_pin(0.62992), &materials).unwrap_or_else(|e| panic!("{e}"));
+    let fuel = PI * 0.39218_f64.powi(2) * (402.508 - 36.748);
+    let got = by["Fuel 1.6%"];
+    assert!((got - fuel).abs() < 1e-6 * fuel, "Fuel 1.6%: {got} vs analytic {fuel} ({by:?})");
+    let inconel = ((2.0 * 0.62992_f64).powi(2) - (2.0 * 0.61015_f64).powi(2)) * ((40.52 - 37.1621) + (415.164 - 411.806)) + PI * 0.06459_f64.powi(2) * (417.164 - 402.508);
+    let got = by["Inconel 718"];
+    assert!((got - inconel).abs() < 1e-6 * inconel, "Inconel 718: {got} vs analytic {inconel} ({by:?})");
+    let total: f64 = by.values().sum();
+    assert!((total - (2.0 * 0.62992_f64).powi(2) * 460.0).abs() < 1e-6 * total, "total {total}");
 }

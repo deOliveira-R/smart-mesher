@@ -535,7 +535,8 @@ fn check_piece(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, cell: &PCell
         Some(q) => {
             let mut ids = BTreeSet::new();
             surfaces_in(&cell.expr, &mut ids);
-            let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).collect();
+            // Deck id 0 is an plane the lattice expansion synthesised (an array box face), not a deck surface.
+            let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).filter(|&d| d != 0).collect::<BTreeSet<_>>().into_iter().collect();
             Err(CsgbrepError::Kernel(format!("a piece given to cell {} has a vertex at {q:?} outside its region: a cut by one of its deck surface ids {deck:?} left the piece unsplit (kernel defect, the geometry is refused instead of imported wrong)", cell.origin)))
         }
     }
