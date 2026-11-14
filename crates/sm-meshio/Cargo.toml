@@ -17,6 +17,7 @@ testing = []
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-mesh-api = { path = "../sm-mesh-api", features = ["bytemuck"] }
+sm-mesh = { path = "../sm-mesh" }
 sm-model-api = { path = "../sm-model-api" }
 sm-rt-api = { path = "../sm-rt-api" }
 sm-topo-api = { path = "../sm-topo-api" }

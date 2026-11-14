@@ -24,6 +24,7 @@ pub mod h5;
 mod h5;
 mod le;
 pub mod report;
+pub mod select;
 pub mod smsh;
 pub mod vtu;
 
