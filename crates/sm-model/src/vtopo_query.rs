@@ -16,7 +16,7 @@ use sm_topo_api::{VirtualOp, VirtualOverlay};
 pub struct VirtualInfo {
     /// Restrict to the operations that created or use this cell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "PartitionVertex", "PartitionEdge", "PartitionFace"]))]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "PartitionVertex", "PartitionEdge", "PartitionFace", "PartitionCell"]))]
     pub id: Option<EntityId>,
 }
 
@@ -62,7 +62,11 @@ fn describe(index: usize, op: &VirtualOp) -> VirtualOpInfo {
         VirtualOp::CompositeEdges { edges, .. } => ("composite_edges", edges.clone(), None, None),
         VirtualOp::PartitionEdge { edge, param, .. } => ("partition_edge", vec![*edge], None, Some(*param)),
         VirtualOp::PartitionFace { face, cut, .. } => ("partition_face", vec![*face, cut.from, cut.to], None, None),
-        VirtualOp::PartitionVolume { volume, .. } => ("partition_volume", vec![*volume], None, None),
+        VirtualOp::PartitionVolume { volume, cut, .. } => {
+            let mut v = vec![*volume];
+            v.extend(cut.edges.iter().copied());
+            ("partition_volume", v, None, None)
+        }
         VirtualOp::CollapseEdge { edge, into_vertex, gap, repointed } => {
             let mut v = vec![*edge, *into_vertex];
             v.extend(repointed.iter().map(|&(o, _)| o));

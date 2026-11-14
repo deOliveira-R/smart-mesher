@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind, Vector3};
 use sm_geom_api::{CurveDef, Interval, Line, SurfaceDef};
 use sm_layer_api::{LayerResultExt, ModelLayer, model_overlay_txn};
-use sm_model_api::{PieceRef, Plane};
+use sm_model_api::{Model, PieceFace, PieceRef, Plane};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_topo_api::{Carrier, Dim, Overlay, TopologyView, TopologyViewExt, VirtualCut, VirtualOp};
+use sm_topo_api::{Carrier, Overlay, TopologyView, TopologyViewExt, VirtualCut, VirtualOp};
 
 const FACE_ROLE: &[OutputRole] = &[OutputRole::new("face", &[EntityKind::PartitionFace], Cardinality::One, "The composite face.")];
 const EDGE_ROLE: &[OutputRole] = &[OutputRole::new("edge", &[EntityKind::PartitionEdge], Cardinality::One, "The composite edge.")];
@@ -40,6 +40,54 @@ fn kind_is(id: EntityId, kinds: &[EntityKind], what: &str) -> Result<(), OpError
         Ok(())
     } else {
         Err(OpError::Invalid(format!("{what}: {id} is a `{}`, expected one of {:?}", id.kind().name(), kinds.iter().map(|k| k.name()).collect::<Vec<_>>())))
+    }
+}
+
+/// Every overlay cell a realized decomposition split owns: the cells recorded in its
+/// `CutCells` (cut face, loop edges and vertices, partitioned faces, edges and their halves),
+/// the cells of the realized pieces' `Part` / `CutPart` faces, and everything a
+/// `PartitionVolume` op made. Plain virtual ops must not remove or edit these (the recorded
+/// ids would die); `model.unsplit_realized` is the way back.
+fn cut_owned(m: &Model, ov: &Overlay) -> BTreeSet<EntityId> {
+    let d = m.decomposition();
+    let mut out = BTreeSet::new();
+    let pieces = d.decomposed_volumes().into_iter().map(PieceRef::Whole).chain(d.cells().map(|p| PieceRef::Cell(p.id)));
+    for p in pieces {
+        let Some(rec) = d.split_of(p) else { continue };
+        let Some(cc) = d.cut_cells(rec.cut) else { continue };
+        out.extend(cc.faces.iter().chain(&cc.edges).chain(&cc.vertices).copied());
+        for (f, h) in &cc.split_faces {
+            out.insert(*f);
+            out.extend(h);
+        }
+        for (e, v, h) in &cc.split_edges {
+            out.insert(*e);
+            out.insert(*v);
+            out.extend(h);
+        }
+    }
+    for piece in d.cells() {
+        for pf in piece.faces.iter().filter(|pf| matches!(pf, PieceFace::Part { .. } | PieceFace::CutPart { .. })) {
+            out.extend(d.piece_face_cells(pf, ov).unwrap_or_default());
+        }
+    }
+    for op in ov.ops() {
+        if let VirtualOp::PartitionVolume { .. } = op {
+            out.extend(op.created());
+        }
+    }
+    out
+}
+
+/// Refuses (typed, naming the cell) when any of `ids` belongs to a realized split.
+fn refuse_cut_cells(m: &Model, ov: &Overlay, ids: &[EntityId], what: &str) -> Result<(), OpError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let owned = cut_owned(m, ov);
+    match ids.iter().find(|i| owned.contains(i)) {
+        Some(c) => Err(OpError::Invalid(format!("{what}: {c} belongs to a realized split; undo the split with model.unsplit_realized first"))),
+        None => Ok(()),
     }
 }
 
@@ -64,7 +112,15 @@ impl TypedOp for CompositeFaces {
         for &f in &self.faces {
             kind_is(f, &[EntityKind::TopoFace], "faces")?;
         }
-        model_overlay_txn(ctx, |_, ov| ov.composite_faces(&self.faces).or_op(), |f, _| vec![("face", vec![*f])]).map(|_| ())
+        model_overlay_txn(
+            ctx,
+            |m, ov| {
+                refuse_cut_cells(m, ov, &self.faces, "faces")?;
+                ov.composite_faces(&self.faces).or_op()
+            },
+            |f, _| vec![("face", vec![*f])],
+        )
+        .map(|_| ())
     }
 }
 
@@ -86,7 +142,15 @@ impl TypedOp for CompositeEdges {
         for &e in &self.edges {
             kind_is(e, &[EntityKind::TopoEdge], "edges")?;
         }
-        model_overlay_txn(ctx, |_, ov| ov.composite_edges(&self.edges).or_op(), |e, _| vec![("edge", vec![*e])]).map(|_| ())
+        model_overlay_txn(
+            ctx,
+            |m, ov| {
+                refuse_cut_cells(m, ov, &self.edges, "edges")?;
+                ov.composite_edges(&self.edges).or_op()
+            },
+            |e, _| vec![("edge", vec![*e])],
+        )
+        .map(|_| ())
     }
 }
 
@@ -114,7 +178,10 @@ impl TypedOp for PartitionEdge {
         }
         model_overlay_txn(
             ctx,
-            |_, ov| ov.partition_edge(self.edge, self.param).or_op(),
+            |m, ov| {
+                refuse_cut_cells(m, ov, &[self.edge], "edge")?;
+                ov.partition_edge(self.edge, self.param).or_op()
+            },
             |(v, h), _| vec![("vertex", vec![*v]), ("edges", h.to_vec())],
         )
         .map(|_| ())
@@ -152,20 +219,20 @@ impl TypedOp for PartitionFace {
         kind_is(self.to, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "to")?;
         model_overlay_txn(
             ctx,
-            |_, ov| {
+            |m, ov| {
+                refuse_cut_cells(m, ov, &[self.face], "face")?;
                 let cut = chord(ov, self.face, self.from, self.to)?;
-                let before: BTreeSet<EntityId> = ov.cells(Dim::Edge).iter().copied().collect();
                 let halves = ov.partition_face(self.face, cut).or_op()?;
-                // The chord is the one new edge shared by the two halves.
-                let chord = ov.cells(Dim::Edge).iter().copied().find(|e| !before.contains(e) && e.kind() == EntityKind::PartitionEdge);
+                // The chord is the one the overlay recorded for this partition.
+                let chord = ov.ops().iter().rev().find_map(|op| match op {
+                    VirtualOp::PartitionFace { face, chord, .. } if *face == self.face => Some(*chord),
+                    _ => None,
+                });
+                let chord = chord.ok_or_else(|| OpError::Failed(format!("face {}: the overlay recorded no chord for the partition", self.face)))?;
                 Ok((chord, halves))
             },
             |(c, h), _| {
-                let mut roles = vec![("faces", h.to_vec())];
-                if let Some(c) = c {
-                    roles.push(("chord", vec![*c]));
-                }
-                roles
+                vec![("faces", h.to_vec()), ("chord", vec![*c])]
             },
         )
         .map(|_| ())
@@ -197,8 +264,36 @@ fn face_planes(ov: &Overlay, top: EntityId, face: EntityId, out: &mut Vec<sm_geo
     }
 }
 
-/// Polyline samples per edge when the loop is flattened for the chord checks.
+/// Initial polyline samples per edge when the loop is flattened for the chord checks.
 const LOOP_SAMPLES: usize = 32;
+/// Bisection depth cap per initial sample (the polyline refines until its sagitta is below the
+/// linear tolerance, or this deep).
+const MAX_REFINE: u32 = 12;
+
+/// Appends the points of the curve `eval` over `[s0, s1]` (excluding the start point `p0`) so
+/// that every polyline segment's midpoint sagitta is at most `tol`.
+fn flatten(eval: &dyn Fn(f64) -> [f64; 2], (s0, p0): (f64, [f64; 2]), (s1, p1): (f64, [f64; 2]), tol: f64, depth: u32, out: &mut Vec<[f64; 2]>) {
+    let sm = 0.5 * (s0 + s1);
+    let pm = eval(sm);
+    if depth < MAX_REFINE && dist_pt_seg(pm, p0, p1) > tol {
+        flatten(eval, (s0, p0), (sm, pm), tol, depth + 1, out);
+        flatten(eval, (sm, pm), (s1, p1), tol, depth + 1, out);
+    } else {
+        out.push(p1);
+    }
+}
+
+/// The polyline of `eval` over `s in [0, 1]`: [`LOOP_SAMPLES`] segments, each refined until its
+/// sagitta is within `tol` (lines stay at 32 segments, arcs get as many as they need).
+fn flatten_curve(eval: &dyn Fn(f64) -> [f64; 2], tol: f64) -> Vec<[f64; 2]> {
+    let mut out = vec![eval(0.0)];
+    for i in 0..LOOP_SAMPLES {
+        let (s0, s1) = (i as f64 / LOOP_SAMPLES as f64, (i + 1) as f64 / LOOP_SAMPLES as f64);
+        let (p0, p1) = (*out.last().unwrap_or(&[0.0; 2]), eval(s1));
+        flatten(eval, (s0, p0), (s1, p1), tol, 0, &mut out);
+    }
+    out
+}
 
 /// Distance from `p` to the segment `a b`.
 fn dist_pt_seg(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -236,8 +331,10 @@ fn check_chord_inside(view: &dyn TopologyView, face: EntityId, frame: &sm_geom_a
     let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
     for l in view.loops(face) {
         for e in l.entries {
-            let Some(sm) = view.edge_sampler(e.cell) else { continue };
-            let pts: Vec<[f64; 2]> = (0..=LOOP_SAMPLES).map(|i| proj(sm.eval(i as f64 / LOOP_SAMPLES as f64))).collect();
+            let Some(sm) = view.edge_sampler(e.cell) else {
+                return Err(OpError::Invalid(format!("face {face}: edge {} has no curve to check the chord against", e.cell)));
+            };
+            let pts = flatten_curve(&|s| proj(sm.eval(s)), tol);
             segs.extend(pts.windows(2).map(|w| (w[0], w[1])));
         }
     }
@@ -327,7 +424,16 @@ impl TypedOp for CollapseEdge {
         kind_is(self.into_vertex, &[EntityKind::TopoVertex, EntityKind::PartitionVertex], "into_vertex")?;
         model_overlay_txn(
             ctx,
-            |_, ov| ov.collapse_edge(self.edge, self.into_vertex).or_op(),
+            |m, ov| {
+                refuse_cut_cells(m, ov, &[self.edge], "edge")?;
+                // The end that is not `into_vertex` is dropped from the view.
+                let dropped: Vec<EntityId> = TopologyView::boundary(ov, self.edge).iter().map(|i| i.cell).filter(|&v| v != self.into_vertex).collect();
+                refuse_cut_cells(m, ov, &dropped, "edge")?;
+                let c = ov.collapse_edge(self.edge, self.into_vertex).or_op()?;
+                let orig: Vec<EntityId> = c.repointed.iter().map(|&(o, _)| o).collect();
+                refuse_cut_cells(m, ov, &orig, "edge")?;
+                Ok(c)
+            },
             |c, _| {
                 let copies: Vec<EntityId> = c.repointed.iter().map(|&(_, n)| n).collect();
                 if copies.is_empty() { vec![] } else { vec![("edges", copies)] }
@@ -354,14 +460,27 @@ impl TypedOp for RemoveVirtual {
     const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let known = ctx
-            .layer::<ModelLayer>()?
-            .overlay()
-            .is_some_and(|o| o.ops().iter().any(|op| op.created().contains(&self.id) || matches!(op, VirtualOp::CollapseEdge { edge, .. } if *edge == self.id)));
+        let id = self.id;
+        let found = |op: &VirtualOp| op.created().contains(&id) || matches!(op, VirtualOp::CollapseEdge { edge, .. } if *edge == id);
+        let known = ctx.layer::<ModelLayer>()?.overlay().is_some_and(|o| o.ops().iter().any(found));
         if !known {
-            return Err(OpError::Invalid(format!("{} is not part of any virtual operation of the overlay", self.id)));
+            return Err(OpError::Invalid(format!("{id} is not part of any virtual operation of the overlay")));
         }
-        model_overlay_txn(ctx, |_, ov| ov.remove(self.id).or_op(), |_, _| vec![])
+        model_overlay_txn(
+            ctx,
+            |m, ov| {
+                if let Some(op) = ov.ops().iter().find(|o| found(o)) {
+                    if matches!(op, VirtualOp::PartitionVolume { .. }) {
+                        return Err(OpError::Invalid(format!("{id} belongs to a realized split (a volume partition); undo the split with model.unsplit_realized")));
+                    }
+                    let mut ids: Vec<EntityId> = op.created().to_vec();
+                    ids.push(id);
+                    refuse_cut_cells(m, ov, &ids, "remove_virtual")?;
+                }
+                ov.remove(id).or_op()
+            },
+            |_, _| vec![],
+        )
     }
 }
 

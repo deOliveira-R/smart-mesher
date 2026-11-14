@@ -95,7 +95,8 @@ impl TypedQuery for ModelList {
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<Vec<EntityId>, OpError> {
         let layer = model_layer(state)?;
         if let Some(d) = Dim::of_real_kind(self.kind) {
-            return Ok(layer.topo().cells(d).to_vec());
+            // The overlay view lists virtual cells of the rank too; a real kind lists real cells.
+            return Ok(layer.topo().cells(d).iter().copied().filter(|c| c.kind() == self.kind).collect());
         }
         let virt_dim = match self.kind {
             EntityKind::PartitionVertex => Some(Dim::Vertex),
