@@ -262,7 +262,8 @@ fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
     assert!(contested.is_empty(), "{} points in two volumes, first {:?}", contested.len(), contested.iter().take(3).collect::<Vec<_>>());
 }
 
-/// The 460 cm BEAVRS assembly (about 11 minutes in a debug build, hence `ignore`). Since the
+/// The 460 cm BEAVRS assembly (the refusal comes in about 4 s; a successful import took about
+/// 11 minutes in a debug build, so mark the test `ignore` when the kernel is fixed). Since the
 /// W4-BOOL-TOOLS kernel fix it no longer fails in the kernel at once, but `webcut` by a cylinder
 /// leaves a grid-layer piece unsplit (a body whose cap planes the neighbours' cuts already
 /// imprinted with the circle; reproduced small in `beavrs_repro.rs`). Without the import's piece
@@ -275,7 +276,6 @@ fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
 /// once the kernel is fixed the import must have the analytic fuel and agree at the 600 points
 /// (then move the deck to `IMPORTING`).
 #[test]
-#[ignore = "slow (about 11 minutes in a debug build)"]
 fn the_beavrs_assembly_is_refused_typed_or_exact() {
     let name = "ref_beavrs_assembly";
     let mut r = Rig::new();
