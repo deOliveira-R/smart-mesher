@@ -442,6 +442,110 @@ fn a7_the_pass_is_deterministic_for_any_thread_count() {
     assert_eq!(r1.face_map, r4.face_map);
 }
 
+/// A node set never gains interior nodes. The 8 corners of the cell [0,1]^3 of a 2 x 2 x 2 block
+/// carry over as 20 nodes: the refined nodes of the 3 wall quads of that cell (each a patch of
+/// one model face); interior faces and the cell centre never join. The 9 nodes of the wall x = 0 (a model face)
+/// carry over as 9 + 12 edge midpoints + 4 face centres = 25, all on the wall. The interior plane
+/// x = 1 is no model face, so its set gains nothing (9).
+#[test]
+fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let pick = |f: &dyn Fn(Point3) -> bool| -> Vec<sm_mesh_api::VertexIx> {
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| f(src.point(v.get()))).collect()
+    };
+    let corners = pick(&|p| p.x <= 1.0 && p.y <= 1.0 && p.z <= 1.0);
+    let plane = pick(&|p| p.x == 0.0);
+    let inner = pick(&|p| p.x == 1.0);
+    assert_eq!((corners.len(), plane.len(), inner.len()), (8, 9, 9));
+    src.add_set("inner_nodes", SetMembers::Vertices(inner), &mut alloc).expect("set");
+    src.add_set("cell_nodes", SetMembers::Vertices(corners), &mut alloc).expect("set");
+    src.add_set("plane_nodes", SetMembers::Vertices(plane), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    assert_valid(m);
+    let set = |n: &str| match &m.set_by_name(n).expect("set").members {
+        SetMembers::Vertices(v) => v.clone(),
+        _ => panic!("vertices"),
+    };
+    let cell = set("cell_nodes");
+    // The cell touches three walls with one whole quad each (patches): 3 x 9 - 3 x 3 + 1 = 19
+    // refined nodes on them, plus the member corner (1,1,1); the 3 interior faces and the centre add nothing.
+    assert_eq!(cell.len(), 20, "the three wall patches of the corner cell plus the member corner (1,1,1)");
+    for v in &cell {
+        let p = m.point(v.get());
+        let on_boundary = [p.x, p.y, p.z].iter().any(|c| *c == 0.0 || *c == 1.0);
+        assert!(on_boundary && p.x <= 1.0 && p.y <= 1.0 && p.z <= 1.0, "{p:?} is not on the cell boundary");
+    }
+    let plane = set("plane_nodes");
+    assert_eq!(plane.len(), 25);
+    assert!(plane.iter().all(|v| m.point(v.get()).x == 0.0), "a wall set stays on its wall");
+    let inner = set("inner_nodes");
+    assert_eq!(inner.len(), 9, "an interior plane is no model entity: only its own nodes");
+    assert!(inner.iter().all(|v| m.point(v.get()).x == 1.0));
+}
+
+/// A node set on two adjacent walls (x = 0 and y = 2) of a wedge block carries over to nodes on
+/// those walls only: the interior diagonal quad faces and the corner triangles of the top and
+/// bottom (all vertices on the walls, but not wall faces) add nothing.
+#[test]
+fn vertex_set_on_two_walls_of_a_wedge_block_stays_on_the_walls() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = wedge_block(2);
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 || src.point(v.get()).y == 2.0).collect();
+    let n_src = set.len();
+    src.add_set("wall", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("wall").expect("set").members else { panic!("vertices") };
+    for v in vs {
+        let p = m.point(v.get());
+        assert!(p.x == 0.0 || p.y == 2.0, "{p:?} is on neither wall");
+    }
+    // Every node of the refined mesh on a wall is in the set: 2 walls of 5 x 5 nodes sharing one
+    // line of 5 -> 45 nodes (the originals are 3 x 3 + 3 x 3 - 3 = 15).
+    let on_walls = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 || m.point(i).y == 2.0).count();
+    assert_eq!((n_src, vs.len(), on_walls), (15, 45, 45));
+}
+
+/// A node set on part of a wall ({x == 0, y <= 1}: 6 nodes) carries to exactly the 15 refined
+/// nodes on that patch (5 along y in [0,1]... 5 along z times 3 along y), all with x == 0.
+#[test]
+fn vertex_set_on_part_of_a_wall_carries_the_whole_patch() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 && src.point(v.get()).y <= 1.0).collect();
+    assert_eq!(set.len(), 6);
+    src.add_set("patch", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("patch").expect("set").members else { panic!("vertices") };
+    let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
+    assert_eq!((vs.len(), on_patch), (15, 15));
+    assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
+}
+
+/// A wall one interval thick has no interior mesh vertex: the patch {x == 0, y <= 1} of a
+/// 2 x 2 x 1 block (4 nodes) carries to all 9 refined nodes of the patch (nodes, edge midpoints,
+/// the face centre), not only to the corners.
+#[test]
+fn vertex_set_on_a_one_interval_thick_wall_keeps_edge_midpoints_and_centres() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 1], [1.0; 3], &mut alloc).expect("block");
+    let set: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).x == 0.0 && src.point(v.get()).y <= 1.0).collect();
+    assert_eq!(set.len(), 4);
+    src.add_set("patch", SetMembers::Vertices(set), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("patch").expect("set").members else { panic!("vertices") };
+    let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
+    assert_eq!((vs.len(), on_patch), (9, 9));
+    assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
+}
+
 #[test]
 fn polyhedra_and_high_order_are_refused_with_a_reason() {
     let fx = sm_testkit::meshes::dual_patch().expect("dual patch");

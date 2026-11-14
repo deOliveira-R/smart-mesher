@@ -4,10 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
+use sm_poly::{DualPoints, PolyOptions, TopologyResolver};
 use sm_mesh::MeshBuilder;
 use sm_mesh_api::{MeshEntityKind, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_poly::{DualPoints, PolyError, PolyOptions, TopologyResolver};
 use sm_scheme_api::{
     Driver, DriverOptions, MeshInput, MeshIntent, Plan, SchemeError, SizeField, WholeFaces,
 };
@@ -406,10 +406,7 @@ fn insert_scratch(
                 .collect();
             ctx.adopt(&ids)?;
         } else {
-            ctx.adopt_range(
-                EntityId::new(kind, first).ok_or(OpError::IdExhausted)?,
-                next - first,
-            )?;
+            ctx.adopt_range(EntityId::new(kind, first).ok_or(OpError::IdExhausted)?, next - first)?;
         }
     }
     ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;
@@ -446,13 +443,7 @@ fn dualize_in_place(
         MeshBuilder::new(),
         &mut alloc,
     )
-    .map_err(|e| match e {
-        PolyError::NotOrthogonalDual { .. }
-        | PolyError::UnrepairedCell { .. }
-        | PolyError::InvalidOutput { .. }
-        | PolyError::Mesh(_) => OpError::Failed(e.to_string()),
-        other => OpError::Invalid(other.to_string()),
-    })?;
+    .map_err(sm_poly::poly_error_to_op)?;
     let new = fin.mesh.mesh_id();
     let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
     entry.plan = plan;

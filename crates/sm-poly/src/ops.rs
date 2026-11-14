@@ -56,7 +56,10 @@ const OUTPUTS: &[OutputRole] = &[OutputRole::new(
     "the new polyhedral mesh",
 )];
 
-fn refuse(e: PolyError) -> OpError {
+/// The op error of a [`PolyError`], the same mapping for every op that dualizes (`mesh.to_poly`,
+/// the mesher's dual strategies): construction failures are `Failed`, an unsupported feature is
+/// `Unsupported`, anything else is a bad input (`Invalid`).
+pub fn poly_error_to_op(e: PolyError) -> OpError {
     match e {
         PolyError::Mesh(m) => OpError::Failed(m.to_string()),
         e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. } | PolyError::NotOrthogonalDual { .. } | PolyError::InvalidOutput { .. }) => OpError::Failed(e.to_string()),
@@ -98,7 +101,7 @@ impl TypedOp for ToPoly {
             MeshBuilder::new(),
             &mut alloc,
         )
-        .map_err(refuse)?;
+        .map_err(poly_error_to_op)?;
         ctx.step(1, 2, "inserting")?;
         let new = fin.mesh.mesh_id();
         let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
@@ -151,8 +154,8 @@ mod tests {
         let region = EntityId::new(EntityKind::TopoVolume, 1).unwrap();
         let a = PolyError::UnrepairedCell { vertex: sm_mesh_api::VertexIx(3), region, at: [1.0; 3], count: 2 };
         let b = PolyError::InvalidAgglomeration { region, at: [1.0; 3], count: 1 };
-        assert!(matches!(refuse(a), OpError::Failed(m) if m.contains("not star-shaped")));
-        assert!(matches!(refuse(b), OpError::Failed(m) if m.contains("agglomerated cell")));
-        assert!(matches!(refuse(PolyError::Dim2), OpError::Invalid(_)));
+        assert!(matches!(poly_error_to_op(a), OpError::Failed(m) if m.contains("not star-shaped")));
+        assert!(matches!(poly_error_to_op(b), OpError::Failed(m) if m.contains("agglomerated cell")));
+        assert!(matches!(poly_error_to_op(PolyError::Dim2), OpError::Invalid(_)));
     }
 }

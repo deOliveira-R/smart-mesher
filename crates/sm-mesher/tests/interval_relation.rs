@@ -113,3 +113,40 @@ fn bad_parameters_are_typed_errors() {
     bad(json!({"a": ["TopoEdge#1"], "b": ["TopoEdge#1"]}));
     bad(json!({"a": ["TopoEdge#999"], "b": ["TopoEdge#1"]}));
 }
+
+/// Undo removes the row (hash back to the one before), redo restores it, and a replay from the
+/// root verifies the recorded hash of the relation's node.
+#[test]
+fn undo_redo_and_replay_reproduce_the_hash() {
+    let mut s = brick_session([10.0; 3], 1.0);
+    let before = s.state().hash();
+    run_json(
+        &mut s,
+        "mesh.interval_relation",
+        json!({"a": ["TopoEdge#5"], "b": ["TopoEdge#1"], "ratio": 2, "relation": "le"}),
+    )
+    .expect("relation");
+    let with_row = s.state().hash();
+    assert_ne!(with_row, before);
+    let node = s.position().expect("position");
+    let rows = |s: &Session| {
+        s.state()
+            .layer::<sm_mesher::IntentLayer>()
+            .expect("intent")
+            .intent()
+            .intervals
+            .len()
+    };
+    assert_eq!(rows(&s), 1);
+    s.undo().expect("undo");
+    assert_eq!(s.state().hash(), before, "undo removes the row");
+    assert_eq!(rows(&s), 0);
+    s.redo().expect("redo");
+    assert_eq!(s.state().hash(), with_row, "redo restores the same state");
+    assert_eq!(rows(&s), 1);
+    let q = sm_op_api::QuietControl::new();
+    let replayed = s
+        .state_at_from_root(node, &q.control())
+        .expect("replay verifies the recorded hash");
+    assert_eq!(replayed.hash(), with_row);
+}

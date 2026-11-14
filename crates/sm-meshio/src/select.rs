@@ -345,12 +345,13 @@ pub fn apply(src: &dyn MeshRead, sel: &Select, roles: &Roles) -> Result<Selected
     }
 
     // A face that was interior and loses a cell becomes a boundary face, which the
-    // classification rules want on a model face: one synthetic face stands in for the cut.
-    let top = faces
+    // classification rules want on a model face: one synthetic face stands in for the cut. Its id
+    // is above every `TopoFace` the source mentions (kept or not), so it names no real face.
+    let top = src
+        .classified_entities()
         .iter()
-        .map(|&f| src.face_class(FaceIx(f)).entity)
         .filter(|e| e.kind() == EntityKind::TopoFace)
-        .map(EntityId::serial)
+        .map(|e| e.serial())
         .max()
         .unwrap_or(0);
     let synthetic = EntityId::new(EntityKind::TopoFace, top + 1).map(Classification::on);

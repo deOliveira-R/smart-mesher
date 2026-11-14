@@ -660,14 +660,15 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             let mesh = parse_mesh(mesh.as_deref())?;
             let mut options = parse_options(option)?;
             if !regions.is_empty() {
-                let map = match options.get_or_insert_with(|| Value::Object(Default::default())) {
-                    Value::Object(m) => m,
-                    _ => unreachable!("parse_options builds an object"),
-                };
-                if map.contains_key("regions") {
-                    return Err(Failure::usage("--regions and --option regions=... both given"));
+                let opts = options.get_or_insert_with(|| Value::Object(Default::default()));
+                if let Value::Object(map) = opts {
+                    if map.contains_key("regions") {
+                        return Err(Failure::usage("--regions and --option regions=... both given"));
+                    }
+                    map.insert("regions".to_owned(), serde_json::json!({ "split": regions }));
+                } else {
+                    return Err(Failure::usage("--regions needs --option values given as KEY=VALUE pairs"));
                 }
-                map.insert("regions".to_owned(), serde_json::json!({ "split": regions }));
             }
             let req = Request::Export {
                 path: Some(path_str(file)),

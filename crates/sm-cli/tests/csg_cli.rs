@@ -100,9 +100,9 @@ fn import_openmc_is_one_history_node_and_the_options_reach_the_op() {
     assert!(rec.contains("max_cells: 50") && rec.contains("reuse_lattices: false"), "{rec}");
     let log = ok_json(&["-p", &s(&proj), "--json", "log"], None, Threads::Inherit).unwrap();
     assert_eq!(log["nodes"].as_array().map_or(0, Vec::len), 1, "{log}");
-    // Bad usage: a missing geometry file is a usage error (exit 2).
+    // A missing geometry file is an op failure reported by the server, not a usage error: exit 1.
     let o = spawn(&["--memory", "import-openmc", "/nonexistent/geometry.xml"], None, Threads::Inherit, None).unwrap();
-    assert_ne!(o.status.code(), Some(0));
+    assert_eq!(o.status.code(), Some(1), "{}", describe(&["import-openmc"], &o));
 }
 
 /// The pin deck's state hash from the library, the CLI and MCP (Python: sm-py's pytest).

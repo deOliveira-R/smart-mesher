@@ -12,6 +12,11 @@ use sm_quality::{Metric, Options, compute_many};
 
 use crate::refine::{RefineError, refine};
 
+/// A level warns (`refine.quality`) when its minimum scaled Jacobian is below this factor times the
+/// parent's. Measured on the default-mesher pin (boundary-hugging corner cells): 0.54, 0.51, 0.50
+/// per level, so 0.6 catches that and stays quiet for the 0.7 of a tet octahedron cut.
+pub const QUALITY_DROP_FACTOR: f64 = 0.6;
+
 /// Most levels one `mesh.refine` call may add (each is 8 times the cells).
 pub const MAX_LEVELS: u32 = 6;
 
@@ -29,6 +34,12 @@ pub const MAX_LEVELS: u32 = 6;
 /// first level links to it; `keep_source: false` retires the source and its links. The report
 /// of each level (counts, projection counters, volumes and minimum scaled Jacobian of parent and
 /// child) is the `refine.report` diagnostic.
+///
+/// Projection moves new nodes onto the circle but does not make the fine polygon volume equal to
+/// the exact one: run `mesh.preserve_volume` (VOLFIT) again after each level. A level whose
+/// minimum scaled Jacobian drops below 0.6 times its parent's raises the `refine.quality`
+/// warning (boundary-hugging corner cells flatten as the circle polygon refines; node placement
+/// cannot repair that).
 ///
 /// Refused with `OpError::Invalid`: polyhedral cells (refine the tet source and dualize again),
 /// inactive or non-conformal cells; high-order meshes with `OpError::Unsupported`. Atomic: the
@@ -138,6 +149,19 @@ impl TypedOp for Refine {
                         s.projection_failed + s.projection_rejected,
                         s.projection_failed,
                         s.projection_rejected
+                    ),
+                    &[new],
+                );
+            }
+            if let (Some(a), Some(b)) = (sj0, sj1)
+                && a > 0.0
+                && b < QUALITY_DROP_FACTOR * a
+            {
+                ctx.warn(
+                    "refine.quality",
+                    format!(
+                        "level {level}: the minimum scaled Jacobian fell from {a:.4} to {b:.4} (below {QUALITY_DROP_FACTOR} of the parent's); \
+                         cells hugging a curved boundary flatten as the boundary polygon refines, and smoothing cannot repair that"
                     ),
                     &[new],
                 );

@@ -65,11 +65,7 @@ fn query_returns_the_planner_steps_and_leaves_the_state_alone() {
     let mut s = pin();
     let before = s.workspace().state_hash();
     let r = query(&mut s, json!({}));
-    assert_eq!(
-        s.workspace().state_hash(),
-        before,
-        "a query must not move the hash"
-    );
+    assert_eq!(s.workspace().state_hash(), before, "a query must not move the hash");
     // One row per volume, ascending.
     let ids: Vec<String> = r["volumes"]
         .as_array()
@@ -79,10 +75,7 @@ fn query_returns_the_planner_steps_and_leaves_the_state_alone() {
         .collect();
     let mut want: Vec<EntityId> = volumes(&s);
     want.sort_unstable();
-    assert_eq!(
-        ids,
-        want.iter().map(ToString::to_string).collect::<Vec<_>>()
-    );
+    assert_eq!(ids, want.iter().map(ToString::to_string).collect::<Vec<_>>());
     // The host row equals plan_cuts on the live topology.
     let h = host(&r);
     let host_id: EntityId = h["volume"].as_str().unwrap().parse().expect("id");
@@ -123,17 +116,11 @@ fn apply_raw(s: &mut Server, host: EntityId, steps: &[CutStep]) {
             .iter()
             .flat_map(|t| match t {
                 Target::Id { .. } => vec![json!(host.to_string())],
-                Target::Step { step, role } => {
-                    outs[*step][role.as_str()].as_array().expect("role").clone()
-                }
+                Target::Step { step, role } => outs[*step][role.as_str()].as_array().expect("role").clone(),
             })
             .collect();
         let (op, mut params) = match &st.cut {
-            CutKind::Cylinder {
-                radius,
-                axis,
-                center,
-            } => (
+            CutKind::Cylinder { radius, axis, center } => (
                 "model.webcut_cylinder",
                 json!({"radius": radius, "axis": axis, "center": center}),
             ),
@@ -174,13 +161,7 @@ fn applying_the_steps_by_script_and_by_raw_ops_gives_equal_hashes() {
     assert_eq!(volumes(&a).len(), 6, "three slabs, two caps, the fuel");
     // After the cuts nothing needs cutting.
     let r2 = query(&mut a, json!({}));
-    assert!(
-        r2["volumes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|v| v["status"] == "no_cuts")
-    );
+    assert!(r2["volumes"].as_array().unwrap().iter().all(|v| v["status"] == "no_cuts"));
 }
 
 #[test]
@@ -195,13 +176,8 @@ fn hex_only_failure_quotes_the_suggested_cuts() {
     let text = format!("{err} {}", err.data["rendered"].as_str().unwrap_or(""));
     let lines: Vec<&str> = h["script"].as_str().unwrap().lines().collect();
     // Error text prints ids without the `Topo` prefix.
-    let want = format!("cannot be swept; suggested cuts: {}", lines.join("; "))
-        .replace("TopoVolume#", "Volume#");
+    let want = format!("cannot be swept; suggested cuts: {}", lines.join("; ")).replace("TopoVolume#", "Volume#");
     assert!(text.contains(&want), "WANT {want}\nGOT {text}");
     assert!(text.contains("mesh.decompose_plan"), "{text}");
-    assert_eq!(
-        s.workspace().state_hash(),
-        before,
-        "the rejected op leaves the state alone"
-    );
+    assert_eq!(s.workspace().state_hash(), before, "the rejected op leaves the state alone");
 }

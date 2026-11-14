@@ -246,8 +246,8 @@ fn w3c_pin_volume_error_before_and_after() {
         rep2["min_scaled_jacobian"].as_f64().unwrap(),
         rep2["volume"].as_f64().unwrap()
     );
-    // Quality: projection stretches the cells next to the circle by the sagitta of the coarse
-    // 8-gon; the smart-Laplacian smoother recovers most of it (the refined mesh stays valid).
+    // Quality: the worst cell is the corner cell with two boundary arcs; its angle is fixed by the
+    // circle nodes, so the smart-Laplacian smoother cannot improve it (it never worsens it).
     let sj_refined = rep["min_scaled_jacobian"].as_f64().unwrap();
     script(&mut s, "mesh.smooth(mesh: Mesh#2, method: {kind: \"smart_laplacian\", relax: 0.5}, iterations: 20)");
     let sm = layer(&s).get(mesh_id(2)).expect("level").mesh();
@@ -256,6 +256,7 @@ fn w3c_pin_volume_error_before_and_after() {
         .into_iter()
         .fold(f64::INFINITY, f64::min);
     eprintln!("w3c pin cell: min SJ of the refined mesh {sj_refined:.6}, after 20 smart-Laplacian sweeps {sj_smooth:.6}");
+    assert!((sj_smooth - sj_refined).abs() < 1e-9, "the corner cell's angle is fixed by the boundary nodes");
     assert!(sj_smooth >= sj_refined - 1e-12, "smart smoothing never worsens the minimum");
     assert!((volume(sm) - total_exact).abs() < 1e-9, "smoothing keeps the total volume");
 }
@@ -428,4 +429,49 @@ fn the_op_is_deterministic_across_runs_and_thread_counts() {
     assert_eq!(a, run_once());
     let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
     assert_eq!(a, one.install(run_once));
+}
+
+/// Diagnostic codes of the `mesh.refine` events of a script run.
+fn diag_codes(run: &Value) -> Vec<String> {
+    run["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|e| e["op"] == "mesh.refine")
+        .flat_map(|e| e["delta"]["diagnostics"].as_array().cloned().unwrap_or_default())
+        .filter_map(|d| d["code"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The pin's worst cell is the corner cell with two boundary arcs: its minimum scaled Jacobian is
+/// `sin(2 pi / n)` for `n` circle intervals (0.7071, 0.3827, 0.1951, 0.0980 at n = 8, 16, 32, 64),
+/// independent of node placement; every level below 0.6 of its parent warns. Without projection
+/// the minimum stays 0.7071 and nothing warns.
+#[test]
+fn quality_drop_per_level_is_the_boundary_corner_angle_and_warns() {
+    let mut s = server();
+    script(&mut s, PIN);
+    let run = script(&mut s, "mesh.refine(mesh: Mesh#1, levels: 3)");
+    let reps = reports(&run);
+    assert_eq!(reps.len(), 3);
+    for (k, rep) in reps.iter().enumerate() {
+        let n = 8.0 * 2f64.powi(k as i32 + 1);
+        let sj = rep["min_scaled_jacobian"].as_f64().expect("sj");
+        assert!((sj - (std::f64::consts::TAU / n).sin()).abs() < 1e-6, "level {} min SJ {sj} vs sin(2pi/{n})", k + 1);
+        eprintln!(
+            "pin level {}: cells {} min SJ {sj:.6} (parent {:.6})",
+            k + 1,
+            rep["cells"],
+            rep["min_scaled_jacobian_parent"].as_f64().expect("parent sj")
+        );
+    }
+    let n_warn = diag_codes(&run).iter().filter(|c| *c == "refine.quality").count();
+    assert_eq!(n_warn, 3, "every level halves the minimum");
+    let mut s2 = server();
+    script(&mut s2, PIN);
+    let run2 = script(&mut s2, "mesh.refine(mesh: Mesh#1, levels: 3, project: false)");
+    for rep in reports(&run2) {
+        assert!((rep["min_scaled_jacobian"].as_f64().expect("sj") - 0.5f64.sqrt()).abs() < 1e-6);
+    }
+    assert!(!diag_codes(&run2).iter().any(|c| c == "refine.quality"));
 }
