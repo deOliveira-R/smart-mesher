@@ -1736,7 +1736,25 @@ dependencies = [
 name = "sm-modify"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-engine",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
  "sm-op-api",
+ "sm-protocol",
+ "sm-quality",
+ "sm-server",
+ "sm-testkit",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]
