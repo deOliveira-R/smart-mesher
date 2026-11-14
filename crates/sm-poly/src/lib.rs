@@ -42,7 +42,7 @@ pub use dual::{with_gate_off_circumcentric, with_ungated_circumcentric};
 pub use dual::dualize_with_rounds;
 pub use error::PolyError;
 pub use measure::{DualEligibility, dual_eligibility};
-pub use ops::{PolyInfo, ToPoly};
+pub use ops::{PolyInfo, ToPoly, poly_error_to_op};
 pub use options::{Agglomerate, DualPoints, DualReport, FaceMode, PolyOptions};
 pub use resolver::{EdgeResolver, TopologyResolver, VertexClassResolver};
 pub use stats::{GENERATOR_TAGS, PolyStats, Spread, WEDGE_TAG, face_nonplanarity, poly_stats};
