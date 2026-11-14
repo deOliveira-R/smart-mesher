@@ -6,7 +6,7 @@ use crate::spacing;
 use sm_core::EntityId;
 use sm_scheme_api::{
     Applicability, Caps, FailureKind, GenCtx, GenerateFailure, IntervalCtx, IntervalSink, Params, Patch, PlanCtx, Result as SchemeResult, Scheme,
-    SchemeDim, SchemeError, SchemeName, Target, Firmness,
+    SchemeDim, SchemeError, SchemeName, Target,
 };
 use sm_scheme_api::geom;
 use sm_topo_api::{TopologyView, TopologyViewExt};
@@ -171,7 +171,7 @@ impl Scheme for CurveScheme {
         let bad = |reason: String| SchemeError::BadParams { scheme: SchemeName::new(self.kind.name()), reason };
         let r = self.resolve(cx.input.topo, e, params, true).map_err(bad)?;
         if let Some(n) = r.count {
-            out.fix(e, n, Firmness::Soft);
+            out.prefer(e, f64::from(n));
         }
         Ok(())
     }
