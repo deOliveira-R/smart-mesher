@@ -531,3 +531,51 @@ fn rays_along_or_near_shared_faces_reach_the_lattice_boundary() {
     // Most rays have no ambiguity at all: those must match the closed form.
     assert!(exact > 1000, "{exact}");
 }
+
+/// Rays in the plane between two layers of a stacked hex lattice (`dz = 0`, on the z-wall), in
+/// generic directions and along shared flats, both orientations: never lost, ended at the
+/// lattice footprint like a single layer, as the Rect lattice does.
+#[test]
+fn rays_on_the_layer_interface_reach_the_lattice_boundary() {
+    let mut checked = 0;
+    for o in [Or::X, Or::Y] {
+        let (w, l) = world(o, 7, 2, ORIGIN());
+        let zw = ORIGIN().z + ZH;
+        let mut r = rng(&format!("hex-zwall-{o:?}"));
+        let base = if o == Or::X { 30.0f64 } else { 0.0 };
+        let mut rays: Vec<(Point3, [f64; 2], String)> = Vec::new();
+        // Generic rays from random interior points of the wall.
+        for k in 0..300 {
+            let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
+            let c = l.element_center([lin % 7, lin / 7, 0]);
+            let org = p3(c.x + 0.45 * P * r.unit(), c.y + 0.45 * P * r.unit(), zw);
+            let a = std::f64::consts::PI * r.unit();
+            rays.push((org, [a.cos(), a.sin()], format!("{o:?} generic {k}")));
+        }
+        // Along a shared flat: from a point of a flat of a random element, along the flat (the
+        // six vertex directions), exactly and a hair off it.
+        for k in 0..300 {
+            let lin = ((0.5 * (r.unit() + 1.0)) * 49.0).floor().min(48.0) as i32;
+            let c = l.element_center([lin % 7, lin / 7, 0]);
+            let a = (base + 60.0 * (k % 6) as f64).to_radians();
+            let na = a + 90f64.to_radians();
+            let s = 0.5 * 0.5774 * P * r.unit();
+            let org = p3(c.x + 0.5 * P * na.cos() + s * a.cos(), c.y + 0.5 * P * na.sin() + s * a.sin(), zw);
+            let eps = [0.0, 1e-13, -1e-9][k / 6 % 3];
+            let a = a + eps;
+            rays.push((org, [a.cos(), a.sin()], format!("{o:?} flat {k} eps {eps:e}")));
+        }
+        for (org, d, what) in rays {
+            let Some((got, end)) = trace(&w, org, v3(d[0], d[1], 0.0)) else { continue };
+            assert_ne!(end, "lost", "{what}: from {org:?} dir {d:?}");
+            assert_eq!(end, "boundary", "{what}");
+            let total: f64 = got.iter().map(|g| g.1).sum();
+            // Within the tolerance band of the footprint (a grazing exit blurs it by tol / sin).
+            let (lo, wide) = (footprint_run(o, &l, org, d, -2e-6).0, footprint_run(o, &l, org, d, 1e-7).1);
+            let band = footprint_run(o, &l, org, d, 1e-6).1;
+            assert!(total >= lo - 1e-6 && total <= band + 1e-6, "{what}: from {org:?} dir {d:?} total {total} outside [{lo}, {wide}] (band {band})");
+            checked += 1;
+        }
+    }
+    assert!(checked > 800, "{checked}");
+}

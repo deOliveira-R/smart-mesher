@@ -948,10 +948,24 @@ impl WorldTracker {
                 // excluded one, ruled on with the direction nudged toward its centre (the state's
                 // direction is not changed), provided the ray stays within `tol` of its hexagon
                 // over a run of one edge. After a zero-length exit (`carry`) this goes first.
+                // A hex stack and a ray parallel to the z-walls (`dz` too small to change layer
+                // within the tolerance over any run in the lattice): a point on a hex flat of the
+                // element the ray left is not handed to the neighbouring layer of the same column,
+                // which holds it only within `tol` and ends the run at once (zero-length
+                // hand-backs between the two layers).
+                let parallel_z = matches!(l.shape, Shape::Hex(_)) && dir[2].abs() <= 1e-9;
+                let excl_col = excl.and_then(|r| r.first()).filter(|lv| lv.component.get() == comp && parallel_z).map(|lv| lv.lattice);
+                let same_column = |idx: [i32; 3]| {
+                    let Shape::Hex(or) = l.shape else { return false };
+                    // Only for a point on a hex flat of that column (a crossing of the pin
+                    // surface at the wall belongs to the layer next door).
+                    let q = sub(p, l.center(idx));
+                    excl_col.is_some_and(|e| e[0] == idx[0] && e[1] == idx[1] && e[2] != idx[2]) && hexlat::sd(or, l.pitch[0], [q[0], q[1]]) >= -self.tol
+                };
                 let carry_pass = |sc: &mut Scratch| -> Option<Hit> {
                     let Shape::Hex(or) = l.shape else { return None };
                     for idx in l.cands(p, dir, self.tol) {
-                        if !l.in_range(idx) {
+                        if !l.in_range(idx) || same_column(idx) {
                             continue;
                         }
                         let lin = l.lin(idx);
@@ -989,14 +1003,23 @@ impl WorldTracker {
                     return Loc::Hit(h);
                 }
                 for idx in l.cands(p, dir, self.tol) {
-                    if !l.in_range(idx) {
+                    if !l.in_range(idx) || same_column(idx) {
                         continue;
                     }
                     let lin = l.lin(idx);
                     let ce = l.center(idx);
                     let q = sub(p, ce);
                     let sub_excl = excl.and_then(|r| r.split_first()).filter(|(lv, _)| lv.component.get() == comp && lv.instance.get() == lin).map(|(_, rest)| rest);
-                    match self.locate_rec(l.fill[lin] as usize, q, dir, sc, sub_excl, carry) {
+                    // On a z-wall of a hex stack with `dz` ~ 0 the leaf's tie on its z plane is
+                    // hashed, so each layer would take or refuse the point by its own hash. The
+                    // point is in both layers: rule on it with the direction nudged into this
+                    // layer (the state's direction is not changed), so the first candidate in
+                    // order takes it and the run along the wall stays in one layer.
+                    let mut ld = dir;
+                    if parallel_z && l.pitch[2] > 0.0 && (q[2].abs() - 0.5 * l.pitch[2]).abs() <= self.tol {
+                        ld[2] = -q[2].signum() * 1e-8;
+                    }
+                    match self.locate_rec(l.fill[lin] as usize, q, ld, sc, sub_excl, carry) {
                         Loc::Miss => {}
                         Loc::Overlap => return Loc::Overlap,
                         Loc::Hit(mut h) => {

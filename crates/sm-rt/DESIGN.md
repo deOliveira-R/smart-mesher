@@ -295,6 +295,14 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
   element centre of a 7x7, six vertex directions and +-1e-15..1e-6 rad off them, closed-form totals, no
   ray lost or carried beyond the footprint) and
   `tests/hex_world.rs::vertex_ties_follow_the_documented_rule` (the ordering).
+* **z-wall of a stack.** A ray with `|dz| <= 1e-9` on the wall between two layers is in both, and each
+  leaf's tie on its z plane is a hashed direction. Two rules keep it in one layer: the locate rules on
+  the point with the direction nudged (`dz = 1e-8`) into the candidate's layer, so the first candidate in
+  order takes it; and a point on a hex flat of the column just left is not handed to the other layer of
+  that column (which holds it only within `tol` and would hand it straight back). A crossing of the pin
+  surface at the wall (the point inside the hexagon) still moves to the next layer. Tested:
+  `tests/hex_world.rs::rays_on_the_layer_interface_reach_the_lattice_boundary` (7x7x2, both orientations,
+  generic rays and rays along shared flats, closed-form footprint totals, none lost).
 * **Fit (`world.lattice_fit`).** Three tests, all within `tol`: the fill's box lies in the box that
   circumscribes the hexagon (and in half a `z_pitch` for a stack); every outer-boundary vertex of a mesh
   fill lies in the hexagon; a leaf fill has no cell at 12 probe points just outside the six flats and
