@@ -2,7 +2,7 @@
 
 use super::{FluentBc, FluentError, FluentOptions, FluentReport, FluentZone};
 use crate::error::MeshioError;
-use crate::foam::{FoamOptions, PatchOrigin, build_polymesh};
+use crate::foam::{FoamError, FoamOptions, PatchOrigin, build_polymesh};
 use crate::report::{LossItem, LossReport, LossSeverity};
 use rayon::prelude::*;
 use sm_mesh_api::MeshRead;
@@ -112,13 +112,18 @@ fn cell_type(tri: u32, quad: u32, other: u32) -> u8 {
 /// cells, non-finite coordinates, unknown sets) as [`FluentError::Mesh`], and
 /// [`FluentError::UnknownBoundary`].
 pub fn write_fluent<W: Write>(mesh: &dyn MeshRead, opts: &FluentOptions, out: &mut W) -> Result<FluentReport, FluentError> {
-    let mut fo = FoamOptions::default();
-    fo.patches = opts.patches.clone();
-    fo.cell_zones = opts.cell_zones.clone();
-    fo.default_patch = "default_faces".into();
-    fo.split_small_determinant = false;
-    fo.split_warped_faces = false;
-    let build = build_polymesh(mesh, &fo)?;
+    let fo = FoamOptions {
+        patches: opts.patches.clone(),
+        cell_zones: opts.cell_zones.clone(),
+        default_patch: "default_faces".into(),
+        split_small_determinant: false,
+        split_warped_faces: false,
+        ..FoamOptions::default()
+    };
+    let build = build_polymesh(mesh, &fo).map_err(|e| match e {
+        MeshioError::Foam(FoamError::NotThreeDimensional) => MeshioError::Unsupported("a Fluent export needs a dimension-3 mesh".into()),
+        other => other,
+    })?;
     let mut loss = LossReport::new();
     for i in &build.report.loss.items {
         if i.code == "foam.name_sanitized" {

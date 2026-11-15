@@ -271,6 +271,43 @@ def test_source_model_exports_dagmc_without_a_mesh(s: sm.Session, tmp_path: path
     assert ei.value.kind == "bad-request"
 
 
+def test_fluent_export_takes_polyhedra_is_never_inferred_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path) -> None:
+    """`format="fluent"` writes a `.msh` with polyhedra (cell type 7); with no format `.msh` stays Gmsh."""
+    slice_typed(s)
+    fl = tmp_path / "f.msh"
+    r = s.export(fl, format="fluent")
+    assert r.format == "fluent"
+    text = fl.read_text()
+    assert text.startswith('(0 "smart-mesh Fluent export")') and "\n(2 3)\n" in text
+    plain = tmp_path / "g.msh"
+    assert s.export(plain).format == "gmsh"
+    assert plain.read_bytes().startswith(b"$MeshFormat")
+    # Polyhedra are exported (Gmsh refuses them): the dual's cells are type 7.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.msh"
+    p.export(out, format="fluent", mesh=pm)
+    poly_text = out.read_text()
+    assert "(12 (2 1 " in poly_text and " 1 7))" in poly_text
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.msh"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(bad, format="fluent", options={"binary": True})
+    assert ei.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.msh"), "--format", "fluent"],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert fl.read_bytes() == (tmp_path / "cli.msh").read_bytes()
+
+
 @pytest.mark.parametrize("name", ["a.cgns", "A.CGNS"])
 def test_cgns_export_is_refused_typed_and_writes_no_file(cube: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
     """A `.cgns` path (any case) infers `cgns`; until an exporter exists it is `format-not-implemented`."""

@@ -288,10 +288,7 @@ fn inline_req(format: ExportFormat) -> Request {
 fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
     let dir = TempDir::new("wire-notimpl");
     let mut s = hex_server();
-    // `.msh` is accepted with an explicit `fluent`; nothing is written in any case.
     let cases = [
-        (ExportFormat::Fluent, "a.msh", "fluent"),
-        (ExportFormat::Fluent, "a.dat", "fluent"),
         (ExportFormat::Cgns, "a.cgns", "cgns"),
         (ExportFormat::Abaqus, "a.inp", "abaqus"),
     ];
@@ -319,13 +316,79 @@ fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
 }
 
 #[test]
+fn fluent_is_written_only_when_asked_and_is_the_same_bytes_in_process_cli_and_mcp() {
+    let dir = TempDir::new("wire-fluent");
+    let s = Rc::new(RefCell::new(hex_server()));
+    // In process: an explicit `fluent` on a `.msh` (or any other) name.
+    let p0 = dir.path().join("inproc.msh");
+    let r = export(&mut s.borrow_mut(), &p0, Some(ExportFormat::Fluent), None).unwrap_or_else(|e| panic!("{e} {}", e.data));
+    assert_eq!(r.format, ExportFormat::Fluent);
+    let want = read(&p0);
+    assert_eq!(r.bytes as usize, want.len());
+    assert_eq!(r.sha256, Hash256::of(&want));
+    let text = String::from_utf8(want.clone()).expect("ascii");
+    assert!(text.starts_with("(0 \"smart-mesh Fluent export\")\n"), "{}", &text[..60]);
+    assert!(text.contains("\n(2 3)\n"));
+    // One cell zone per block, one interior zone, boundary zones typed wall by default.
+    assert!(text.contains("fluid fuel)())") && text.contains("fluid water)())") && text.contains("(39 (4 interior interior)())"), "{}", text.lines().filter(|l| l.starts_with("(39")).collect::<Vec<_>>().join("\n"));
+    assert!(r.notes.iter().all(|n| n.code.starts_with("fluent.")), "{:?}", r.notes);
+    let p1 = dir.path().join("other.dat");
+    export(&mut s.borrow_mut(), &p1, Some(ExportFormat::Fluent), None).expect("any extension");
+    assert_eq!(read(&p1), want);
+    // Without a format `.msh` is still Gmsh: Fluent is never inferred.
+    let g = export(&mut s.borrow_mut(), &dir.path().join("g.msh"), None, None).expect("gmsh");
+    assert_eq!(g.format, ExportFormat::Gmsh);
+
+    let p2 = dir.path().join("cli.msh");
+    let (code, _, err) = cli(&s, &["export", p2.to_str().expect("utf8"), "--format", "fluent"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read(&p2), want, "cli differs");
+    let p3 = dir.path().join("mcp.msh");
+    let reply = mcp(&mut s.borrow_mut(), "session_export", json!({"path": p3.to_string_lossy(), "format": "fluent"}));
+    assert!(reply["result"]["isError"] != json!(true), "{reply}");
+    assert_eq!(read(&p3), want, "mcp differs");
+    // Inline is the same text.
+    let v = s.borrow_mut().call(inline_req(ExportFormat::Fluent)).expect("inline");
+    let inline: ExportResult = serde_json::from_value(v).expect("result");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(inline.base64.expect("base64")).expect("decode");
+    assert_eq!(bytes, want);
+    // Thread count and repeat do not change the bytes.
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let mut t = hex_server();
+    let single = one.install(|| export(&mut t, &p0, Some(ExportFormat::Fluent), None).expect("1 thread").sha256);
+    assert_eq!(single, r.sha256);
+}
+
+#[test]
+fn fluent_options_are_checked_and_boundary_types_apply() {
+    let dir = TempDir::new("wire-fluent-opts");
+    let mut s = hex_server();
+    let bad = [
+        json!({"binary": true}),
+        json!({"cell_zones": "some"}),
+        json!({"boundary_types": {"x": "porous"}}),
+        json!({"boundary_types": {"no_such_set": "wall"}}),
+    ];
+    for options in bad {
+        let p = dir.path().join("bad.msh");
+        let e = export(&mut s, &p, Some(ExportFormat::Fluent), Some(options.clone())).expect_err(&options.to_string());
+        assert_eq!(e.kind, "bad-request", "{options}: {e}");
+        assert!(!p.exists(), "{options}: nothing written");
+    }
+    let p = dir.path().join("none.msh");
+    export(&mut s, &p, Some(ExportFormat::Fluent), Some(json!({"cell_zones": "none"}))).expect("none");
+    let text = String::from_utf8(read(&p)).expect("ascii");
+    assert!(text.contains("fluid fluid)())") && !text.contains("fuel"), "no block zones");
+}
+
+#[test]
 fn unimplemented_formats_reach_the_cli_user_as_a_typed_error_and_write_nothing() {
     let dir = TempDir::new("wire-notimpl-cli");
     let s = Rc::new(RefCell::new(hex_server()));
     let cgns = dir.path().join("a.cgns");
     let msh = dir.path().join("a.msh");
     let inp = dir.path().join("a.inp");
-    let cases: [(&Path, &[&str]); 3] = [(&cgns, &[]), (&msh, &["--format", "fluent"]), (&inp, &[])];
+    let cases: [(&Path, &[&str]); 2] = [(&cgns, &[]), (&inp, &[])];
     for (path, extra) in cases {
         let p = path.to_string_lossy().into_owned();
         let mut args = vec!["export", p.as_str()];
@@ -348,7 +411,7 @@ fn unimplemented_formats_reach_the_mcp_client_as_a_tool_error() {
     let msh = dir.path().join("a.msh");
     let inp = dir.path().join("a.inp");
     let cases = [
-        json!({"format": "fluent", "path": msh.to_string_lossy()}),
+        json!({"format": "abaqus", "path": msh.with_extension("dat").to_string_lossy()}),
         json!({"path": inp.to_string_lossy()}),
         json!({"format": "cgns", "inline": true}),
     ];

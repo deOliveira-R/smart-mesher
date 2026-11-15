@@ -1,5 +1,5 @@
-//! Mesh export formats that are not in `sm-fem`: DAGMC `.h5m`, Gmsh `.msh` 4.1 and the `.smrt`
-//! tracking image. Each is a pure function of the state and the options.
+//! Mesh export formats that are not in `sm-fem`: DAGMC `.h5m`, Gmsh `.msh` 4.1, Fluent `.msh` and
+//! the `.smrt` tracking image. Each is a pure function of the state and the options.
 
 use serde_json::{Map, Value};
 use sm_core::EntityId;
@@ -7,6 +7,7 @@ use sm_fem::region::RegionSplit;
 use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, SplitError, lower, lower_split};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
+use sm_meshio::fluent::{FluentError, FluentOptions, write_fluent};
 use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
 use sm_meshio::report::LossReport;
 use sm_meshio::select::{Dimension, Pick, Select};
@@ -23,7 +24,7 @@ use crate::host::export_error;
 
 /// The formats this module writes.
 pub(crate) fn handles(format: ExportFormat) -> bool {
-    matches!(format, ExportFormat::Dagmc | ExportFormat::Gmsh | ExportFormat::Smrt)
+    matches!(format, ExportFormat::Dagmc | ExportFormat::Gmsh | ExportFormat::Fluent | ExportFormat::Smrt)
 }
 
 /// Bytes and loss notes (`code: detail xcount`) of one export.
@@ -227,6 +228,26 @@ fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
     Ok(o)
 }
 
+/// The `fluent` options: `cell_zones` (`"all"`, `"none"` or `{"names": [..]}`), `boundary_types`
+/// (set name to a Fluent boundary type) and `select`.
+fn fluent_options(options: Option<&Value>) -> Result<FluentOptions, SessionError> {
+    let m = options_map("fluent", options, &["cell_zones", "boundary_types", "select"])?;
+    let mut o = FluentOptions::default();
+    let Some(m) = m else { return Ok(o) };
+    if let Some(v) = m.get("cell_zones").filter(|v| !v.is_null()) {
+        o.cell_zones = serde_json::from_value(v.clone())
+            .map_err(|_| SessionError::bad_request(format!("`fluent` option `cell_zones` must be \"all\", \"none\" or {{\"names\": [..]}}, found {v}")))?;
+    }
+    if let Some(v) = m.get("boundary_types").filter(|v| !v.is_null()) {
+        o.boundary_types = serde_json::from_value(v.clone()).map_err(|e| {
+            SessionError::bad_request(format!(
+                "`fluent` option `boundary_types` must map set names to one of wall, symmetry, pressure-inlet, pressure-outlet, velocity-inlet, mass-flow-inlet, outflow, pressure-far-field ({e})"
+            ))
+        })?;
+    }
+    Ok(o)
+}
+
 /// The `dagmc` options. `chord_tol` (a positive finite number) only applies to `source: model`
 /// (`model` true); with a mesh it is refused rather than ignored.
 pub(crate) fn dagmc_options(options: Option<&Value>, model: bool) -> Result<(DagmcOptions, Option<f64>), SessionError> {
@@ -303,6 +324,15 @@ pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>
             let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
             let mut bytes = Vec::new();
             let rep = write_msh4((*lowered.mesh).as_read(), &o, &mut bytes).map_err(gmsh_error)?;
+            notes.extend(notes_of(&rep.loss));
+            Ok(Written { bytes, notes })
+        }
+        ExportFormat::Fluent => {
+            let o = fluent_options(options)?;
+            let sel = select_option("fluent", options_map("fluent", options, &["cell_zones", "boundary_types", "select"])?)?;
+            let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
+            let mut bytes = Vec::new();
+            let rep = write_fluent((*lowered.mesh).as_read(), &o, &mut bytes).map_err(fluent_error)?;
             notes.extend(notes_of(&rep.loss));
             Ok(Written { bytes, notes })
         }
@@ -475,6 +505,16 @@ fn gmsh_error(e: GmshError) -> SessionError {
     }
 }
 
+fn fluent_error(e: FluentError) -> SessionError {
+    match &e {
+        FluentError::UnknownBoundary(_) => SessionError::bad_request(e.to_string()),
+        FluentError::Mesh(sm_meshio::MeshioError::Unsupported(_)) => SessionError::new("unsupported", e.to_string()),
+        FluentError::Mesh(sm_meshio::MeshioError::Foam(sm_meshio::foam::FoamError::UnknownSet(_))) => SessionError::bad_request(e.to_string()),
+        FluentError::Io(_) => SessionError::new("io", e.to_string()),
+        _ => SessionError::new("export-failed", e.to_string()),
+    }
+}
+
 pub(crate) fn dagmc_error(e: DagmcError) -> SessionError {
     match &e {
         DagmcError::OpenSurface { volume, edge, at } => {
@@ -510,12 +550,18 @@ mod tests {
         assert!(dagmc_options(Some(&json!({"chord_tol": 0.0})), true).is_err());
         assert!(dagmc_options(Some(&json!({"chord_tol": "fine"})), true).is_err());
         assert!(options_map("smrt", Some(&json!({"x": 1})), &[]).is_err());
+        let f = fluent_options(Some(&json!({"cell_zones": {"names": ["b1"]}, "boundary_types": {"inlet": "pressure-inlet"}}))).expect("fluent options");
+        assert_eq!(f.boundary_types.len(), 1);
+        assert!(fluent_options(Some(&json!({"binary": true}))).is_err());
+        assert!(fluent_options(Some(&json!({"cell_zones": "some"}))).is_err());
+        assert!(fluent_options(Some(&json!({"boundary_types": {"inlet": "porous"}}))).is_err());
+        assert!(fluent_options(None).is_ok());
     }
 
     #[test]
     fn a_format_without_a_write_arm_is_refused_never_written_as_smrt() {
         let state = State::default();
-        for f in [ExportFormat::Smsh, ExportFormat::Fluent, ExportFormat::Cgns, ExportFormat::Abaqus] {
+        for f in [ExportFormat::Smsh, ExportFormat::Cgns, ExportFormat::Abaqus] {
             assert!(!handles(f));
             let e = write(&state, f, None, None).err().expect("refused");
             assert_eq!(e.code, "format-not-implemented", "{f:?}");

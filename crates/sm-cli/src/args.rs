@@ -22,7 +22,9 @@ pub enum Format {
     Gmsh,
     /// Self-contained `.smrt` tracking image for the transport handover.
     Smrt,
-    /// Fluent ASCII `.msh` (not implemented yet). Never inferred: `.msh` means Gmsh.
+    /// Fluent ASCII `.msh`: cell zones per block or region, boundary zones per face set, polyhedra
+    /// as cell type 7. Never inferred (`.msh` means Gmsh), so `--format fluent` is always needed.
+    /// Options: `--option cell_zones=none`, `--option boundary_types={"inlet":"pressure-inlet"}`.
     Fluent,
     /// CGNS HDF5 `.cgns` (not implemented yet).
     Cgns,

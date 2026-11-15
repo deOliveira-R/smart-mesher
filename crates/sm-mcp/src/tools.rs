@@ -214,7 +214,7 @@ impl Fixed {
             Fixed::SessionExport => (
                 json!({
                     "path": {"type": "string", "description": "Output file; omit for inline-only output."},
-                    "format": {"type": "string", "enum": ["smsh", "vtu", "exodus", "openfoam", "dagmc", "gmsh", "smrt", "fluent", "cgns", "abaqus"], "description": "Defaults to the path extension (.msh is gmsh; fluent is never inferred). openfoam: path is the case directory. fluent, cgns and abaqus are not implemented yet (error format-not-implemented)."},
+                    "format": {"type": "string", "enum": ["smsh", "vtu", "exodus", "openfoam", "dagmc", "gmsh", "smrt", "fluent", "cgns", "abaqus"], "description": "Defaults to the path extension (.msh is gmsh; fluent is never inferred). openfoam: path is the case directory. fluent: ASCII .msh with cell zones per block and polyhedra, always needs format. cgns and abaqus are not implemented yet (error format-not-implemented)."},
                     "mesh": {
                         "type": "string",
                         "pattern": "^[A-Za-z]+#[0-9]+$",
