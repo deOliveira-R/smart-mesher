@@ -4,7 +4,7 @@
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;
 use sm_mesh_api::{MeshRead, SerialAlloc};
-use sm_geom_api::{Cylinder, CurveDef, Frame, Interval, Line, SurfaceDef};
+use sm_geom_api::{Cylinder, Plane, CurveDef, Frame, Interval, Line, SurfaceDef};
 use sm_scheme_api::stubs::{brick_setup, registry};
 use sm_scheme_api::{
     BoundaryLoop, Driver, Firm, Firmness, GenCtx, IntervalRequest, MeshInput, MeshIntent,
@@ -102,17 +102,19 @@ fn planar_composite_meshes_like_the_host_face() {
     assert!((got_n - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
 }
 
-/// Two quads sharing an edge, both on a cylinder surface (topology only), as a composite.
-fn cylinder_composite() -> (Overlay, EntityId) {
+/// Two quads sharing an edge, each on its own surface (topology only), as a composite.
+/// `bend` lifts the outline into a V so it is not planar.
+fn two_quads(surfs: [SurfaceDef; 2], bend: bool) -> (Overlay, EntityId) {
     let mut t = CellComplex::new();
     let faces = with_op(&mut t, OpId(1), |t| {
         let p = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (0.0, 1.0)];
+        let z = |q: (f64, f64)| if bend { 0.5 * (q.0 - 1.0) * (q.0 - 1.0) } else { 0.0 };
         let v: Vec<EntityId> = p
             .iter()
-            .map(|q| t.make_vertex(Point3::new(q.0, q.1, 0.0)).unwrap())
+            .map(|q| t.make_vertex(Point3::new(q.0, q.1, z(*q))).unwrap())
             .collect();
         let edge = |t: &mut CellComplex, a: usize, b: usize| {
-            let (pa, pb) = (Point3::new(p[a].0, p[a].1, 0.0), Point3::new(p[b].0, p[b].1, 0.0));
+            let (pa, pb) = (Point3::new(p[a].0, p[a].1, z(p[a])), Point3::new(p[b].0, p[b].1, z(p[b])));
             let curve = t
                 .shapes_mut()
                 .unwrap()
@@ -126,21 +128,52 @@ fn cylinder_composite() -> (Overlay, EntityId) {
         };
         let e = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0), (1, 4)]
             .map(|(a, b)| edge(t, a, b).unwrap());
-        let cyl = SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
-        let surface = t.shapes_mut().unwrap().add_surface(cyl).unwrap();
-        let sc = Some(SurfaceCarrier { surface, sense: Sense::Forward });
+        let mut sc = [None; 2];
+        for (slot, def) in sc.iter_mut().zip(surfs) {
+            let surface = t.shapes_mut().unwrap().add_surface(def).unwrap();
+            *slot = Some(SurfaceCarrier { surface, sense: Sense::Forward });
+        }
         let f = |i: usize, fwd: bool| CoedgeSpec {
             edge: e[i],
             sense: if fwd { Sense::Forward } else { Sense::Reversed },
         };
-        let a = t.make_face(&[&[f(0, true), f(6, true), f(4, true), f(5, true)]], sc)?;
-        let b = t.make_face(&[&[f(1, true), f(2, true), f(3, true), f(6, false)]], sc)?;
+        let a = t.make_face(&[&[f(0, true), f(6, true), f(4, true), f(5, true)]], sc[0])?;
+        let b = t.make_face(&[&[f(1, true), f(2, true), f(3, true), f(6, false)]], sc[1])?;
         Ok([a, b])
     })
     .unwrap();
     let mut ov = Overlay::new(Arc::new(t));
     let vf = ov.composite_faces(&faces).unwrap();
     (ov, vf)
+}
+
+fn cylinder_composite() -> (Overlay, EntityId) {
+    let cyl = || SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
+    two_quads([cyl(), cyl()], true)
+}
+
+fn plane(z: f64) -> SurfaceDef {
+    SurfaceDef::Plane(Plane { frame: Frame::at(Point3::new(0.0, 0.0, z)) })
+}
+
+#[test]
+fn coplanar_members_on_different_plane_handles_keep_the_newell_normal() {
+    let (ov, vf) = two_quads([plane(0.0), plane(0.0)], false);
+    // Two handles: no single surface, but one plane.
+    assert_eq!(ov.composite_surface(vf), None);
+    let n = geom::face_normal(&ov, vf, Point3::new(1.0, 0.5, 0.0)).expect("planar fallback");
+    assert!((n - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12, "{n:?}");
+}
+
+#[test]
+fn non_planar_mixed_composite_is_refused() {
+    // Members on parallel but offset planes, outline bent: not one plane.
+    let (ov, vf) = two_quads([plane(0.0), plane(0.5)], true);
+    assert_eq!(ov.composite_surface(vf), None);
+    match geom::face_normal(&ov, vf, Point3::new(1.0, 0.5, 0.0)) {
+        Err(SchemeError::Input(m)) => assert!(m.contains("V2b"), "{m}"),
+        other => panic!("expected a typed refusal, got {other:?}"),
+    }
 }
 
 #[test]
@@ -241,4 +274,91 @@ fn copy_intent_on_a_composite_face_keeps_it_out_of_the_root() {
     // The intent on the lower id moves the root to the other composite.
     let (root, _, vt) = copy_class_root(true);
     assert_eq!(root, Target::Surface(vt));
+}
+
+/// Brick whose top face is split by the diagonal and composited back; returns the overlay and
+/// the composite face.
+fn brick_with_composite_top() -> (Overlay, BrickIds, EntityId, sm_model_api::Model) {
+    let (mut t, ids, model) = brick_setup([1.0; 3]);
+    let halves = with_op(&mut t, OpId(2), |t| {
+        let curve = t.shapes_mut().unwrap().add_curve(diagonal()).unwrap();
+        let chord = t.make_edge(
+            ids.vertices[4],
+            ids.vertices[7],
+            Some(CurveCarrier {
+                curve,
+                range: Interval::new(0.0, 2f64.sqrt()),
+                sense: Sense::Forward,
+            }),
+        )?;
+        Ok(t.split_face(ids.faces[5], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+    })
+    .unwrap();
+    let mut ov = Overlay::new(Arc::new(t));
+    let vf = ov.composite_faces(&halves).unwrap();
+    (ov, ids, vf, model)
+}
+
+#[test]
+fn volume_with_a_composite_face_plans_it_as_a_surface_target() {
+    // T2 acceptance 5: the volume's face list reaches `region.faces`, so the composite is a
+    // `Target::Surface` and its hidden halves are not targets.
+    let (ov, ids, vf, model) = brick_with_composite_top();
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let sel = [ids.volume];
+    let input = MeshInput::new(&ov, &model, &WholeFaces, &sel);
+    let plan = driver.plan(&input, &all_counts(&ids, 2)).expect("plan");
+    assert!(plan.target(Target::Surface(vf)).is_some(), "composite not planned");
+    assert!(plan.layout(vf).is_some());
+    for h in ov.live_cover(vf).into_iter().filter(|h| *h != vf) {
+        assert!(plan.target(Target::Surface(h)).is_none(), "hidden member {h} planned");
+    }
+}
+
+fn partition_copy_root(with_intent: bool) -> (Target, EntityId, EntityId) {
+    // Opposite x-edges of the top face, each split in two; the copy intent sits on halves.
+    let (host, ids, model) = brick_setup([1.0; 3]);
+    let mut ov = Overlay::new(Arc::new(host));
+    let (_, a) = ov.partition_edge(ids.edges[2], 0.5).unwrap();
+    let (_, b) = ov.partition_edge(ids.edges[3], 0.5).unwrap();
+    assert!(a[0] < b[0]);
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let sel = [ids.faces[5]];
+    let input = MeshInput::new(&ov, &model, &WholeFaces, &sel);
+    let mut intent = all_counts(&ids, 2);
+    for h in a.iter().chain(&b) {
+        intent.set_intervals(*h, Firm::hard(IntervalRequest::Count(2)));
+    }
+    let (dst, src, dy) = if with_intent { (a[0], b[0], -1.0) } else { (b[0], a[0], 1.0) };
+    intent.set_scheme(
+        dst,
+        SchemeChoice::with_params(
+            "copy",
+            serde_json::json!({
+                "source": src,
+                "transform": Transform::translation(Vector3::new(0.0, dy, 0.0)),
+            }),
+            Firmness::Hard,
+        ),
+    );
+    let plan = driver.plan(&input, &intent).expect("plan");
+    let (class, _) = plan
+        .copy_of(Target::Curve(a[0]))
+        .or_else(|| plan.copy_of(Target::Curve(b[0])))
+        .expect("class");
+    (class.root, a[0], b[0])
+}
+
+#[test]
+fn copy_intent_on_a_partition_edge_is_honoured() {
+    // Control: the intent is on the higher id, so the lower one stays the root.
+    let (root, a, _) = partition_copy_root(false);
+    assert_eq!(root, Target::Curve(a));
+    // The intent on the lower id moves the root to the other half.
+    let (root, _, b) = partition_copy_root(true);
+    assert_eq!(root, Target::Curve(b));
 }

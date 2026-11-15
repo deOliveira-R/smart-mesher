@@ -31,6 +31,11 @@ sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs", "schemars"] }
 sm-scheme-curve = { path = "../sm-scheme-curve" }
 sm-scheme-tri = { path = "../sm-scheme-tri" }
+sm-scheme-pave = { path = "../sm-scheme-pave" }
+sm-scheme-map = { path = "../sm-scheme-map" }
+sm-scheme-submap = { path = "../sm-scheme-submap" }
+sm-quality = { path = "../sm-quality" }
+sm-geom-api = { path = "../sm-geom-api" }
 sm-scheme-tet = { path = "../sm-scheme-tet" }
 sm-server = { path = "../sm-server" }
 sm-protocol = { path = "../sm-protocol" }

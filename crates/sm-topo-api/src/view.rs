@@ -75,7 +75,8 @@ pub trait TopologyView: Send + Sync {
     /// For a face with its own surface carrier this is that carrier (the default). For a
     /// virtual composite face (overlay) it is the shared carrier when every member resolves
     /// to the same surface handle with the same sense and that surface is not periodic
-    /// (neither `u` nor `v`), so the composite can be meshed as one face through the
+    /// (neither `u` nor `v`; judged on the whole surface domain, not on the span the composite
+    /// covers, so a half-cylinder composite is still periodic), so the composite can be meshed as one face through the
     /// surface's own parametrization. `None` otherwise: members on different surfaces or
     /// senses, a periodic carrier (pcurve synthesis and seams, ACR-V2b), or no surface.
     fn composite_surface(&self, face: EntityId) -> Option<SurfaceCarrier> {

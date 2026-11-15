@@ -22,7 +22,7 @@ use sm_scheme_api::{
     IntervalSink, NodeKey, Param, Params, Patch, PatchBuilder, PlanCtx, Rel, Requirements,
     Scheme, SchemeDim, SchemeRegistry, Target, VertexRule,
 };
-use sm_topo_api::{Carrier, CellFlags, Sense, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellFlags, Sense, TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
 
 /// Registered name of the scheme.
@@ -91,10 +91,8 @@ impl PaveParams {
 
 /// The surface of the carrier of `f`, with the carrier's sense.
 fn surface_of(topo: &dyn TopologyView, f: EntityId) -> Option<(&dyn ParametricSurface, Sense)> {
-    match topo.carrier(f) {
-        Carrier::Surface(sc) => topo.shapes().surface(sc.surface).map(|s| (s, sc.sense)),
-        _ => None,
-    }
+    let sc = topo.composite_surface(f)?;
+    topo.shapes().surface(sc.surface).map(|s| (s, sc.sense))
 }
 
 impl Scheme for Pave {
