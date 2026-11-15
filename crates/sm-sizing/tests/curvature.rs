@@ -308,3 +308,45 @@ proptest! {
         prop_assert!(f.size(p) <= f.size(p2) + g * dist(p, p2) + 1e-12);
     }
 }
+
+/// With the default grade the field honours the chord-height rule on the carriers at dense
+/// non-sample points, including when the tolerance is far below the sample spacing.
+#[test]
+fn default_grade_meets_the_rule_on_the_carriers_between_samples() {
+    const DELTA: f64 = 0.05;
+    for (r, t) in [(1.0, 0.01), (1.0, 0.001), (0.2, 0.001)] {
+        let want = rule(t, r);
+        let spec = func("curvature", serde_json::json!({ "tol": t, "h_max": 2.0 }));
+        let (topo, ids) = cyl(r, 2.0);
+        let f = geo(&topo, &spec);
+        let mut worst: f64 = 0.0;
+        for i in 0..400 {
+            for j in 0..61 {
+                let a = 0.0173 + 0.0157 * f64::from(i);
+                let p = Point3::new(r * a.cos(), r * a.sin(), 2.0 * (0.0071 + f64::from(j) / 61.0).min(1.0));
+                worst = worst.max(f.size(p) / want);
+            }
+        }
+        assert!(worst <= 1.0 + DELTA, "cylinder r={r} t={t}: size/rule {worst}");
+        for i in 0..500 {
+            let p = edge_point(&topo, ids.edges[0], 0.00131 + f64::from(i) / 500.0).expect("point");
+            assert!(f.size(p) <= want * (1.0 + DELTA), "edge r={r} t={t}");
+        }
+        let goal = edge_size_goal(&topo, ids.edges[0], &*f).expect("goal");
+        let exact = 2.0 * std::f64::consts::PI * r / want;
+        assert!(goal >= exact / (1.0 + DELTA) && goal <= exact * (1.0 + 1e-6), "r={r} t={t}: goal {goal} vs {exact}");
+        // The sphere, away from the poles.
+        let mut sph = CellComplex::new();
+        let _s: SphereIds = with_op(&mut sph, OpId(1), |t| sphere(t, r)).expect("sphere");
+        let f = geo(&sph, &spec);
+        let mut worst: f64 = 0.0;
+        for i in 0..200 {
+            for j in -60..=60 {
+                let (a, b) = (0.0191 + 0.0313 * f64::from(i), 0.0127 * f64::from(j) + 0.003);
+                let p = Point3::new(r * b.cos() * a.cos(), r * b.cos() * a.sin(), r * b.sin());
+                worst = worst.max(f.size(p) / want);
+            }
+        }
+        assert!(worst <= 1.0 + DELTA, "sphere r={r} t={t}: size/rule {worst}");
+    }
+}

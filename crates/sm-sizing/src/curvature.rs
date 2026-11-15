@@ -21,12 +21,14 @@
 //! evaluated at the projection of `p`, and `h_max` elsewhere. That is the right field for curve
 //! interval goals (edge points lie on the carrier) but not for unstructured schemes, which query
 //! points slightly off the surface and would see `h_max`. A surface counts by its carrier (the
-//! trim is not re-checked at query time). **Otherwise `grade = g`** (default 0.5) the size is
+//! trim is not re-checked at query time). **Otherwise `grade = g`** (default 0.5) the size is the minimum of that exact on-carrier value
+//! (`rule(proj p) + g dist`, wherever it can be below `h_max`; so the rule holds **exactly on the
+//! carriers** whatever the sample spacing) and
 //! `min(h_max, min_q (h_q + g |p - q|))` over a fixed sample set (`4 samples + 1` points per
 //! curved edge, `(samples + 1)^2` per curved face, trimmed by the face; a face whose trim cannot
-//! be classified keeps all its samples), so it is `g`-Lipschitz everywhere (see [`Graded`]) and
-//! fills the
-//! volume interior smoothly. `samples` defaults to 16. Poles and apexes (singular first
+//! be classified keeps all its samples), so it is `g`-Lipschitz (see [`Graded`]; the exact term is too
+//! where the curvature is constant along the carrier) and fills the volume
+//! interior smoothly. `samples` defaults to 16. Poles and apexes (singular first
 //! fundamental form) carry no sample or exact value: the size there comes from their neighbours.
 //!
 //! Everything is a pure, order-independent function of the inputs: bit-identical for 1 and N
@@ -104,6 +106,21 @@ fn point_field(p: &Value) -> Result<Box<dyn SizeField>, String> {
     Ok(Box::new(Graded::new(&samples, grade, h_max)))
 }
 
+/// The graded field capped by the exact on-carrier rule: `min(local, graded)`. The graded part
+/// fills the volume; the cap makes the carriers honour the chord-height rule exactly, however
+/// sparse the samples are (between samples the graded value rises by up to `grade` times the
+/// sample spacing).
+struct Capped {
+    local: Local,
+    graded: Graded,
+}
+
+impl SizeField for Capped {
+    fn size(&self, p: Point3) -> f64 {
+        self.local.size(p).min(self.graded.size(p))
+    }
+}
+
 /// The grade of `curvature` when the spec gives none.
 pub const DEFAULT_GRADE: f64 = 0.5;
 
@@ -113,6 +130,8 @@ struct Opts {
     h_max: f64,
     h_min: f64,
     angle: Option<f64>,
+    /// The grade when graded (the exact term then reaches as far as it can matter), else `None`.
+    grade: Option<f64>,
 }
 
 impl Opts {
@@ -150,7 +169,7 @@ fn curvature_field(view: &dyn TopologyView, targets: &[EntityId], p: &Value) -> 
         None => 16,
         Some(v) => v.as_u64().filter(|n| (2..=512).contains(n)).ok_or("`samples` must be an integer in 2..=512")? as usize,
     };
-    let o = Opts { tol, h_max, h_min, angle };
+    let o = Opts { tol, h_max, h_min, angle, grade };
     let (edges, faces) = gather(view, targets);
     let mut feats = Vec::new();
     for e in edges {
@@ -169,9 +188,9 @@ fn curvature_field(view: &dyn TopologyView, targets: &[EntityId], p: &Value) -> 
             for f in &feats {
                 samples.extend_from_slice(&f.samples);
             }
-            Box::new(Graded::new(&samples, g, h_max))
+            Box::new(Capped { local: Local { feats, h_max, o, grade: g }, graded: Graded::new(&samples, g, h_max) })
         }
-        None => Box::new(Local { feats, h_max, o }),
+        None => Box::new(Local { feats, h_max, o, grade: 0.0 }),
     })
 }
 
@@ -220,7 +239,7 @@ struct Feature {
     samples: Vec<(Point3, f64)>,
 }
 
-fn finish(kind: Kind, eps: f64, samples: Vec<(Point3, f64)>) -> Option<Feature> {
+fn finish(kind: Kind, eps: f64, o: Opts, samples: Vec<(Point3, f64)>) -> Option<Feature> {
     if samples.is_empty() {
         return None;
     }
@@ -233,7 +252,14 @@ fn finish(kind: Kind, eps: f64, samples: Vec<(Point3, f64)>) -> Option<Feature> 
         }
     }
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let pad = 0.05 * diag + 10.0 * eps;
+    let hmin = samples.iter().map(|s| s.1).fold(f64::INFINITY, f64::min);
+    // Graded: the exact term `rule + g dist` matters until it reaches `h_max`.
+    let eps = match o.grade {
+        None => eps,
+        Some(g) if g > 0.0 => eps.max((o.h_max - hmin) / g),
+        Some(_) => f64::INFINITY,
+    };
+    let pad = if eps.is_finite() { 0.05 * diag + 10.0 * eps } else { f64::INFINITY };
     for k in 0..3 {
         lo[k] -= pad;
         hi[k] += pad;
@@ -289,7 +315,7 @@ fn curve_feature(view: &dyn TopologyView, e: EntityId, n: usize, o: Opts) -> Opt
             samples.push((p, h));
         }
     }
-    finish(Kind::Curve { def, lo, hi }, view.tolerance_of(e), samples)
+    finish(Kind::Curve { def, lo, hi }, view.tolerance_of(e), o, samples)
 }
 
 fn surface_feature(view: &dyn TopologyView, f: EntityId, n: usize, o: Opts) -> Option<Feature> {
@@ -341,7 +367,7 @@ fn surface_feature(view: &dyn TopologyView, f: EntityId, n: usize, o: Opts) -> O
             }
         }
     }
-    finish(Kind::Surface { def }, view.tolerance_of(f), samples)
+    finish(Kind::Surface { def }, view.tolerance_of(f), o, samples)
 }
 
 /// The exact, ungraded field: the minimum over the curved features that pass through `p`.
@@ -349,6 +375,8 @@ struct Local {
     feats: Vec<Feature>,
     h_max: f64,
     o: Opts,
+    /// Added per unit distance from the carrier (0 for the exact, ungraded field).
+    grade: f64,
 }
 
 impl Local {
@@ -367,7 +395,7 @@ impl Local {
                 let slack = 1e-9 * (hi - lo);
                 let inside = |t: f64| t >= lo - slack && t <= hi + slack;
                 let ok = inside(pr.t) || per.is_some_and(|q| inside(pr.t + q) || inside(pr.t - q));
-                ok.then(|| self.o.size(curve_k(c, pr.t).1))
+                ok.then(|| self.o.size(curve_k(c, pr.t).1) + self.grade * pr.distance)
             }
             Kind::Surface { def } => {
                 let s = def.as_surface()?;
@@ -375,7 +403,7 @@ impl Local {
                 if pr.distance > f.eps {
                     return None;
                 }
-                surface_k(s, pr.uv).map(|(_, k)| self.o.size(k))
+                surface_k(s, pr.uv).map(|(_, k)| self.o.size(k) + self.grade * pr.distance)
             }
         }
     }

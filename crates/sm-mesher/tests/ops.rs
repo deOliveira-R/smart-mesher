@@ -510,13 +510,14 @@ fn auto_size_and_size_fields_come_from_the_injected_hooks() {
 #[test]
 fn geo_size_hook_gets_the_view_and_the_run_targets_and_wins_over_the_plain_one() {
     use std::sync::{Arc, Mutex};
-    let seen: Arc<Mutex<Vec<(usize, Vec<sm_core::EntityId>)>>> = Arc::default();
+    type Seen = Vec<(usize, Vec<sm_core::EntityId>)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let log = seen.clone();
     let cfg = sm_mesher::MesherConfig::new(stubs::registry())
         // The plain hook must not be used once a geometry-aware one is set.
         .with_size_fields(Arc::new(|_| panic!("plain hook called")))
         .with_geo_size_fields(Arc::new(move |view, targets, spec| {
-            use sm_topo_api::{Dim, TopologyView};
+            use sm_topo_api::Dim;
             log.lock().expect("log").push((view.cells(Dim::Edge).len(), targets.to_vec()));
             match spec {
                 sm_scheme_api::SizingSpec::Function { name, .. } if name == "const" => {
