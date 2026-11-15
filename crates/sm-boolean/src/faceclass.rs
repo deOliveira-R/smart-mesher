@@ -202,6 +202,8 @@ fn inside(polys: &[Vec<Uv>], dom: &Domain2, q0: Uv) -> bool {
 
 /// Distance from `p` to the boundary curves of `f` (restricted to the edge ranges).
 pub(crate) fn boundary_distance<V: TopologyView + ?Sized>(view: &V, f: EntityId, p: Point3) -> f64 {
+    #[cfg(test)]
+    BD_CALLS.with(|c| c.set(c.get() + 1));
     let mut best = f64::INFINITY;
     for &e in view.face_edges(f) {
         if geo::is_degenerate(view, e) {
@@ -285,10 +287,20 @@ pub(crate) fn classify_uv<V: TopologyView + ?Sized>(
     ))
 }
 
+/// Relative sagitta (to the sample spacing) below which an edge counts as straight.
+const SAG_NOISE: f64 = 1e-12;
+
+#[cfg(test)]
+thread_local! {
+    /// Number of `boundary_distance` calls on this thread (test instrumentation).
+    static BD_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// True if `p` (on the surface of `f`) lies within `2 * m.sag` of the true boundary, where the
 /// sampled polygon of `m` may put it on the wrong side. Straight boundaries are never doubtful.
 fn doubtful_in<V: TopologyView + ?Sized>(view: &V, m: &FaceModel, f: EntityId, p: Point3) -> bool {
-    if m.sag <= 0.0 {
+    // Straight edges leave a sagitta of rounding noise (~1e-17), not exactly zero.
+    if m.sag <= SAG_NOISE * m.spacing {
         return false;
     }
     let reach = m.spacing + 2.0 * m.sag;
@@ -482,4 +494,49 @@ fn interior_point_uncached<V: TopologyView + ?Sized>(
         }
     }
     Ok(found.map(|b| b.1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::Vector3;
+    use sm_topo_api::{CellComplex, OpId, TopologyEdit, fixtures};
+
+    /// The faces of a brick cut by an oblique plane have straight but unaligned edges: their
+    /// sagitta is rounding noise (never exactly 0), so the doubtful-band test must return
+    /// before any `boundary_distance` call. (With the former `sag <= 0.0` cutoff it measured.)
+    #[test]
+    fn straight_edges_skip_the_exact_boundary_distance() {
+        use crate::{CutTool, WebcutOptions, webcut};
+        use sm_geom_api::{Frame, Plane, SurfaceDef};
+        let mut t = CellComplex::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = fixtures::brick(&mut t, Point3::new(0.0, 0.0, 0.0), [1.0, 2.0, 3.0]).unwrap();
+        let frame = Frame::from_z(Point3::new(0.4, 0.9, 1.1), Vector3::new(1.0, 0.7, 0.3)).unwrap();
+        let tool = CutTool::Surface {
+            surface: SurfaceDef::Plane(Plane { frame }),
+            window: None,
+        };
+        let out = webcut(&mut t, &[b.body], &tool, &WebcutOptions::default()).unwrap();
+        t.end_op().unwrap();
+        let cache = FaceCache::new();
+        let (mut n, mut noisy) = (0, 0);
+        for &body in out.positive.iter().chain(&out.negative) {
+            for e in t.boundary(body) {
+                for &f in t.volume_faces(e.cell) {
+                    let m = cache.model(&t, f).unwrap();
+                    assert!(m.sag <= SAG_NOISE * m.spacing, "sag {:e}", m.sag);
+                    noisy += usize::from(m.sag > 0.0);
+                    for &q in &m.pts {
+                        let before = BD_CALLS.with(|c| c.get());
+                        assert!(!doubtful_in(&t, &m, f, q));
+                        assert_eq!(BD_CALLS.with(|c| c.get()), before);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 0);
+        assert!(noisy > 0, "the probe has no face with nonzero rounding sag");
+    }
 }
