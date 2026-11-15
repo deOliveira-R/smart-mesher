@@ -310,7 +310,7 @@ fn rest_sides(placed: &Placed, rest: &[usize], hull: ([f64; 3], [f64; 3])) -> Ve
 /// result is conformal. Three kernel phases, each its own transaction (`model.copy` opens its own).
 fn build_reusing(ctx: &mut ApplyCtx<'_>, placed: &Placed, plan: &ReusePlan, bopts: &BuildOptions) -> Result<Built, OpError> {
     let reserved = plan.reserved();
-    let sub = BuildOptions { overlap: bopts.overlap, bounds: None };
+    let sub = BuildOptions { overlap: bopts.overlap, bounds: None, quiet_gaps: false };
     // Phase A: the prototypes and the remainder.
     let ((protos, rest), txn) = topo_txn(ctx, |topo, _model| {
         let mut protos: Vec<Vec<Built>> = Vec::new();
@@ -493,6 +493,207 @@ fn build_reusing(ctx: &mut ApplyCtx<'_>, placed: &Placed, plan: &ReusePlan, bopt
     Ok(out)
 }
 
+/// The hexagonal elements of a deck: each is built on its own (the brick of its hexagon cut by its
+/// six walls and by what its universe holds), the rest of the deck is cut without the hex walls
+/// (a hex lattice's `outer` cells are cut as the whole region around, `PCell::core`), and the
+/// array, a union of whole prisms, is subtracted from those cells. The pieces are then merged, so
+/// the result is conformal. No plane of the tiling ever cuts a piece: the triple junctions of a
+/// hexagonal tiling lie on lines where three walls meet, and cutting a convex piece by the third
+/// wall through two of its edges is what `sm_boolean::webcut` does not do robustly.
+fn build_hex(ctx: &mut ApplyCtx<'_>, placed: &Placed, bopts: &BuildOptions) -> Result<Built, OpError> {
+    use sm_boolean::{BoolOptions, BoolRule, boolean};
+    let n_el = placed.hex_elements.len();
+    // Cells by the innermost hex element whose path starts their path.
+    let by_path: BTreeMap<&[deck::Hop], usize> = placed.hex_elements.iter().enumerate().map(|(i, e)| (e.path.as_slice(), i)).collect();
+    if by_path.len() != n_el {
+        return Err(CsgbrepError::Invalid("two hexagonal elements have the same path".into()).into());
+    }
+    for e in &placed.hex_elements {
+        if (1..e.path.len()).any(|n| by_path.contains_key(&e.path[..n])) {
+            return Err(CsgbrepError::Unsupported { line: None, what: format!("hex_lattice {}: a hexagonal lattice inside the element of another one is not supported by the B-rep import yet", e.lattice) }.into());
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); n_el];
+    let mut rest: Vec<usize> = Vec::new();
+    for (ci, c) in placed.cells.iter().enumerate() {
+        let hit = (1..=c.origin.path.len()).rev().find_map(|n| by_path.get(&c.origin.path[..n]).copied());
+        match hit {
+            Some(e) => groups[e].push(ci),
+            None => rest.push(ci),
+        }
+    }
+    // z extent of every element: from its cells (or the given bounds).
+    let mut zs: Vec<(f64, f64, bool, bool)> = Vec::with_capacity(n_el);
+    for (e, g) in placed.hex_elements.iter().zip(&groups) {
+        let b = placed.bounds_of_cells(g);
+        let z = match bopts.bounds {
+            Some((lo, hi)) => (lo[2], hi[2], true, true),
+            None => (b.lo[2], b.hi[2], b.lo_plane[2], b.hi_plane[2]),
+        };
+        if !(z.0.is_finite() && z.1.is_finite() && z.0 < z.1) {
+            return Err(CsgbrepError::Unbounded(format!("the z extent of hexagonal lattice {} is {:?} to {:?}; give `options.bounds`", e.lattice, z.0, z.1)).into());
+        }
+        zs.push(z);
+    }
+    // Cells of the rest are cut with the array exclusion left out of the outer cells.
+    let mut view = placed.clone();
+    for c in &mut view.cells {
+        if let Some(core) = c.core.clone() {
+            c.expr = core;
+        }
+    }
+    let outer_cell = |i: usize| placed.cells[i].core.is_some();
+    // Adjacent elements (centres closer than the pitch, z ranges touching) form one array solid.
+    let centre = |e: &deck::HexElement| {
+        let n = e.polygon.len() as f64;
+        [e.polygon.iter().map(|p| p[0]).sum::<f64>() / n, e.polygon.iter().map(|p| p[1]).sum::<f64>() / n]
+    };
+    let pitch_of = |e: &deck::HexElement| {
+        let (a, b) = (e.polygon[0], e.polygon[3]);
+        (a[0] - b[0]).hypot(a[1] - b[1]) * 3f64.sqrt() / 2.0
+    };
+
+    let ((elem_built, rest_built, prism_notes, arrays), txn) = topo_txn(ctx, |topo, _model| {
+        let mut elem_built: Vec<partition::Built> = Vec::new();
+        for (i, g) in groups.iter().enumerate() {
+            let (lo, hi) = partition::hex_box(&placed.hex_elements[i].polygon, zs[i]);
+            let sub = BuildOptions { overlap: bopts.overlap, bounds: Some((lo, hi)), quiet_gaps: true };
+            elem_built.push(if g.is_empty() { partition::Built::default() } else { partition::build_subset(topo, &view, g, &[], &sub)? });
+        }
+        let rest_built = if rest.is_empty() { None } else { Some(partition::build_subset(topo, &view, &rest, &[], bopts)?) };
+        // The array solid(s): one prism per hexagon footprint (all layers of a column in one), united with its
+        // neighbours.
+        let key = |e: &deck::HexElement| (e.lattice, e.polygon.iter().flatten().map(|v| v.to_bits()).collect::<Vec<u64>>());
+        let mut footprints: BTreeMap<(u32, Vec<u64>), (usize, f64, f64)> = BTreeMap::new();
+        for (i, (e, z)) in placed.hex_elements.iter().zip(&zs).enumerate() {
+            let f = footprints.entry(key(e)).or_insert((i, z.0, z.1));
+            f.1 = f.1.min(z.0);
+            f.2 = f.2.max(z.1);
+        }
+        let feet: Vec<(usize, f64, f64)> = footprints.into_values().collect();
+        let mut prisms: Vec<EntityId> = Vec::with_capacity(feet.len());
+        for &(i, z0, z1) in &feet {
+            prisms.push(partition::hex_prism(topo, &placed.hex_elements[i].polygon, (z0, z1))?);
+        }
+        let mut notes = Vec::new();
+        for (i, g) in elem_built.iter().enumerate() {
+            let poly = &placed.hex_elements[i].polygon;
+            let area = 0.5 * (0..6).map(|k| poly[k][0] * poly[(k + 1) % 6][1] - poly[(k + 1) % 6][0] * poly[k][1]).sum::<f64>().abs();
+            let want = area * (zs[i].1 - zs[i].0);
+            let got: f64 = g.vols.iter().map(|v| topo.volume_moments(v.volume).map_or(0.0, |m| m.volume)).sum();
+            if (got - want).abs() > 1e-9 * want {
+                notes.push(partition::Note { code: "import.gap", message: format!("the cells of hexagonal element {} cover {got:e} of its volume {want:e}; the rest is not part of the model", placed.hex_elements[i].path.last().map_or(String::new(), |h| format!("{}[{:?}]", h.cell, h.element.map(|e| e.1)))) });
+            }
+        }
+        let n_pr = prisms.len();
+        let mut seen = vec![false; n_pr];
+        let mut arrays: Vec<EntityId> = Vec::new();
+        for start in 0..n_pr {
+            if seen[start] {
+                continue;
+            }
+            // The component of prisms whose footprints touch: centres closer than the pitch.
+            seen[start] = true;
+            let mut comp = vec![start];
+            let mut head = 0;
+            while head < comp.len() {
+                let a = comp[head];
+                head += 1;
+                for b in 0..n_pr {
+                    if seen[b] {
+                        continue;
+                    }
+                    let (ea, eb) = (&placed.hex_elements[feet[a].0], &placed.hex_elements[feet[b].0]);
+                    let (ca, cb) = (centre(ea), centre(eb));
+                    if (ca[0] - cb[0]).hypot(ca[1] - cb[1]) <= 1.01 * pitch_of(ea) {
+                        seen[b] = true;
+                        comp.push(b);
+                    }
+                }
+            }
+            if comp.len() == 1 {
+                arrays.push(prisms[start]);
+                continue;
+            }
+            let rest_bodies: Vec<EntityId> = comp[1..].iter().map(|&i| prisms[i]).collect();
+            let r = boolean(topo, BoolRule::Unite, &[prisms[start]], &rest_bodies, &BoolOptions::default()).map_err(|e| partition::kernel("uniting the prisms of a hexagonal lattice", e))?;
+            match r.bodies.as_slice() {
+                [one] => arrays.push(*one),
+                other => return Err(CsgbrepError::Kernel(format!("uniting the prisms of a hexagonal lattice gave {} bodies", other.len())).into()),
+            }
+        }
+        Ok((elem_built, rest_built, notes, arrays))
+    })?;
+    commit_topology(ctx, &txn, &[])?;
+
+    let mut out = Built::default();
+    let mut elems: Vec<Vol> = Vec::new();
+    for b in &elem_built {
+        out.stats.absorb(&b.stats);
+        out.stats.proto_cuts += b.stats.cuts;
+        out.notes.extend(b.notes.iter().cloned());
+        elems.extend(b.vols.iter().cloned());
+    }
+    out.notes.extend(prism_notes);
+    let mut rest_vols: Vec<Vol> = Vec::new();
+    if let Some(r) = rest_built {
+        out.stats.absorb(&r.stats);
+        out.notes.extend(r.notes);
+        out.start = r.start;
+        rest_vols = r.vols;
+    }
+    if out.start == ([0.0; 3], [0.0; 3]) {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for (e, z) in placed.hex_elements.iter().zip(&zs) {
+            let (l, h) = partition::hex_box(&e.polygon, *z);
+            for a in 0..3 {
+                lo[a] = lo[a].min(l[a]);
+                hi[a] = hi[a].max(h[a]);
+            }
+        }
+        out.start = (lo, hi);
+    }
+
+    // Subtract the array from the cells around it, then merge everything.
+    let (vols, txn) = topo_txn(ctx, |topo, _model| {
+        let mut vols: Vec<Vol> = Vec::new();
+        let mut kept: Vec<Vol> = Vec::new();
+        for v in rest_vols {
+            if !outer_cell(v.cell) {
+                kept.push(v);
+                continue;
+            }
+            let r = boolean(topo, BoolRule::Subtract, &[v.body], &arrays, &BoolOptions { keep: true, ..BoolOptions::default() }).map_err(|e| partition::kernel(&format!("subtracting the hexagonal array from cell {}", placed.cells[v.cell].origin), e))?;
+            topo.kill_cascade(v.body).map_err(|e| CsgbrepError::Kernel(e.to_string()))?;
+            for &b in &r.bodies {
+                let volume = partition::volume_of_body(&*topo, b).ok_or_else(|| CsgbrepError::Invalid("a result has no volume".into()))?;
+                vols.push(Vol { volume, body: b, cell: v.cell });
+            }
+        }
+        for a in &arrays {
+            topo.kill_cascade(*a).map_err(|e| CsgbrepError::Kernel(e.to_string()))?;
+        }
+        vols.extend(kept);
+        let mut all: Vec<EntityId> = elems.iter().map(|v| v.volume).collect();
+        all.extend(vols.iter().map(|v| v.volume));
+        let r = merge(topo, &all, &[], &MergeOptions::default()).map_err(|e| OpError::Failed(format!("csg.merge: merging the hexagonal array and its surroundings: {e}")))?;
+        out.stats.merged = r.merged.len();
+        Ok(vols)
+    })?;
+    let mut vols = vols;
+    vols.extend(elems);
+    vols.sort_by_key(|v| (v.body, v.cell));
+    let volumes: Vec<EntityId> = vols.iter().map(|v| v.volume).collect();
+    let bodies: Vec<EntityId> = vols.iter().map(|v| v.body).collect();
+    commit_topology(ctx, &txn, &[("deck_volumes", &volumes), ("deck_bodies", &bodies)])?;
+    out.boundary_faces = {
+        let topo = ctx.layer::<ModelLayer>()?.topo_host();
+        partition::boundary_faces(&**topo, placed, &vols)
+    };
+    out.vols = vols;
+    Ok(out)
+}
+
 impl TypedOp for ImportOpenmc {
     const NAME: &'static str = "model.import_openmc";
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
@@ -533,9 +734,12 @@ impl TypedOp for ImportOpenmc {
             OverlapMode::FirstWins => OverlapPolicy::FirstWins,
             OverlapMode::Report => OverlapPolicy::Report,
         };
-        let bopts = BuildOptions { overlap: policy, bounds: o.bounds.map(|b| ([b[0], b[1], b[2]], [b[3], b[4], b[5]])) };
-        let plan = if o.reuse_lattices.unwrap_or(true) { reuse::plan(&placed) } else { ReusePlan { groups: Vec::new(), rest: Vec::new() } };
-        let built = if plan.groups.is_empty() {
+        let bopts = BuildOptions { overlap: policy, bounds: o.bounds.map(|b| ([b[0], b[1], b[2]], [b[3], b[4], b[5]])), quiet_gaps: false };
+        let has_hex = !placed.hex_elements.is_empty();
+        let plan = if o.reuse_lattices.unwrap_or(true) && !has_hex { reuse::plan(&placed) } else { ReusePlan { groups: Vec::new(), rest: Vec::new() } };
+        let built = if has_hex {
+            build_hex(ctx, &placed, &bopts)?
+        } else if plan.groups.is_empty() {
             let (built, txn) = topo_txn(ctx, |topo, _model| partition::build(topo, &placed, &bopts).map_err(OpError::from))?;
             let volumes: Vec<EntityId> = built.vols.iter().map(|v| v.volume).collect();
             let bodies: Vec<EntityId> = built.vols.iter().map(|v| v.body).collect();

@@ -71,6 +71,23 @@ pub struct PCell {
     pub name: String,
     /// Where it comes from.
     pub origin: Origin,
+    /// For the cells of a hexagonal lattice's `outer` universe: the region without the exclusion of
+    /// the array (the clips and the cell's own region only). `expr` is the true region; a builder
+    /// that makes the array from prisms cuts with `core` and subtracts the array afterwards, so the
+    /// triple junctions of the wall planes are never cut through.
+    pub core: Option<Expr>,
+}
+
+/// One element of a hexagonal lattice as placed in the global frame.
+#[derive(Clone, Debug)]
+pub struct HexElement {
+    /// The deck lattice id.
+    pub lattice: u32,
+    /// The path to the element, including the element hop; the cells of the element are the placed
+    /// cells whose origin path starts with it.
+    pub path: Vec<Hop>,
+    /// The six corners in the xy plane of the global frame, counter-clockwise.
+    pub polygon: [[f64; 2]; 6],
 }
 
 /// The deck data of a lattice that a frame needs.
@@ -130,7 +147,7 @@ pub struct LatticePlacement {
 }
 
 /// The placed deck.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Placed {
     /// Surfaces in canonical order (planes first, then by definition bytes).
     pub surfaces: Vec<PSurf>,
@@ -138,6 +155,8 @@ pub struct Placed {
     pub cells: Vec<PCell>,
     /// Lattices in ascending deck id.
     pub lattices: Vec<LatticePlacement>,
+    /// Every element of every hexagonal lattice, in placement order.
+    pub hex_elements: Vec<HexElement>,
 }
 
 fn axis_vec(a: usize) -> Vector3 {
@@ -257,6 +276,10 @@ struct Placer<'a> {
     path: Vec<Hop>,
     lattice_stack: Vec<u32>,
     lattices: BTreeMap<u32, LatticePlacement>,
+    hex_elements: Vec<HexElement>,
+    /// While set, cells go to `core_cells` (the second placement of a hex `outer`).
+    core_mode: bool,
+    core_cells: BTreeMap<Origin, Expr>,
 }
 
 fn unsupported(id: u32, what: String) -> CsgbrepError {
@@ -359,6 +382,10 @@ impl Placer<'_> {
     }
 
     fn push_cell(&mut self, parts: Vec<Expr>, material: Option<u32>, cell: u32) -> Result<(), CsgbrepError> {
+        if self.core_mode {
+            self.core_cells.insert(Origin { cell, path: self.path.clone() }, Expr::And(parts));
+            return Ok(());
+        }
         if self.cells.len() >= self.max_cells {
             return Err(CsgbrepError::Invalid(format!("the flat model has more than {} cells", self.max_cells)));
         }
@@ -543,6 +570,19 @@ impl Placer<'_> {
                     let c = l.element_center(q, r, k);
                     let el = t.compose(&Transform::translation(Vector3::new(c[0], c[1], c[2])));
                     self.path.push(Hop { cell: cid, element: Some((lid, [q, r, k as i32])) });
+                    if !self.core_mode {
+                        // The corners of the hexagon (circumradius `pitch / sqrt(3)`; the first corner is at 0 degrees
+                        // for `Y` and at 30 degrees for `X`), in the global frame. Every layer has the same corners; each is recorded.
+                        let rad = l.pitch / 3f64.sqrt();
+                        let first = if l.orientation == HexOrientation::X { 30.0_f64 } else { 0.0 };
+                        let mut polygon = [[0.0; 2]; 6];
+                        for (i, v) in polygon.iter_mut().enumerate() {
+                            let a = (first + 60.0 * i as f64).to_radians();
+                            let g = el.apply_point(Point3::new(rad * a.cos(), rad * a.sin(), 0.0));
+                            *v = [g.x, g.y];
+                        }
+                        self.hex_elements.push(HexElement { lattice: lid, path: self.path.clone(), polygon });
+                    }
                     let res = self.place_universe(uid, &el, &parts);
                     self.path.pop();
                     res?;
@@ -568,7 +608,13 @@ impl Placer<'_> {
             let mut parts: Vec<Expr> = clips.to_vec();
             parts.push(Expr::Or(outside));
             self.path.push(Hop { cell: cid, element: None });
-            let res = self.place_universe(outer, t, &parts);
+            let mut res = self.place_universe(outer, t, &parts);
+            if res.is_ok() && !self.core_mode {
+                // Again without the array exclusion, for the builders that subtract the array.
+                self.core_mode = true;
+                res = self.place_universe(outer, t, clips);
+                self.core_mode = false;
+            }
             self.path.pop();
             res?;
         }
@@ -700,6 +746,9 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
         path: Vec::new(),
         lattice_stack: Vec::new(),
         lattices: BTreeMap::new(),
+        hex_elements: Vec::new(),
+        core_mode: false,
+        core_cells: BTreeMap::new(),
     };
     p.place_universe(ir.root_universe, &Transform::IDENTITY, &[])?;
 
@@ -720,10 +769,11 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
         .iter()
         .map(|(e, m, o)| {
             let expr = remap(e, &renum);
+            let core = p.core_cells.get(o).map(|c| remap(c, &renum));
             let mut key = String::new();
             expr_key(&expr, &mut key);
             let name = m.and_then(|m| p.names.get(&m).cloned()).unwrap_or_else(|| sm_csgio::VOID_REGION.to_string());
-            (name.clone(), key, PCell { expr, name, origin: o.clone() })
+            (name.clone(), key, PCell { expr, name, origin: o.clone(), core })
         })
         .collect();
     cells.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.origin.cmp(&b.2.origin)));
@@ -731,7 +781,7 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
     for l in &mut lattices {
         l.clips = l.clips.iter().map(|e| remap(e, &renum)).collect();
     }
-    Ok(Placed { surfaces, cells: cells.into_iter().map(|c| c.2).collect(), lattices })
+    Ok(Placed { surfaces, cells: cells.into_iter().map(|c| c.2).collect(), lattices, hex_elements: p.hex_elements })
 }
 
 /// Axis-aligned bounds of a region with the provenance of each side.
