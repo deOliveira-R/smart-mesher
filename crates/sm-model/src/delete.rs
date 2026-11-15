@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
-use sm_layer_api::{LayerResultExt, commit_topology, topo_txn};
+use sm_layer_api::{LayerResultExt, ModelLayer, commit_topology, topo_txn};
 use sm_op_api::{ApplyCtx, OpError, TypedOp};
 
 /// `model.delete`: delete bodies, their volumes, and every face, edge and vertex that no
@@ -32,6 +32,19 @@ impl TypedOp for Delete {
         for &b in &self.bodies {
             ctx.resolve_kind(b, EntityKind::TopoBody)?;
             bodies.insert(b);
+        }
+        // A realized split lives in the overlay over these volumes: killing them would leave
+        // the overlay naming dead cells.
+        {
+            let layer = ctx.layer::<ModelLayer>()?;
+            let decomposed = layer.model().decomposition().decomposed_volumes();
+            for &b in &bodies {
+                for inc in layer.host().boundary(b) {
+                    if decomposed.contains(&inc.cell) {
+                        return Err(OpError::Unsupported(format!("{} is decomposed: model.unsplit_realized first", inc.cell)));
+                    }
+                }
+            }
         }
         let ((), txn) = topo_txn(ctx, |topo, _model| {
             for &b in &bodies {

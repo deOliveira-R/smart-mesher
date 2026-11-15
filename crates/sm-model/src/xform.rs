@@ -352,9 +352,12 @@ pub(crate) fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf
     let ((), txn) = match ran {
         Ok(r) => r,
         Err(e) => {
-            if let Some(o) = saved {
-                // Best effort: the engine discards the scratch state of a failed op anyway.
-                let _ = ctx.layer_mut::<ModelLayer>()?.set_overlay((*o).clone());
+            // `topo_txn` rolled the host back, so the saved overlay still fits it: put it back
+            // (the engine also discards the scratch state of a failed op).
+            if let Some(o) = saved
+                && let Err(re) = ctx.layer_mut::<ModelLayer>()?.set_overlay((*o).clone())
+            {
+                return Err(OpError::Failed(format!("{e}; and the overlay could not be restored: {re}")));
             }
             return Err(e);
         }
@@ -362,6 +365,9 @@ pub(crate) fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf
     if let Some(plan) = plan {
         let layer = ctx.layer_mut::<ModelLayer>()?;
         let host: std::sync::Arc<dyn sm_topo_api::TopologyView> = layer.topo_host().clone();
+        // The host has moved on, so the saved overlay no longer fits it and cannot be put
+        // back: a refused build fails the op, and the engine discards this scratch state (the
+        // session keeps the state from before the op, overlay included).
         let ov = plan.build(host)?;
         layer.set_overlay(ov).or_op()?;
     }
