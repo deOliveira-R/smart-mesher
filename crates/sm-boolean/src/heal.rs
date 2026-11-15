@@ -429,6 +429,68 @@ fn order_loop(view: &dyn TopologyView, edges: &[EntityId]) -> Result<Vec<Rail>, 
     Ok(rails)
 }
 
+/// One free-edge loop that passed the per-loop checks and awaits capping.
+struct LoopCand {
+    rails: Vec<Rail>,
+    pts: Vec<Point3>,
+    c: Point3,
+    normal: Vector3,
+    flat: f64,
+}
+
+/// Polygon area of the sampled loop (|Newell vector| / 2).
+fn loop_area(l: &LoopCand) -> f64 {
+    let mut a = Vector3::new(0.0, 0.0, 0.0);
+    for i in 0..l.pts.len() {
+        let (p, q) = (l.pts[i] - l.c, l.pts[(i + 1) % l.pts.len()] - l.c);
+        a = a + p.cross(q);
+    }
+    0.5 * a.dot(a).sqrt()
+}
+
+/// True when loop `a` lies in the plane of `b` (within `tol`), has the opposing Newell normal,
+/// and every sample of `a` is inside the polygon of `b`.
+fn loop_nested_in(a: &LoopCand, b: &LoopCand, tol: f64) -> bool {
+    if a.normal.dot(b.normal) >= 0.0 {
+        return false;
+    }
+    if !a
+        .pts
+        .iter()
+        .all(|p| ((*p - b.c).dot(b.normal)).abs() <= tol)
+    {
+        return false;
+    }
+    // Project dropping the dominant normal component.
+    let n = b.normal;
+    let (ax, ay) = if n.x.abs() >= n.y.abs() && n.x.abs() >= n.z.abs() {
+        (1, 2)
+    } else if n.y.abs() >= n.z.abs() {
+        (2, 0)
+    } else {
+        (0, 1)
+    };
+    let uv = |p: &Point3| {
+        let v = [p.x, p.y, p.z];
+        (v[ax], v[ay])
+    };
+    let poly: Vec<(f64, f64)> = b.pts.iter().map(uv).collect();
+    a.pts.iter().all(|p| {
+        let (x, y) = uv(p);
+        let mut inside = false;
+        let mut j = poly.len() - 1;
+        for i in 0..poly.len() {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    })
+}
+
 /// Close each chain of free edges that is one simple loop, planar within `tol`, with a plane
 /// face. Runs inside an open operation.
 ///
@@ -441,6 +503,7 @@ pub fn close_open_loops(
     out: &mut HealOutcome,
 ) -> Result<(), BooleanError> {
     let chains = open_chains(&*topo, entities)?;
+    let mut cands: Vec<LoopCand> = Vec::new();
     for ch in chains {
         let edges = &ch.entities;
         let rails = match order_loop(&*topo, edges) {
@@ -539,28 +602,84 @@ pub fn close_open_loops(
             );
             continue;
         }
-        let frame = Frame::from_z(c, normal)?;
+        cands.push(LoopCand {
+            rails,
+            pts,
+            c,
+            normal,
+            flat,
+        });
+    }
+    // Group coplanar loops: a loop nested in a coplanar loop of opposing Newell normal is an
+    // inner loop of that loop's cap (a hole in the missing planar face).
+    let n_c = cands.len();
+    let mut parent: Vec<Option<usize>> = vec![None; n_c];
+    for i in 0..n_c {
+        let mut best: Option<(usize, f64)> = None;
+        for j in 0..n_c {
+            if i == j || !loop_nested_in(&cands[i], &cands[j], tol) {
+                continue;
+            }
+            let aj = loop_area(&cands[j]);
+            // The tightest enclosing loop is the parent.
+            if best.is_none_or(|(_, a)| aj < a) {
+                best = Some((j, aj));
+            }
+        }
+        parent[i] = best.map(|b| b.0);
+    }
+    // Odd nesting depth: an inner loop, capped with its parent. Even: an outer loop.
+    let depth = |mut i: usize| {
+        let mut d = 0;
+        while let Some(p) = parent[i] {
+            d += 1;
+            i = p;
+        }
+        d
+    };
+    for i in 0..n_c {
+        if depth(i) % 2 == 1 {
+            continue;
+        }
+        let cd = &cands[i];
+        let inners: Vec<usize> = (0..n_c)
+            .filter(|&k| parent[k] == Some(i) && depth(k) == 1)
+            .collect();
+        let frame = Frame::from_z(cd.c, cd.normal)?;
         let surface = topo
             .shapes_mut()?
             .add_surface(SurfaceDef::Plane(Plane { frame }))?;
-        let lp: Vec<CoedgeSpec> = rails
-            .iter()
-            .map(|r| CoedgeSpec {
-                edge: r.edge,
-                sense: r.sense,
-            })
-            .collect();
+        let specs = |k: usize| -> Vec<CoedgeSpec> {
+            cands[k]
+                .rails
+                .iter()
+                .map(|r| CoedgeSpec {
+                    edge: r.edge,
+                    sense: r.sense,
+                })
+                .collect()
+        };
+        let outer = specs(i);
+        let inner_specs: Vec<Vec<CoedgeSpec>> = inners.iter().map(|&k| specs(k)).collect();
+        let mut loops: Vec<&[CoedgeSpec]> = vec![&outer];
+        loops.extend(inner_specs.iter().map(|v| v.as_slice()));
         let face = topo.make_face(
-            &[&lp],
+            &loops,
             Some(SurfaceCarrier {
                 surface,
                 sense: Sense::Forward,
             }),
         )?;
         topo.record_created(face)?;
+        let mut all_edges: Vec<EntityId> = cd.rails.iter().map(|r| r.edge).collect();
+        let mut flat = cd.flat;
+        for &k in &inners {
+            all_edges.extend(cands[k].rails.iter().map(|r| r.edge));
+            flat = flat.max(cands[k].flat);
+        }
         out.closed.push(ClosedHole {
             face,
-            edges: rails.iter().map(|r| r.edge).collect(),
+            edges: all_edges,
             flatness: flat,
         });
     }

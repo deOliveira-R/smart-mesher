@@ -635,3 +635,54 @@ fn a_hole_in_a_planar_face_is_capped() {
     assert!(run_heal(&mut h, 4, HealFixes::default()).is_empty());
     assert_eq!(words(&h), once);
 }
+
+/// Plate 1x1x1 minus a through cylinder r = 0.2, top face removed: one cap with the hole as an
+/// inner loop, not a square plus a disk.
+#[test]
+fn a_missing_planar_face_with_a_hole_is_one_cap_with_an_inner_loop() {
+    use sm_boolean::ops::Subtract;
+    let mut r = Rig::cc();
+    let b = r.brick([1.0; 3], [0.5; 3]);
+    let c = r.cylinder(2.0, 0.2, [0.5, 0.5, 0.5]);
+    r.run(&Subtract {
+        targets: vec![b.body],
+        tools: vec![c.body],
+        keep: None,
+        regularize: None,
+        tol: None,
+    })
+    .unwrap();
+    let (h, (out, again, w1, w2, codes_after)) = r
+        .lib(|t| {
+            for x in t.cells(Dim::Body).to_vec() {
+                t.kill(x)?;
+            }
+            for x in t.cells(Dim::Volume).to_vec() {
+                t.kill(x)?;
+            }
+            for f in t.cells(Dim::Face).to_vec() {
+                let c = t.face_moments(f).unwrap().centroid().unwrap();
+                if (c.z - 1.0).abs() < 1e-9 {
+                    t.kill(f)?;
+                }
+            }
+            let out = heal(t, &HealApply::default())?;
+            let w1 = words(&*t);
+            let again = heal(t, &HealApply::default())?;
+            let w2 = words(&*t);
+            let codes_after = heal_check(&*t, &HealOptions::default()).unwrap().codes();
+            Ok((out, again, w1, w2, codes_after))
+        })
+        .unwrap();
+    assert_eq!(out.closed.len(), 1, "{out:?}");
+    assert!(out.skipped.is_empty(), "{:?}", out.skipped);
+    let cap = out.closed[0].face;
+    let area = h.face_moments(cap).unwrap().area;
+    let want = 1.0 - std::f64::consts::PI * 0.04;
+    assert!((area - want).abs() <= 1e-12, "area {area} want {want}");
+    assert_eq!(h.loops(cap).count(), 2);
+    assert!(validate(&*h).is_empty());
+    assert!(codes_after.is_empty(), "{codes_after:?}");
+    assert!(again.is_empty(), "{again:?}");
+    assert_eq!(w1, w2);
+}
