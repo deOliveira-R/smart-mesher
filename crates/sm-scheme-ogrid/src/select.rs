@@ -11,11 +11,23 @@ use std::f64::consts::{PI, SQRT_2};
 
 /// Predicted worst planar edge ratio above which `ogrid` scores below the unstructured
 /// alternatives. A heuristic calibrated against pave on the W3c through pin and B5 (pave reaches
-/// 1.5 on the pin faces at size 0.3): the pin's fuel disk at n = 8 predicts 1.91 and loses, the B5
-/// annulus at n = 20 predicts 1.74 and wins; at B5 sizes 0.3 and 0.5 the ogrid mesh beats pave on
-/// every metric, at 0.7 and 1.0 the prediction fails and pave stays. The measured 3D ratio also
-/// carries the sweep height, so it is higher than this planar value.
+/// 1.5 on the pin faces at size 0.3). The pin's fuel disk at n = 8 predicts 1.91: that is above
+/// this limit, but disks of 6 to 14 circle nodes use [`ER_FLAT_LIMIT`] (see
+/// [`PAVE_FLAT_COUNTS`]) and win. The B5 annulus at n = 20 predicts 1.74 and wins; at B5 sizes 0.3
+/// and 0.5 the ogrid mesh beats pave on every metric, at 0.7 and 1.0 the prediction fails and pave
+/// stays. The measured 3D ratio also carries the sweep height, so it is higher than this planar
+/// value.
 pub(crate) const ER_LIMIT: f64 = 1.8;
+/// Disk circle counts at which `pave` cannot avoid a quad with two consecutive edges on the circle
+/// (measured on the kernel, `tests/corner_cells.rs` of `sm-scheme-pave`: 6 to 14 nodes; 4 is one
+/// square of right angles that the O-grid cannot beat on the size intent: a known residual; 16 and up have a row of single-edge quads). Such a
+/// corner cell has the angle `pi - 2 pi / n` whatever the node placement, so uniform refinement
+/// halves its scaled Jacobian at every level (0.707, 0.383, 0.195, ...). The O-grid has one circle
+/// edge per quad and refines without loss, so on these counts it wins up to [`ER_FLAT_LIMIT`].
+pub(crate) const PAVE_FLAT_COUNTS: core::ops::RangeInclusive<usize> = 6..=14;
+/// Predicted worst planar edge ratio up to which the O-grid still beats a `pave` corner cell
+/// (see [`PAVE_FLAT_COUNTS`]); the O-grid disk reaches 2.22 at 6 nodes and 1.91 at 8.
+pub(crate) const ER_FLAT_LIMIT: f64 = 2.5;
 /// Predicted minimum scaled Jacobian below which `ogrid` scores below the alternatives.
 pub(crate) const SJ_LIMIT: f64 = 0.5;
 /// A quad edge more than this many times longer, or shorter, than the wanted size breaks the size
@@ -225,11 +237,13 @@ pub(crate) fn predict_scale(n: usize, size: Option<f64>) -> (usize, Option<f64>)
 }
 
 /// Whether a predicted mesh keeps the quality and the size intent: the verdict behind the score.
-pub(crate) fn acceptable(q: &Quality, size: Option<f64>) -> Result<(), String> {
-    if q.er > ER_LIMIT {
-        return Err(format!("predicted edge ratio {:.2} exceeds {ER_LIMIT}", q.er));
+///
+/// `er_limit` is [`ER_LIMIT`], or [`ER_FLAT_LIMIT`] where `pave` would leave a corner cell.
+pub(crate) fn acceptable(q: &Quality, size: Option<f64>, er_limit: f64) -> Result<(), String> {
+    if q.er > er_limit {
+        return Err(format!("predicted edge ratio {:.2} exceeds {er_limit}", q.er));
     }
-    if q.sj < SJ_LIMIT {
+    if q.sj < SJ_LIMIT - 1e-9 {
         return Err(format!("predicted scaled Jacobian {:.2} is below {SJ_LIMIT}", q.sj));
     }
     if let Some(h) = size
