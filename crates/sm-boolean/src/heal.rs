@@ -643,7 +643,7 @@ pub fn close_open_loops(
         }
         let cd = &cands[i];
         let inners: Vec<usize> = (0..n_c)
-            .filter(|&k| parent[k] == Some(i) && depth(k) == 1)
+            .filter(|&k| parent[k] == Some(i))
             .collect();
         let frame = Frame::from_z(cd.c, cd.normal)?;
         let surface = topo

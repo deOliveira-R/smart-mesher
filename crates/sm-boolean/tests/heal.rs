@@ -686,3 +686,70 @@ fn a_missing_planar_face_with_a_hole_is_one_cap_with_an_inner_loop() {
     assert!(again.is_empty(), "{again:?}");
     assert_eq!(w1, w2);
 }
+
+/// Depth-3 nesting: a plate with a hole r = 0.3 holding a separate coaxial tube (r 0.2 minus
+/// r 0.1), all z = 1 faces removed. The tube cap must be the annulus with two loops, not a disk.
+#[test]
+fn a_coaxial_tube_inside_a_plate_hole_is_capped_as_an_annulus() {
+    use sm_boolean::ops::Subtract;
+    let mut r = Rig::cc();
+    let b = r.brick([1.0; 3], [0.5; 3]);
+    let c = r.cylinder(2.0, 0.3, [0.5, 0.5, 0.5]);
+    r.run(&Subtract {
+        targets: vec![b.body],
+        tools: vec![c.body],
+        keep: None,
+        regularize: None,
+        tol: None,
+    })
+    .unwrap();
+    let outer = r.cylinder(1.0, 0.2, [0.5, 0.5, 0.5]);
+    let inner = r.cylinder(2.0, 0.1, [0.5, 0.5, 0.5]);
+    r.run(&Subtract {
+        targets: vec![outer.body],
+        tools: vec![inner.body],
+        keep: None,
+        regularize: None,
+        tol: None,
+    })
+    .unwrap();
+    let (h, (out, codes_after)) = r
+        .lib(|t| {
+            for x in t.cells(Dim::Body).to_vec() {
+                t.kill(x)?;
+            }
+            for x in t.cells(Dim::Volume).to_vec() {
+                t.kill(x)?;
+            }
+            for f in t.cells(Dim::Face).to_vec() {
+                let c = t.face_moments(f).unwrap().centroid().unwrap();
+                if (c.z - 1.0).abs() < 1e-9 {
+                    t.kill(f)?;
+                }
+            }
+            let out = heal(t, &HealApply::default())?;
+            let codes_after = heal_check(&*t, &HealOptions::default()).unwrap().codes();
+            Ok((out, codes_after))
+        })
+        .unwrap();
+    assert_eq!(out.closed.len(), 2, "{out:?}");
+    let pi = std::f64::consts::PI;
+    let mut caps: Vec<(f64, usize)> = out
+        .closed
+        .iter()
+        .map(|c| {
+            (
+                h.face_moments(c.face).unwrap().area,
+                h.loops(c.face).count(),
+            )
+        })
+        .collect();
+    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (tube, plate) = (caps[0], caps[1]);
+    assert!((tube.0 - pi * 0.03).abs() <= 1e-12, "tube {tube:?}");
+    assert_eq!(tube.1, 2);
+    assert!((plate.0 - (1.0 - pi * 0.09)).abs() <= 1e-12, "plate {plate:?}");
+    assert_eq!(plate.1, 2);
+    assert!(codes_after.is_empty(), "{codes_after:?}");
+    assert!(validate(&*h).is_empty());
+}
