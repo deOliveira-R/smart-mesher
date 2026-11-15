@@ -222,20 +222,31 @@ fn seven_rings_give_127_prisms_of_the_analytic_area() {
     }
 }
 
+fn state(geom: &str, mats: &str) -> (String, Vec<String>) {
+    let mut r = Rig::new();
+    let d = r.import(geom, Some(mats)).expect("import");
+    (format!("{:?}", r.hash()), d.diagnostics.iter().map(|x| format!("{} {}", x.code, x.message)).collect())
+}
+
+fn in_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+    rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(f)
+}
+
 #[test]
-fn the_b_rep_is_the_same_for_a_deck_in_either_orientation_up_to_the_tags() {
-    // The IR places the same set of hexagons whatever the text order: identical state hash twice.
-    let a = {
-        let mut r = Rig::new();
-        r.import(&homogeneous_deck("y", 2), Some(&materials(2))).unwrap();
-        r.hash()
-    };
-    let b = {
-        let mut r = Rig::new();
-        r.import(&homogeneous_deck("y", 2), Some(&materials(2))).unwrap();
-        r.hash()
-    };
-    assert_eq!(a, b);
+fn hex_imports_are_bit_identical_across_runs_and_thread_counts() {
+    let mats = materials(2);
+    for orientation in ["x", "y"] {
+        let g = homogeneous_deck(orientation, 2);
+        let a = state(&g, &mats);
+        assert_eq!(a, state(&g, &mats), "{orientation}: two runs");
+        assert_eq!(a, in_pool(1, || state(&g, &mats)), "{orientation}: one thread");
+        assert_eq!(a, in_pool(4, || state(&g, &mats)), "{orientation}: four threads");
+    }
+    // A pin deck of the fixtures, in both orientations: one thread against many.
+    for name in ["hex_x", "hex_y"] {
+        let (g, m) = (hex_fixture(name, "geometry.xml"), hex_fixture(name, "materials.xml"));
+        assert_eq!(in_pool(1, || state(&g, &m)), in_pool(4, || state(&g, &m)), "{name}");
+    }
 }
 
 #[test]

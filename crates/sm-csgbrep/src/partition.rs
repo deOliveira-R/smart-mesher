@@ -732,8 +732,9 @@ mod tests {
             ],
             cells: Vec::new(),
             lattices: Vec::new(),
+            hex_elements: Vec::new(),
         };
-        let cell = |expr: Expr| PCell { expr, name: "c".into(), origin: Origin { cell: 42, path: Vec::new() } };
+        let cell = |expr: Expr| PCell { expr, name: "c".into(), origin: Origin { cell: 42, path: Vec::new() }, core: None };
         let region = Expr::And((0..5).map(Expr::neg).collect());
         let err = check_piece(&t, &placed, vol, &cell(region)).expect_err("corners at r = 2.8 are outside the unit cylinder");
         let CsgbrepError::Kernel(msg) = err else { panic!("not a kernel error: {err:?}") };
