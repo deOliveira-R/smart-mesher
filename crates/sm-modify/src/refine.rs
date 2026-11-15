@@ -526,6 +526,7 @@ pub fn pass<B: MeshBuild>(
             child_start: &child_start,
             c_parent: &c_parent,
             on_parent: &on_parent,
+            span: None,
         },
     )?;
 
@@ -543,7 +544,7 @@ pub fn pass<B: MeshBuild>(
 /// boundary faces or as interface faces between volumes) lies on a model edge. With the model
 /// topology it is the one edge common to all those faces that both end vertices can lie on; without
 /// it, the `TopoEdge` of an end vertex (the other end on the same edge or on a `TopoVertex`).
-fn fallback_edge_classes(src: &dyn MeshRead, topo: Option<&dyn TopologyView>) -> BTreeMap<[VertexIx; 2], Classification> {
+pub(crate) fn fallback_edge_classes(src: &dyn MeshRead, topo: Option<&dyn TopologyView>) -> BTreeMap<[VertexIx; 2], Classification> {
     use sm_core::{EntityId, EntityKind};
     use sm_topo_api::TopologyViewExt;
     let mut seen: BTreeMap<[VertexIx; 2], SmallVec<[EntityId; 4]>> = BTreeMap::new();

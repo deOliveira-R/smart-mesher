@@ -36,6 +36,10 @@ pub(crate) struct Lineage<'a> {
     pub c_parent: &'a [u32],
     /// `(source face, new provisional face)` of every new face lying on a source face, ascending.
     pub on_parent: &'a [(u32, FaceIx)],
+    /// Local refinement: the source vertices every new node (`nv..nn`, in order) spans. With it the
+    /// node layout fields above are not used (set `pairs`, `qfaces` empty), a new node joins a
+    /// vertex set when all the vertices it spans are members, and vertex tags use the span.
+    pub span: Option<&'a [SmallVec<[u32; 8]>]>,
 }
 
 /// Per-mesh wall data for vertex-set coverage, built once on the first non-empty vertex set.
@@ -119,7 +123,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
     l: &Lineage<'_>,
 ) -> Result<Vec<(&'static str, String)>, MeshError> {
     let mut notes: Vec<(&'static str, String)> = Vec::new();
-    let Lineage { nv, nn, pairs, edge_ent, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent } = *l;
+    let Lineage { nv, nn, pairs, edge_ent, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent, span } = *l;
     let mut wall: Option<WallCover> = None;
     let children_of = |c: u32| child_start[c as usize]..child_start[c as usize + 1];
     for set in src.sets() {
@@ -162,6 +166,19 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
             SetMembers::Vertices(v) => {
                 if v.is_empty() {
                     b.add_set(&set.name, SetMembers::Vertices(Vec::new()))?;
+                    if let Some(l) = set.label {
+                        b.set_label(&set.name, Some(l))?;
+                    }
+                    continue;
+                }
+                if let Some(span) = span {
+                    let mut inset = vec![false; nv];
+                    for x in v {
+                        inset[x.get()] = true;
+                    }
+                    let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
+                    out.extend((nv..nn).filter(|&n| span[n - nv].iter().all(|&x| inset[x as usize])).map(|n| VertexIx(n as u32)));
+                    b.add_set(&set.name, SetMembers::Vertices(out))?;
                     if let Some(l) = set.label {
                         b.set_label(&set.name, Some(l))?;
                     }
@@ -291,9 +308,11 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
             }
             (MeshEntityKind::Vertex, v) => {
                 // Spanned vertices of every new node, in node order.
-                let span = |n: usize| -> SmallVec<[u32; 8]> {
+                let span_of = |n: usize| -> SmallVec<[u32; 8]> {
                     if n < nv {
                         SmallVec::from_slice(&[n as u32])
+                    } else if let Some(sp) = span {
+                        sp[n - nv].clone()
                     } else if n < base_q {
                         SmallVec::from_slice(&pairs[n - base_e])
                     } else if n < base_c {
@@ -303,11 +322,11 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     }
                 };
                 let vals = match v {
-                    TagValues::I64(x) => TagValues::I64((0..nn).map(|n| x[span(n).iter().copied().min().unwrap_or(0) as usize]).collect()),
+                    TagValues::I64(x) => TagValues::I64((0..nn).map(|n| x[span_of(n).iter().copied().min().unwrap_or(0) as usize]).collect()),
                     TagValues::F64(x) => TagValues::F64(
                         (0..nn)
                             .map(|n| {
-                                let s = span(n);
+                                let s = span_of(n);
                                 s.iter().map(|&i| x[i as usize]).sum::<f64>() / s.len() as f64
                             })
                             .collect(),
