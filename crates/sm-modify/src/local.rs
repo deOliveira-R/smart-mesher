@@ -209,6 +209,7 @@ struct Pass<'a> {
     pos: Vec<V>,
     class: Vec<Classification>,
     keys: Vec<Key>,
+    /// Lookup only (ids come from creation order, never from iteration), so it cannot affect output order.
     map: HashMap<Key, u32>,
 }
 
@@ -460,6 +461,19 @@ fn sub(a: V, b: V) -> V {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+fn norm(a: V) -> f64 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+fn mean(p: &[V]) -> V {
+    let k = 1.0 / p.len() as f64;
+    let mut s = [0.0; 3];
+    for q in p {
+        s = [s[0] + q[0], s[1] + q[1], s[2] + q[2]];
+    }
+    [s[0] * k, s[1] * k, s[2] * k]
+}
+
 /// What [`refine_local`] refines and how.
 #[derive(Clone, Copy, Debug)]
 pub struct LocalOptions<'a> {
@@ -600,19 +614,46 @@ pub fn refine_local<B: MeshBuild>(
         let pj = Projector::new(topo);
         let mut inc: Vec<Vec<u32>> = vec![Vec::new(); nn - nv];
         for (k, d) in descs.iter().enumerate() {
-            if d.shape == CellShape::Hex {
-                for &n in &d.corners {
-                    if n as usize >= nv {
-                        inc[n as usize - nv].push(k as u32);
-                    }
-                }
+            let mut seen: SmallVec<[u32; 32]> = d.corners.iter().copied().chain(d.loops.iter().flatten().copied()).filter(|&n| n as usize >= nv).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            for n in seen {
+                inc[n as usize - nv].push(k as u32);
             }
         }
+        // Hexes: scaled Jacobian. Polyhedra: the smallest sine of the fan tets (cell centre, edge,
+        // face centre) of every face loop; positive for a star-shaped cell.
+        let measure = |k: usize, pos: &[V]| -> f64 {
+            let d = &descs[k];
+            if d.shape == CellShape::Hex {
+                let pts: SmallVec<[V; 8]> = d.corners.iter().map(|&v| pos[v as usize]).collect();
+                return eval(Metric::ScaledJacobian, CellShape::Hex, &pts, &Context { normal: None, ref_size: f64::NAN }).unwrap_or(f64::NAN);
+            }
+            let mut all: SmallVec<[u32; 32]> = d.loops.iter().flatten().copied().collect();
+            all.sort_unstable();
+            all.dedup();
+            let c = mean(&all.iter().map(|&n| pos[n as usize]).collect::<SmallVec<[V; 32]>>());
+            let mut m = f64::INFINITY;
+            for l in &d.loops {
+                let f = mean(&l.iter().map(|&n| pos[n as usize]).collect::<SmallVec<[V; 8]>>());
+                for i in 0..l.len() {
+                    let (a, bb) = (sub(pos[l[i] as usize], c), sub(pos[l[(i + 1) % l.len()] as usize], c));
+                    let ff = sub(f, c);
+                    let det = a[0] * (bb[1] * ff[2] - bb[2] * ff[1]) - a[1] * (bb[0] * ff[2] - bb[2] * ff[0]) + a[2] * (bb[0] * ff[1] - bb[1] * ff[0]);
+                    let s = norm(a) * norm(bb) * norm(ff);
+                    let v = if s > 0.0 { det / s } else { f64::NAN };
+                    if v.is_nan() {
+                        return f64::NAN;
+                    }
+                    m = m.min(v);
+                }
+            }
+            m
+        };
         let min_sj = |n: usize, pos: &[V]| -> f64 {
             let mut m = f64::INFINITY;
             for &k in &inc[n - nv] {
-                let pts: SmallVec<[V; 8]> = descs[k as usize].corners.iter().map(|&v| pos[v as usize]).collect();
-                let v = eval(Metric::ScaledJacobian, CellShape::Hex, &pts, &Context { normal: None, ref_size: f64::NAN }).unwrap_or(f64::NAN);
+                let v = measure(k as usize, pos);
                 if v.is_nan() {
                     return f64::NAN;
                 }
@@ -708,6 +749,26 @@ pub fn refine_local<B: MeshBuild>(
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));
     let c_parent: Vec<u32> = descs.iter().map(|d| d.parent).collect();
     let span: Vec<SmallVec<[u32; 8]>> = p.keys.iter().map(|k| k.iter().map(|e| e.0).collect()).collect();
+    // A node lies on the mesh boundary when it sits on an edge or a quad of a boundary face.
+    let mut bedges: std::collections::BTreeSet<[u32; 2]> = std::collections::BTreeSet::new();
+    for f in 0..nf {
+        let fi = FaceIx::new(f);
+        if src.face_right(fi).is_none() {
+            let l = src.face_vertices(fi);
+            for i in 0..l.len() {
+                let (x, y) = (l[i].0, l[(i + 1) % l.len()].0);
+                bedges.insert([x.min(y), x.max(y)]);
+            }
+        }
+    }
+    let joins: Vec<bool> = span
+        .iter()
+        .map(|sp| match sp.len() {
+            2 => bedges.contains(&[sp[0], sp[1]]),
+            4 => p.face_by_verts.get(sp.as_slice()).is_some_and(|&f| src.face_right(FaceIx::new(f as usize)).is_none()),
+            _ => false,
+        })
+        .collect();
     let notes = carry_sets_and_tags(
         src,
         &mut b,
@@ -725,6 +786,7 @@ pub fn refine_local<B: MeshBuild>(
             c_parent: &c_parent,
             on_parent: &on_parent,
             span: Some(&span),
+            joins: &joins,
         },
     )?;
     let fin = b.finish(alloc)?;

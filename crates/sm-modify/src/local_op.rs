@@ -29,9 +29,11 @@ use crate::ops::quality;
 /// 2-level cell are raised to level 1. With `balance: false` a jump above 1 is refused, naming the
 /// face. Only hexes are refined; any other cell that the selection or the balance would refine is
 /// refused. Unrefined cells of any shape that touch a split face or edge become polyhedra.
+/// Balance is per call: a second call cannot select polyhedra, so it can leave a jump above 1.
 ///
 /// Classification, sets, blocks and cell tags carry over as in `mesh.refine` (a vertex set gains
-/// a new node when all the source vertices the node spans are members). New nodes on a model edge
+/// a new node when it lies on a boundary face of the mesh and all the source vertices it spans are
+/// members). New nodes on a model edge
 /// or face are projected unless that would invert a hex (`project: false` keeps them straight; then
 /// every face stays planar and the volume is exact). The `refine_local.report` diagnostic carries
 /// counts (hexes, polyhedra, balance-raised cells), volumes, the minimum scaled Jacobian and the
@@ -198,5 +200,32 @@ impl TypedOp for RefineLocal {
             retire_mesh(ctx, source)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_mesh_api::reference::hex_block_with_edges;
+    use sm_mesh_api::MeshEdit;
+
+    #[test]
+    fn tag_threshold_selects_the_cells_at_or_above_it_for_real_and_integer_columns() {
+        let mut m = hex_block_with_edges([2, 2, 1], [1.0; 3], &mut SerialAlloc::new()).expect("block");
+        m.set_tag("w", MeshEntityKind::Cell, TagValues::F64(vec![0.5, 1.0, 1.5, 2.0])).expect("tag");
+        m.set_tag("k", MeshEntityKind::Cell, TagValues::I64(vec![0, 3, 1, 3])).expect("tag");
+        let op = |tag: &str, th: f64| RefineLocal {
+            mesh: EntityId::new(EntityKind::Mesh, 1).expect("id"),
+            cell_set: None,
+            tag: Some(tag.into()),
+            threshold: Some(th),
+            levels: None,
+            balance: None,
+            keep_source: None,
+            project: None,
+        };
+        assert_eq!(select(&m, &op("w", 1.0)).expect("w"), vec![false, true, true, true]);
+        assert_eq!(select(&m, &op("k", 3.0)).expect("k"), vec![false, true, false, true]);
+        assert!(select(&m, &op("nope", 1.0)).is_err());
     }
 }

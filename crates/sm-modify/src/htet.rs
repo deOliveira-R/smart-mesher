@@ -455,6 +455,7 @@ pub fn htet<B: MeshBuild>(
             c_parent: &c_parent,
             on_parent: &on_parent,
             span: None,
+            joins: &[],
         },
     )?;
     let fin = b.finish(alloc)?;
@@ -631,6 +632,7 @@ pub fn qtri<B: MeshBuild>(
             c_parent: &c_parent,
             on_parent: &on_parent,
             span: None,
+            joins: &[],
         },
     )?;
     let fin = b.finish(alloc)?;

@@ -130,6 +130,41 @@ fn centre_of_a_3x3x3_block_has_the_hand_counts() {
 }
 
 #[test]
+fn three_levels_at_the_centre_give_the_hand_count() {
+    let src = block([3, 3, 3]);
+    let r = run(&src, &centre(3), 3, true).expect("refine");
+    let m = &r.finished.mesh;
+    // Centre 512 hexes; the 6 face neighbours are raised to level 2 (64 each), the 12 edge
+    // neighbours to level 1 (8 each); the 8 corner cells stay (jump 1 to the edge neighbours).
+    assert_eq!((r.stats.refined, r.stats.balanced), (1 + 6 + 12, 6 + 12));
+    assert_eq!(m.cell_count(), 512 + 6 * 64 + 12 * 8 + 8);
+    assert!((volume(m) - 27.0).abs() < 1e-12);
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    // Polyhedra: the leaves that meet a finer neighbour. Face neighbours (level 2) face the centre
+    // (level 3) with 4 x 4 leaves each: 96; each of the 12 edge neighbours (level 1) has 4 + 4 - 2 = 6
+    // of its 8 leaves on a face or edge shared with a level 2 cell: 72; the 8 corner cells: 8.
+    assert_eq!(r.stats.polyhedra, 96 + 72 + 8);
+    assert_eq!(r.stats.hexes + r.stats.polyhedra, m.cell_count());
+    LevelMap::new(m, &src, r.coarse_of.clone(), Some(r.face_map.clone())).expect("level map");
+}
+
+#[test]
+fn a_vertex_set_gains_boundary_nodes_but_never_interior_ones() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 1], [1.0; 3], &mut alloc).expect("block");
+    let all: Vec<VertexIx> = (0..src.vertex_count()).map(VertexIx::new).collect();
+    src.add_set("all", SetMembers::Vertices(all), &mut alloc).expect("set");
+    let r = run(&src, &[true, false, false, false], 1, true).expect("refine");
+    let m = &r.finished.mesh;
+    let set = m.sets().iter().find(|s| s.name == "all").expect("set");
+    let SetMembers::Vertices(v) = &set.members else { panic!("vertices") };
+    // 18 originals + 11 boundary edge midpoints + 4 boundary face centres of the refined corner cell;
+    // the interior vertical edge, the 2 interior faces and the cell centre stay out.
+    assert_eq!(v.len(), 18 + 11 + 4);
+    assert_eq!(m.vertex_count(), 18 + 12 + 6 + 1);
+}
+
+#[test]
 fn child_volumes_and_sub_face_areas_are_exact() {
     let src = block([3, 3, 3]);
     let r = run(&src, &centre(3), 1, true).expect("refine");

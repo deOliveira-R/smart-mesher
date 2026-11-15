@@ -40,6 +40,9 @@ pub(crate) struct Lineage<'a> {
     /// node layout fields above are not used (set `pairs`, `qfaces` empty), a new node joins a
     /// vertex set when all the vertices it spans are members, and vertex tags use the span.
     pub span: Option<&'a [SmallVec<[u32; 8]>]>,
+    /// With `span`: which new nodes may join a vertex set (those on the boundary of the mesh;
+    /// interior face and cell nodes never join, as in `mesh.refine`).
+    pub joins: &'a [bool],
 }
 
 /// Per-mesh wall data for vertex-set coverage, built once on the first non-empty vertex set.
@@ -123,7 +126,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
     l: &Lineage<'_>,
 ) -> Result<Vec<(&'static str, String)>, MeshError> {
     let mut notes: Vec<(&'static str, String)> = Vec::new();
-    let Lineage { nv, nn, pairs, edge_ent, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent, span } = *l;
+    let Lineage { nv, nn, pairs, edge_ent, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent, span, joins } = *l;
     let mut wall: Option<WallCover> = None;
     let children_of = |c: u32| child_start[c as usize]..child_start[c as usize + 1];
     for set in src.sets() {
@@ -177,7 +180,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                         inset[x.get()] = true;
                     }
                     let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
-                    out.extend((nv..nn).filter(|&n| span[n - nv].iter().all(|&x| inset[x as usize])).map(|n| VertexIx(n as u32)));
+                    out.extend((nv..nn).filter(|&n| joins[n - nv] && span[n - nv].iter().all(|&x| inset[x as usize])).map(|n| VertexIx(n as u32)));
                     b.add_set(&set.name, SetMembers::Vertices(out))?;
                     if let Some(l) = set.label {
                         b.set_label(&set.name, Some(l))?;

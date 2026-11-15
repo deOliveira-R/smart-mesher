@@ -527,6 +527,7 @@ pub fn pass<B: MeshBuild>(
             c_parent: &c_parent,
             on_parent: &on_parent,
             span: None,
+            joins: &[],
         },
     )?;
 
