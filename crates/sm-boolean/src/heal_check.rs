@@ -266,7 +266,7 @@ fn thresholds(
 }
 
 /// Length of an edge: the curve length, or the chord without a curve.
-fn edge_length(view: &dyn TopologyView, e: EntityId) -> Option<f64> {
+pub(crate) fn edge_length(view: &dyn TopologyView, e: EntityId) -> Option<f64> {
     if let Some((c, cc)) = geo::edge_curve(view, e) {
         return c.length(cc.range, view.tolerance().linear).ok();
     }
@@ -490,6 +490,14 @@ fn blend(
 }
 
 /// One finding per chain of free edges (edges used by a single non-baffle face).
+pub(crate) fn open_chains(
+    view: &dyn TopologyView,
+    entities: &Option<Vec<EntityId>>,
+) -> Result<Vec<HealFinding>, BooleanError> {
+    let scope = resolve_scope(view, entities)?;
+    Ok(open_shells(view, &scope.edges))
+}
+
 fn open_shells(view: &dyn TopologyView, edges: &[EntityId]) -> Vec<HealFinding> {
     let free: Vec<EntityId> = edges
         .iter()
@@ -547,7 +555,10 @@ fn open_shells(view: &dyn TopologyView, edges: &[EntityId]) -> Vec<HealFinding> 
 }
 
 /// Near gaps between cells that share no face or neighbouring face.
-fn near_gaps(view: &dyn TopologyView, entities: &Option<Vec<EntityId>>) -> Vec<HealFinding> {
+pub(crate) fn near_gaps(
+    view: &dyn TopologyView,
+    entities: &Option<Vec<EntityId>>,
+) -> Vec<HealFinding> {
     let rep = merge_check(
         view,
         entities.as_deref().unwrap_or(&[]),

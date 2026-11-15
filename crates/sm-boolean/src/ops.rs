@@ -695,6 +695,111 @@ impl TypedQuery for HealCheck {
     }
 }
 
+/// The fixes `model.heal` can be limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HealFixName {
+    /// Raise tolerances and merge near cells.
+    Weld,
+    /// Re-orient inside-out volumes.
+    Orient,
+    /// Close planar open loops.
+    Close,
+}
+
+/// `model.heal {entities?, tol?, fixes?}`: tolerant healing, tolerance first. Near gaps up to
+/// `tol` (default and maximum `linear_max`) are welded (the paired cells' tolerances are raised to
+/// the gap, then merged within them; the lowest id survives, so the other side's boundary moves
+/// by the gap, recorded as `Merged { gap }`), inside-out volumes are re-oriented, and planar
+/// open loops are closed by a plane face. Nothing else moves. `fixes` limits the run to a
+/// subset of `weld`, `orient`, `close`. Run `model.heal_check` first and `model.heal_check`
+/// again after: what remains is outside tolerant healing (collapses and defeaturing).
+/// Outputs: the surviving merged `faces`, the `closed` hole faces and the re-oriented `volumes`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Heal {
+    /// The cells to heal within (default: everything).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    pub entities: Option<Vec<EntityId>>,
+    /// Healing tolerance (at most `linear_max`, which is the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tol: Option<f64>,
+    /// The fixes to run (default all three).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixes: Option<Vec<HealFixName>>,
+}
+
+impl TypedOp for Heal {
+    const NAME: &'static str = "model.heal";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new(
+            "faces",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The surviving faces of merged pairs.",
+        ),
+        OutputRole::new(
+            "closed",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The faces created to close open loops.",
+        ),
+        OutputRole::new(
+            "volumes",
+            &[EntityKind::TopoVolume],
+            Cardinality::Many,
+            "The volumes whose faces were reversed.",
+        ),
+    ];
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let layer = ctx.layer::<ModelLayer>()?;
+        check_scope(layer.host(), &self.entities)?;
+        let fixes = match &self.fixes {
+            None => crate::heal::HealFixes::default(),
+            Some(l) => crate::heal::HealFixes {
+                weld: l.contains(&HealFixName::Weld),
+                orient: l.contains(&HealFixName::Orient),
+                close: l.contains(&HealFixName::Close),
+            },
+        };
+        let o = crate::heal::HealApply {
+            entities: self.entities.clone(),
+            tol: self.tol,
+            fixes,
+        };
+        let (rep, txn) = topo_txn(ctx, |topo, _model| {
+            crate::heal::heal(topo, &o).map_err(OpError::from)
+        })?;
+        let dropped: BTreeSet<EntityId> = rep
+            .merged
+            .iter()
+            .filter(|m| m.kind == crate::merge::MergeKind::Face)
+            .map(|m| m.drop)
+            .collect();
+        let faces: Vec<EntityId> = rep
+            .merged
+            .iter()
+            .filter(|m| m.kind == crate::merge::MergeKind::Face && !dropped.contains(&m.keep))
+            .map(|m| m.keep)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let closed: Vec<EntityId> = rep.closed.iter().map(|c| c.face).collect();
+        let volumes: Vec<EntityId> = rep.reoriented.clone();
+        commit_topology(
+            ctx,
+            &txn,
+            &[
+                ("faces", &faces),
+                ("closed", &closed),
+                ("volumes", &volumes),
+            ],
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Webcut
 // ---------------------------------------------------------------------------------------------

@@ -324,7 +324,13 @@ fn sphere_crossing_near_an_arc_extreme_still_cuts() {
 /// The degenerate split reaches `ResultInvalid` end to end (not the coincident-boundary text).
 #[test]
 fn degenerate_split_is_result_invalid_end_to_end() {
-    let e = plane_then_sphere([1.0, 0.37], 0.3, 0.03, [core::f64::consts::FRAC_1_SQRT_2; 2]).unwrap_err();
+    let e = plane_then_sphere(
+        [1.0, 0.37],
+        0.3,
+        0.03,
+        [core::f64::consts::FRAC_1_SQRT_2; 2],
+    )
+    .unwrap_err();
     assert!(
         matches!(
             e,
