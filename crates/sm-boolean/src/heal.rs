@@ -525,12 +525,17 @@ pub fn close_open_loops(
                 })
             })
         });
-        if coplanar {
+        // A sheet's cap covers the sheet (its area vector opposes the faces' oriented normals); the
+        // cap of a hole in a planar face covers the excluded region and agrees with them.
+        let overlaps = users.iter().any(|&f| {
+            geo::face_normal_near(&*topo, f, c).is_some_and(|(n, _, _)| n.dot(normal) < 0.0)
+        });
+        if coplanar && overlaps {
             skip(
                 out,
                 "close",
                 edges.clone(),
-                "every face at the loop lies in the cap plane (a planar sheet, not a hole)",
+                "every face at the loop lies in the cap plane and the cap would overlap them (a planar sheet, not a hole)",
             );
             continue;
         }

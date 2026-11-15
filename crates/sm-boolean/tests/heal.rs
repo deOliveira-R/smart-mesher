@@ -567,3 +567,71 @@ fn a_coplanar_two_face_sheet_is_not_capped() {
         .sum();
     assert!((area - 1.0).abs() <= 1e-12, "area {area}");
 }
+
+#[test]
+fn a_hole_in_a_planar_face_is_capped() {
+    use sm_core::Vector3;
+    use sm_geom_api::Interval;
+    use sm_topo_api::{CoedgeSpec, CurveCarrier, Sense};
+    let mut h = CellComplex::new();
+    h.begin_op(OpId(1)).unwrap();
+    let b = brick(&mut h, Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
+    h.end_op().unwrap();
+    h.begin_op(OpId(2)).unwrap();
+    for &v in h.cells(Dim::Body).to_vec().iter() {
+        h.kill(v).unwrap();
+    }
+    for &v in h.cells(Dim::Volume).to_vec().iter() {
+        h.kill(v).unwrap();
+    }
+    // A 0.25..0.75 square hole in the top face (z = 1), traversed clockwise seen from +z.
+    let pts = [(0.25, 0.25), (0.25, 0.75), (0.75, 0.75), (0.75, 0.25)];
+    let vs: Vec<_> = pts
+        .iter()
+        .map(|&(x, y)| h.make_vertex(Point3::new(x, y, 1.0)).unwrap())
+        .collect();
+    let mut es = Vec::new();
+    for i in 0..4 {
+        let (p, q) = (pts[i], pts[(i + 1) % 4]);
+        let d = Vector3::new(q.0 - p.0, q.1 - p.1, 0.0);
+        let curve = h
+            .shapes_mut()
+            .unwrap()
+            .add_curve(CurveDef::Line(
+                Line::new(Point3::new(p.0, p.1, 1.0), d).unwrap(),
+            ))
+            .unwrap();
+        es.push(
+            h.make_edge(
+                vs[i],
+                vs[(i + 1) % 4],
+                Some(CurveCarrier {
+                    curve,
+                    range: Interval::new(0.0, d.norm()),
+                    sense: Sense::Forward,
+                }),
+            )
+            .unwrap(),
+        );
+    }
+    let lp: Vec<CoedgeSpec> = es
+        .iter()
+        .map(|&edge| CoedgeSpec {
+            edge,
+            sense: Sense::Forward,
+        })
+        .collect();
+    h.make_inner_loop(b.faces[5], &lp).unwrap();
+    h.end_op().unwrap();
+    assert_eq!(codes(&h), ["open_shell"]);
+    let out = run_heal(&mut h, 3, HealFixes::default());
+    assert_eq!(out.closed.len(), 1, "{out:?}");
+    let cap = out.closed[0].face;
+    let area = h.face_moments(cap).unwrap().area;
+    assert!((area - 0.25).abs() <= 1e-12, "area {area}");
+    assert!(codes(&h).is_empty(), "{:?}", codes(&h));
+    assert!(validate(&h).is_empty());
+    let once = words(&h);
+    assert!(run_heal(&mut h, 4, HealFixes::default()).is_empty());
+    assert_eq!(words(&h), once);
+}
