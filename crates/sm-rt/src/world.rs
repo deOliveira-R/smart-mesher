@@ -1781,11 +1781,13 @@ impl Tracker for WorldTracker {
                     Ok(Some((nd, end))) => {
                         // The hop is a chord of the cell it left; a region change shows in the next
                         // segment (a trace has no region events).
-                        let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
-                        if sink.segment(&seg) == Flow::Stop {
-                            return Ok(TraceEnd::Stopped);
+                        if nd > 0.0 {
+                            let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
+                            if sink.segment(&seg) == Flow::Stop {
+                                return Ok(TraceEnd::Stopped);
+                            }
+                            t += nd;
                         }
-                        t += nd;
                         if matches!(end, Some(StepEnd::Limit)) {
                             return Ok(TraceEnd::Limit);
                         }

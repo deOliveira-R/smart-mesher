@@ -188,12 +188,13 @@ fn acc1_lattice_of_hex_pins_matches_the_analytic_stub() {
         // A ray passing within `tol` (1e-6) of a lattice corner is on both walls for the walker, which
         // goes slot to slot diagonally; the exact stub visits the sliver slot for under `tol`. Both
         // lists drop a slot left again within `tol` (release run, 1 ray in 591248: sliver of 1.07e-7).
-        let (ms, os) = (drop_slivers(&mine.slots, 1e-6), drop_slivers(&oracle.slots, 1e-6));
+        let differ = mine.slots.len() != oracle.slots.len();
+        let (ms, os) = if differ { (drop_slivers(&mine.slots, 1e-6), drop_slivers(&oracle.slots, 1e-6)) } else { (mine.slots.clone(), oracle.slots.clone()) };
         if ms.len() == os.len() {
             for (a, b) in ms.iter().zip(&os) {
                 // Slot distances agree to 1e-12, or to `tol` when a sliver was dropped.
                 let de = (a.0 - b.0).abs();
-                if mine.slots.len() == oracle.slots.len() {
+                if !differ {
                     e = e.max(de);
                 } else {
                     bad += usize::from(de > 1e-6);
