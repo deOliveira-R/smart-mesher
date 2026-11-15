@@ -14,6 +14,9 @@
 //!   centre coordinate 0).
 //! * The `outer` universe of a lattice fills the part of the container outside the array box, with
 //!   its origin at the lattice frame origin.
+//! * A [`HexLattice`] lives in `CsgIr::hex_lattices`; a cell reaches it through the same
+//!   [`Fill::Lattice`] (lattice and hex lattice ids share one id space, as in OpenMC). Its
+//!   frame, ring order and index map are documented on [`HexLattice`] and in `DESIGN.md`.
 
 use crate::ImportError;
 use sm_core::{Point3, Transform, Vector3};
@@ -200,6 +203,169 @@ pub struct Lattice {
     pub outer: Option<u32>,
 }
 
+/// Orientation of a [`HexLattice`], named as OpenMC's `orientation` attribute.
+///
+/// `X` is rows along x (pointy-top hexagons, flats at `x = +-p/2` of the element centre); it is
+/// `LatticeKind::Hex` in `sm-rt-api` and `HexOrient::XRows` in `sm-model-api`. `Y` is rows along y
+/// (flat-top, flats at `y = +-p/2`), `LatticeKind::HexYRows`; it is OpenMC's default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HexOrientation {
+    /// OpenMC `orientation="x"`.
+    X,
+    /// OpenMC `orientation="y"` (the OpenMC default).
+    Y,
+}
+
+/// A hexagonal lattice of `n_rings` rings and `n_axial` layers (OpenMC `<hex_lattice>`).
+///
+/// # Frame
+/// `center` is the lattice centre in the deck frame. `p = pitch` is the flat-to-flat pitch, which
+/// is also the distance between neighbouring element centres. With centred axial indices `(q, r)`
+/// (`max(|q|, |r|, |q + r|) < n_rings`) and layer `k` (0 is the lowest z):
+/// * `X`: centre `= center + p (q + r/2, sqrt(3)/2 r)`;
+/// * `Y`: centre `= center + p (sqrt(3)/2 q, r + q/2)`;
+/// * z of layer `k`: `center[2] + z_pitch (k + 1/2 - n_axial/2)` ([`Self::element_center`]).
+///
+/// The universe placed in an element has its origin at the element centre. A lattice without z
+/// extent (`n_axial == 1` and no z pitch in the deck) has `z_pitch == f64::INFINITY` and
+/// `center[2] == 0`: the universes keep the cell's z, as for a 2-D rectangular lattice.
+///
+/// # Order of `universes`
+/// OpenMC order (the Python API order, not the row picture of `geometry.xml`): layer `k` from the
+/// lowest z up; within a layer ring `0` (the outermost, radius `n_rings - 1`) to ring `n_rings - 1`
+/// (the single centre element); within a ring from OpenMC's start position, clockwise
+/// ([`Self::ring_axial`]). A layer holds `3 n (n - 1) + 1` universes for `n` rings
+/// ([`Self::elements_per_layer`]).
+///
+/// `outer` is homogeneous (the reader refuses one whose cells depend on position, as for the
+/// rectangular lattice): it fills the container outside the hexagonal array.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HexLattice {
+    /// Lattice centre (the z entry is 0 when the lattice has no z extent).
+    pub center: [f64; 3],
+    /// Flat-to-flat pitch in the xy plane.
+    pub pitch: f64,
+    /// Layer pitch in z; `f64::INFINITY` for a lattice without z extent (`n_axial == 1`).
+    pub z_pitch: f64,
+    /// Orientation.
+    pub orientation: HexOrientation,
+    /// Number of rings, at least 1 (1 is a single element).
+    pub n_rings: u32,
+    /// Number of axial layers, at least 1.
+    pub n_axial: u32,
+    /// The universe of each element in OpenMC order (see the type docs).
+    pub universes: Vec<u32>,
+    /// Universe outside the array, if any (homogeneous).
+    pub outer: Option<u32>,
+}
+
+impl HexLattice {
+    /// Elements in one layer of `n_rings` rings, `3 n (n - 1) + 1` (0 for no rings).
+    pub fn elements_per_layer(n_rings: u32) -> usize {
+        let n = n_rings as usize;
+        if n == 0 { 0 } else { 3 * n * (n - 1) + 1 }
+    }
+
+    /// Elements in ring `ring` (0 is the outermost) of `n_rings` rings; `ring < n_rings`.
+    pub fn ring_len(n_rings: u32, ring: u32) -> usize {
+        let radius = (n_rings - 1 - ring) as usize;
+        if radius == 0 { 1 } else { 6 * radius }
+    }
+
+    /// Centred axial indices `(q, r)` of position `pos` of ring `ring` (0 is the outermost), in
+    /// OpenMC's order. With radius `R = n_rings - 1 - ring` the ring starts at `(R, 0)` for `X` and
+    /// `(0, R)` for `Y`, then makes `R` steps along each of six directions, clockwise:
+    /// `(0,-1) (-1,0) (-1,1) (0,1) (1,0) (1,-1)` for `X`, `(1,-1) (0,-1) (-1,0) (-1,1) (0,1) (1,0)`
+    /// for `Y`. `None` when `ring` or `pos` is out of range.
+    pub fn ring_axial(orientation: HexOrientation, n_rings: u32, ring: u32, pos: u32) -> Option<(i32, i32)> {
+        if ring >= n_rings || pos as usize >= Self::ring_len(n_rings, ring) {
+            return None;
+        }
+        let radius = (n_rings - 1 - ring) as i32;
+        if radius == 0 {
+            return Some((0, 0));
+        }
+        let (start, dirs): ((i32, i32), [(i32, i32); 6]) = match orientation {
+            HexOrientation::X => ((radius, 0), [(0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1)]),
+            HexOrientation::Y => ((0, radius), [(1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0)]),
+        };
+        let side = (pos as i32 / radius) as usize;
+        let step = pos as i32 % radius;
+        // The corner at the start of side `side`, then `step` steps along it.
+        let (mut q, mut r) = start;
+        for d in &dirs[..side] {
+            q += d.0 * radius;
+            r += d.1 * radius;
+        }
+        Some((q + dirs[side].0 * step, r + dirs[side].1 * step))
+    }
+
+    /// The inverse of [`Self::ring_axial`]: `(ring, position)` of the element at `(q, r)`, or `None`
+    /// outside the `n_rings` rings.
+    pub fn ring_position(orientation: HexOrientation, n_rings: u32, q: i32, r: i32) -> Option<(u32, u32)> {
+        let radius = q.abs().max(r.abs()).max((q + r).abs());
+        if radius >= n_rings as i32 {
+            return None;
+        }
+        let ring = n_rings - 1 - radius as u32;
+        (0..Self::ring_len(n_rings, ring) as u32).find(|&pos| Self::ring_axial(orientation, n_rings, ring, pos) == Some((q, r))).map(|pos| (ring, pos))
+    }
+
+    /// Index into [`Self::universes`] of layer `k`, ring `ring`, position `pos`.
+    pub fn flat_index(&self, k: u32, ring: u32, pos: u32) -> usize {
+        let before: usize = (0..ring).map(|g| Self::ring_len(self.n_rings, g)).sum();
+        k as usize * Self::elements_per_layer(self.n_rings) + before + pos as usize
+    }
+
+    /// The universe of the element at centred axial `(q, r)` and layer `k`; `None` outside the
+    /// rings or layers.
+    pub fn universe_at(&self, q: i32, r: i32, k: u32) -> Option<u32> {
+        if k >= self.n_axial {
+            return None;
+        }
+        let (ring, pos) = Self::ring_position(self.orientation, self.n_rings, q, r)?;
+        self.universes.get(self.flat_index(k, ring, pos)).copied()
+    }
+
+    /// Centre of the element at centred axial `(q, r)` and layer `k` in the deck frame (formulas in
+    /// the type docs). The z entry is `center[2]` for a lattice without z extent.
+    pub fn element_center(&self, q: i32, r: i32, k: u32) -> [f64; 3] {
+        let s = 3f64.sqrt() / 2.0;
+        let (q, r) = (f64::from(q), f64::from(r));
+        let (x, y) = match self.orientation {
+            HexOrientation::X => (self.pitch * (q + r / 2.0), self.pitch * s * r),
+            HexOrientation::Y => (self.pitch * s * q, self.pitch * (r + q / 2.0)),
+        };
+        let z = if self.z_pitch.is_finite() { self.center[2] + self.z_pitch * (f64::from(k) + 0.5 - f64::from(self.n_axial) / 2.0) } else { self.center[2] };
+        [self.center[0] + x, self.center[1] + y, z]
+    }
+
+    /// Structural check: at least one ring and layer, `universes` count, finite positive pitch, a
+    /// positive `z_pitch` that is infinite only with one layer, finite centre.
+    ///
+    /// # Errors
+    /// A description of the first problem.
+    pub fn check(&self) -> Result<(), String> {
+        if self.n_rings == 0 || self.n_axial == 0 {
+            return Err(format!("{} rings and {} layers", self.n_rings, self.n_axial));
+        }
+        let n = Self::elements_per_layer(self.n_rings).checked_mul(self.n_axial as usize).ok_or("too many elements")?;
+        if self.universes.len() != n {
+            return Err(format!("lists {} universes for {n} elements", self.universes.len()));
+        }
+        if !(self.pitch.is_finite() && self.pitch > 0.0) {
+            return Err(format!("pitch {} is not finite and positive", self.pitch));
+        }
+        if !(self.z_pitch > 0.0 && (self.z_pitch.is_finite() || self.n_axial == 1)) {
+            return Err(format!("z pitch {} with {} layers", self.z_pitch, self.n_axial));
+        }
+        if !self.center.iter().all(|c| c.is_finite()) {
+            return Err(format!("centre {:?} is not finite", self.center));
+        }
+        Ok(())
+    }
+}
+
 /// A material: its id and optional name.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Material {
@@ -217,6 +383,10 @@ pub struct CsgIr {
     pub cells: BTreeMap<u32, Cell>,
     /// Lattices by deck id.
     pub lattices: BTreeMap<u32, Lattice>,
+    /// Hexagonal lattices by deck id (the id space of `lattices`; a cell reaches either through
+    /// [`Fill::Lattice`]). Empty for every rectangular deck. [`crate::ImportedCsg::instantiate`]
+    /// does not flatten them yet and refuses a deck that has one.
+    pub hex_lattices: BTreeMap<u32, HexLattice>,
     /// Materials by deck id.
     pub materials: BTreeMap<u32, Material>,
     /// The universe the model is rooted at.
@@ -228,6 +398,36 @@ pub struct CsgIr {
 impl CsgIr {
     /// An empty deck rooted at universe `root_universe`.
     pub fn new(root_universe: u32) -> Self {
-        Self { surfaces: BTreeMap::new(), cells: BTreeMap::new(), lattices: BTreeMap::new(), materials: BTreeMap::new(), root_universe, dropped: Vec::new() }
+        Self { surfaces: BTreeMap::new(), cells: BTreeMap::new(), lattices: BTreeMap::new(), hex_lattices: BTreeMap::new(), materials: BTreeMap::new(), root_universe, dropped: Vec::new() }
+    }
+
+    /// Hash of the hexagonal-lattice section: `None` for a deck without hex lattices (the section
+    /// is never emitted for rectangular decks, so no existing hash can depend on it), else a hash
+    /// of every hex lattice in id order (tag, id, orientation, rings, layers, pitches, centre,
+    /// `outer`, universes in OpenMC order). The ids are deck ids: a consumer that hashes the flat
+    /// model appends this section only when it is `Some`.
+    pub fn hex_section_hash(&self) -> Option<sm_rt_api::ContentHash> {
+        if self.hex_lattices.is_empty() {
+            return None;
+        }
+        let mut h = sm_rt_api::ContentHasher::new();
+        h.write_bytes(b"csgio.hex.v1");
+        h.write_u64(self.hex_lattices.len() as u64);
+        for (id, l) in &self.hex_lattices {
+            h.write_u64(u64::from(*id));
+            h.write_u64(match l.orientation {
+                HexOrientation::X => 0,
+                HexOrientation::Y => 1,
+            });
+            h.write_u64(u64::from(l.n_rings));
+            h.write_u64(u64::from(l.n_axial));
+            h.write_f64(l.pitch);
+            h.write_f64(l.z_pitch);
+            l.center.iter().for_each(|c| h.write_f64(*c));
+            h.write_u64(l.outer.map_or(0, |u| u64::from(u) + 1));
+            h.write_u64(l.universes.len() as u64);
+            l.universes.iter().for_each(|u| h.write_u64(u64::from(*u)));
+        }
+        Some(h.finish())
     }
 }

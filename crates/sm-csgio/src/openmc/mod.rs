@@ -6,7 +6,7 @@
 //! reflective or white; `<cell>` with `material` (an id or `void`), `fill`, `universe`, `region`,
 //! `translation` and `rotation`; rectangular `<lattice>` with a position-independent `outer`; `materials.xml` for names.
 //! Refused with [`ImportError::Unsupported`]: a lattice `outer` universe whose cells have regions,
-//! the general `cylinder` and `cone` types (OpenMC's C++ layer rejects them), `hex_lattice`, `dagmc_universe`, periodic boundaries,
+//! the general `cylinder` and `cone` types (OpenMC's C++ layer rejects them), `hex_lattice` (by [`import`]; [`import_hex`] reads it), `dagmc_universe`, periodic boundaries,
 //! a `material` list, elliptic tori, lattices nested directly in a lattice, and rotations that are
 //! not proper orthonormal matrices.
 //!
@@ -17,7 +17,7 @@ mod region;
 mod surfaces;
 mod xform;
 
-use crate::ir::{BoundaryFlag, Cell, CsgIr, Fill, Lattice, Material};
+use crate::ir::{BoundaryFlag, Cell, CsgIr, Fill, HexLattice, HexOrientation, Lattice, Material};
 use crate::ImportError;
 use roxmltree::{Document, Node, ParsingOptions};
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,6 +146,31 @@ fn count_label(n: usize, what: &str) -> String {
 /// coefficient counts, bad regions, a lattice whose `universes` count does not match, no unique
 /// root universe).
 pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
+    import_impl(geometry_xml, materials_xml, false)
+}
+
+/// Like [`import`], and additionally reads `<hex_lattice>` (both orientations, `n_axial >= 1`) into
+/// [`CsgIr::hex_lattices`] instead of refusing it (ACR-CSG-HEXIR).
+///
+/// [`import`] keeps refusing `<hex_lattice>` with [`ImportError::Unsupported`] (element and line), so
+/// every consumer that calls it, today `sm-csgbrep`, the `smcsg` binary and `sm-rt-bench`, behaves as
+/// before. A consumer that can use hex lattices calls this function instead (W4-CSG-HEX). The
+/// returned IR is refused by [`crate::ImportedCsg::instantiate`] while the flattener has no hex
+/// support.
+///
+/// The `universes` text is OpenMC's row picture: for `orientation="x"` the rows from the highest `y`
+/// down, each row left to right; for `"y"` (the default) the lines of the picture from the highest
+/// `y` down (a line holds the elements whose `2r + q` is equal), each left to right. Layers follow
+/// from the lowest z up. The reader stores them in OpenMC's ring order ([`crate::ir::HexLattice`]).
+///
+/// # Errors
+/// As [`import`], plus [`ImportError::Invalid`] for a wrong `n_rings`, `n_axial`, `orientation`,
+/// `pitch`/`center` count or `universes` count.
+pub fn import_hex(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
+    import_impl(geometry_xml, materials_xml, true)
+}
+
+fn import_impl(geometry_xml: &str, materials_xml: Option<&str>, allow_hex: bool) -> Result<CsgIr, ImportError> {
     let gdoc = parse_xml(geometry_xml)?;
     let root = gdoc.root_element();
     if root.tag_name().name() != "geometry" {
@@ -156,8 +181,9 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
     let mut lattice_ids = BTreeSet::new();
     // Pass 1: lattice ids, so a cell's `fill` can be told apart.
     for n in root.children().filter(|n| n.is_element()) {
-        if n.tag_name().name() == "lattice" {
-            let cx = ctx(&gdoc, n, "lattice".into());
+        let t = n.tag_name().name();
+        if t == "lattice" || (allow_hex && t == "hex_lattice") {
+            let cx = ctx(&gdoc, n, t.into());
             lattice_ids.insert(id_of(&cx, n)?);
         }
     }
@@ -173,6 +199,10 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
             "lattice" => {
                 lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?;
                 lattice_lines.insert(id_of(&ctx(&gdoc, n, "lattice".into()), n)?, ctx(&gdoc, n, String::new()).line);
+            }
+            "hex_lattice" if allow_hex => {
+                hex_lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?;
+                lattice_lines.insert(id_of(&ctx(&gdoc, n, "hex_lattice".into()), n)?, ctx(&gdoc, n, String::new()).line);
             }
             "hex_lattice" | "dagmc_universe" => {
                 let cx = ctx(&gdoc, n, tag.into());
@@ -192,8 +222,10 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
     }
     // OpenMC looks `outer` up per virtual element (tiled at the lattice pitch); the IR places it
     // once. Only a position-independent `outer` is therefore the same thing in both.
-    for (id, l) in &ir.lattices {
-        if let Some(u) = l.outer
+    let outers = ir.lattices.iter().map(|(id, l)| (*id, l.outer)).chain(ir.hex_lattices.iter().map(|(id, l)| (*id, l.outer)));
+    for (id, outer) in outers {
+        let id = &id;
+        if let Some(u) = outer
             && !homogeneous(&ir, u, &mut BTreeSet::new())
         {
             let cx = Ctx { line: lattice_lines.get(id).copied().unwrap_or(0), what: format!("lattice {id}") };
@@ -386,7 +418,106 @@ fn lattice(doc: &Document<'_>, n: Node<'_, '_>, ir: &mut CsgIr, lattice_ids: &BT
         }
     };
     let l = Lattice { lower_left, pitch: p3, dims, universes: ordered, outer };
-    if ir.lattices.insert(id, l).is_some() {
+    if ir.hex_lattices.contains_key(&id) || ir.lattices.insert(id, l).is_some() {
+        return Err(invalid(&cx, "duplicate lattice id".into()));
+    }
+    Ok(())
+}
+
+/// Axial `(q, r)` of the entries of one layer in the order of OpenMC's `geometry.xml` text: for
+/// `x` the rows from the highest `y` down (`r` descending), each left to right (`q` ascending); for
+/// `y` the picture lines from the highest `y` down (`2r + q` descending), each left to right.
+fn hex_text_order(orientation: HexOrientation, n_rings: u32) -> Vec<(i32, i32)> {
+    let n = n_rings as i32;
+    let mut v: Vec<(i32, i32)> = Vec::new();
+    for q in -(n - 1)..n {
+        for r in -(n - 1)..n {
+            if (q + r).abs() < n {
+                v.push((q, r));
+            }
+        }
+    }
+    match orientation {
+        HexOrientation::X => v.sort_by_key(|&(q, r)| (-r, q)),
+        HexOrientation::Y => v.sort_by_key(|&(q, r)| (-(2 * r + q), q)),
+    }
+    v
+}
+
+fn hex_lattice(doc: &Document<'_>, n: Node<'_, '_>, ir: &mut CsgIr, lattice_ids: &BTreeSet<u32>, filled: &mut BTreeSet<u32>) -> Result<(), ImportError> {
+    let mut cx = ctx(doc, n, "hex_lattice".into());
+    let id = id_of(&cx, n)?;
+    cx.what = format!("hex_lattice {id}");
+    let req = |k: &str| field(n, k).ok_or_else(|| invalid(&cx, format!("missing {k}")));
+    let count = |k: &str, v: &str, lo: f64| -> Result<u32, ImportError> {
+        let x: f64 = v.parse().ok().filter(|x: &f64| x.fract() == 0.0 && *x >= lo && *x <= 1e4).ok_or_else(|| invalid(&cx, format!("{k} {v:?} is not an integer of at least {lo}")))?;
+        Ok(x as u32)
+    };
+    let n_rings = count("n_rings", req("n_rings")?, 1.0)?;
+    // As in OpenMC, the presence of `n_axial` makes the lattice three-dimensional (2 pitches, 3 centre values).
+    let (n_axial, is_3d) = match field(n, "n_axial") {
+        Some(v) => (count("n_axial", v, 1.0)?, true),
+        None => (1, false),
+    };
+    let orientation = match field(n, "orientation").unwrap_or("y") {
+        "x" => HexOrientation::X,
+        "y" => HexOrientation::Y,
+        other => return Err(invalid(&cx, format!("unknown orientation {other:?}"))),
+    };
+    let pitch = numbers(&cx, "pitch", req("pitch")?)?;
+    let center = numbers(&cx, "center", req("center")?)?;
+    let want = if is_3d { 3 } else { 2 };
+    if pitch.len() != want - 1 || center.len() != want {
+        return Err(invalid(&cx, format!("pitch needs {} and center {want} values{}", want - 1, if is_3d { " (n_axial is given)" } else { "" })));
+    }
+    if pitch.iter().any(|p| *p <= 0.0) {
+        return Err(invalid(&cx, "pitch must be positive".into()));
+    }
+    let per = HexLattice::elements_per_layer(n_rings);
+    let total = per.checked_mul(n_axial as usize).filter(|t| *t <= 1 << 24).ok_or_else(|| invalid(&cx, "too many lattice elements".into()))?;
+    let ids: Vec<&str> = req("universes")?.split_whitespace().collect();
+    if ids.len() != total {
+        return Err(invalid(&cx, format!("universes has {} entries, {n_rings} rings and {n_axial} layers need {total}", ids.len())));
+    }
+    let text = hex_text_order(orientation, n_rings);
+    debug_assert_eq!(text.len(), per);
+    let mut ordered = vec![0u32; total];
+    for k in 0..n_axial as usize {
+        for (t, &(q, r)) in text.iter().enumerate() {
+            let tok = ids[k * per + t];
+            let u = tok.parse::<u32>().map_err(|_| invalid(&cx, format!("bad universe id {tok:?}")))?;
+            if lattice_ids.contains(&u) {
+                return Err(unsupported(&cx, format!("lattice {u} used as an element of a lattice (nested lattices)")));
+            }
+            filled.insert(u);
+            let (ring, pos) = HexLattice::ring_position(orientation, n_rings, q, r).ok_or_else(|| invalid(&cx, "internal: element outside the rings".into()))?;
+            let at = k * per + (0..ring).map(|g| HexLattice::ring_len(n_rings, g)).sum::<usize>() + pos as usize;
+            ordered[at] = u;
+        }
+    }
+    let outer = match field(n, "outer") {
+        None => None,
+        Some(s) => {
+            let u = s.parse::<u32>().map_err(|_| invalid(&cx, format!("bad outer {s:?}")))?;
+            if lattice_ids.contains(&u) {
+                return Err(unsupported(&cx, format!("lattice {u} used as the outer of a lattice")));
+            }
+            filled.insert(u);
+            Some(u)
+        }
+    };
+    let l = HexLattice {
+        center: if is_3d { [center[0], center[1], center[2]] } else { [center[0], center[1], 0.0] },
+        pitch: pitch[0],
+        z_pitch: if is_3d { pitch[1] } else { f64::INFINITY },
+        orientation,
+        n_rings,
+        n_axial,
+        universes: ordered,
+        outer,
+    };
+    l.check().map_err(|e| invalid(&cx, e))?;
+    if ir.lattices.contains_key(&id) || ir.hex_lattices.insert(id, l).is_some() {
         return Err(invalid(&cx, "duplicate lattice id".into()));
     }
     Ok(())

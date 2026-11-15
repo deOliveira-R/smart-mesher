@@ -91,6 +91,11 @@ fn walk_surfaces(e: &Expr, f: &mut impl FnMut(u32)) {
 }
 
 fn validate(ir: &CsgIr, by_universe: &BTreeMap<u32, Vec<u32>>, max_cells: usize) -> Result<(), ImportError> {
+    // The IR holds hex lattices (ACR-CSG-HEXIR) but the flattener does not place them yet
+    // (W4-CSG-HEX): the same typed refusal the reader gave before, minus the line (an IR has none).
+    if let Some(id) = ir.hex_lattices.keys().next() {
+        return Err(ImportError::Unsupported { line: None, what: format!("hex_lattice {id}: <hex_lattice> is not supported (rectangular lattices only; no DAGMC universes)") });
+    }
     if !by_universe.contains_key(&ir.root_universe) {
         return Err(ImportError::UnknownUniverse { cell: None, universe: ir.root_universe });
     }

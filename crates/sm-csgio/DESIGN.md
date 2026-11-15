@@ -60,7 +60,8 @@ rotation convention and the `outer` frame; see "OpenMC reader" below.
   `sm_rt::check_overlaps` returns no structured indices. `world.rs` pins the format in a unit test;
   an unparsable message becomes a `Build` error, never a lost finding.
 * A lattice flattens to N copies of its universe cells; cold locate is O(cells).
-* Hex lattices, periodic boundaries and DAGMC universes are not in the IR.
+* Periodic boundaries and DAGMC universes are not in the IR. Hex lattices are (ACR-CSG-HEXIR, "Hexagonal
+  lattices" below) but nothing flattens them yet.
 
 ## Refusal list (core)
 
@@ -118,7 +119,7 @@ unique, else `material_<id>`; `void` for void cells; `ImportOptions::material_na
 
 ## Refused (`Unsupported` with element and line)
 
-`hex_lattice`, `dagmc_universe`, other geometry elements, periodic boundaries, a `material` list,
+`hex_lattice` (by `openmc::import`; `openmc::import_hex` reads it, see "Hexagonal lattices"), `dagmc_universe`, other geometry elements, periodic boundaries, a `material` list,
 tori with `B != C` or `A <= B`, general `cylinder`/`cone` surfaces, a lattice `outer` with position-dependent cells, unknown surface types, a lattice used as an element or as the
 `outer` of another lattice (the IR holds universes there), rotation matrices that are not proper
 orthonormal. Invalid: duplicate ids, wrong coefficient or `universes` counts, a cell with both or
@@ -132,3 +133,62 @@ several root universes.
   (`openmc_reader.rs`, `oversize_pins_are_clipped_...`).
 * Acceptance 19: the fallback region name is `material_<id>` (C9), not `m<id>`.
 * Multi-row lattices and multi-axis rotations are supported, not refused: both are confirmed.
+
+# Hexagonal lattices (ACR-CSG-HEXIR, ruling D8)
+
+The IR gained `HexLattice` (`ir.rs`), kept in `CsgIr::hex_lattices` next to the rectangular
+`lattices`; the two share one id space, and a cell reaches either through `Fill::Lattice { id }`
+(no new `Fill` variant, so no existing `match` on `Fill` changes). This is an additive change to the
+frozen core, approved by the orchestrator as ACR-CSG-HEXIR; the flattener does not place hex lattices
+yet (consumer: W4-CSG-HEX, W4c).
+
+| Item | Convention |
+|---|---|
+| `pitch` | flat-to-flat, which is also the neighbour centre distance; `z_pitch` is the layer pitch (`INFINITY` without z extent, i.e. no `n_axial` in the deck) |
+| `orientation` | `X` = OpenMC `orientation="x"`: rows along x, flats at `x = +-p/2` of the centre; `sm-rt-api` `LatticeKind::Hex`, `sm-model-api` `HexOrient::XRows`. `Y` = `"y"` (OpenMC's default): rows along y, flats at `y = +-p/2`; `LatticeKind::HexYRows`. Same map as `crates/sm-rt/DESIGN.md` "Index map to OpenMC 0.16.0" |
+| Axial `(q, r)` | centred, `max(abs q, abs r, abs(q + r)) < n_rings`; OpenMC's own path index `l50(q, r)` (`determine_paths`); sm-rt's array index is `(i, j) = (q + n - 1, r + n - 1)` for `n` rings |
+| Element centre | `X`: `center + p (q + r/2, sqrt(3)/2 r)`; `Y`: `center + p (sqrt(3)/2 q, r + q/2)`; z of layer `k`: `center.z + z_pitch (k + 1/2 - n_axial/2)` (no z for a lattice without z extent). sm-rt places layer `k` at `origin.z + k z_pitch`: take `origin.z = center.z - z_pitch (n_axial - 1)/2` when mapping |
+| Universe origin | the element centre |
+| `universes` order | OpenMC (Python API) order: layer `k` from the lowest z up (confirmed: the oracle's layer 0 is below layer 1); within a layer ring 0 (outermost, radius `n - 1`) to ring `n - 1` (the centre element); within a ring from OpenMC's start position, clockwise |
+| Ring start and walk | radius `R = n - 1 - ring`; start `(R, 0)` for `X`, `(0, R)` for `Y`; `R` steps along each of the six directions `X`: `(0,-1) (-1,0) (-1,1) (0,1) (1,0) (1,-1)`, `Y`: `(1,-1) (0,-1) (-1,0) (-1,1) (0,1) (1,0)`; a ring holds `6R` elements, the centre 1; a layer `3n(n-1)+1` (`HexLattice::ring_axial`, `ring_position`, `flat_index`, `universe_at`) |
+| `geometry.xml` text | OpenMC writes a row picture, not ring order: `X`: rows from the highest y down, each left to right (`r` descending, `q` ascending); `Y`: picture lines from the highest y down (`2r + q` descending), each left to right (`q` ascending); layers from the lowest z up. The reader converts it to ring order (`hex_text_order`) |
+| `n_axial` | present means three-dimensional (OpenMC): `pitch` has 2 values, `center` 3, `n_axial >= 1` (1 allowed); absent: `pitch` 1 value, `center` 2, one layer without z extent |
+| `outer` | homogeneous, as for the rectangular lattice (position-dependent: Unsupported) |
+| Out-of-array points | OpenMC's `outer`; without `outer` OpenMC aborts at such a point |
+
+## Reader entry points and refusals
+
+* `openmc::import` is unchanged: it still refuses `<hex_lattice>` with `Unsupported { line: Some(l) }`
+  naming the element and its line. Its call sites, which therefore still refuse hex decks exactly as
+  before, are `sm_csgbrep::op` (`crates/sm-csgbrep/src/op.rs:484`), the `smcsg` binary, `sm-rt-bench`
+  (`cases.rs`) and the census probe.
+* `openmc::import_hex` reads both orientations and `n_axial >= 1` into `CsgIr::hex_lattices`; every
+  other behaviour (ids, errors, root universe, rectangular decks) is `import`'s, byte for byte (test
+  `content_hash_golden.rs`). W4-CSG-HEX switches its callers (the B-rep import) to it.
+* `ImportedCsg::instantiate` and `import` refuse an IR with a hex lattice with `Unsupported { line: None }`
+  (the same variant and `hex_lattice` wording; an IR has no line). `sm-csgbrep` reads the IR directly,
+  but only after `openmc::import`, which never yields a hex lattice; a hand-built IR with one is
+  reported there as an undefined lattice (`CsgbrepError::Invalid`) until W4-CSG-HEX teaches it.
+  `sm-rt`'s model bridge does not read the IR.
+
+## Hash
+
+`ImportedCsg::content_hash` is byte-identical to before for every rectangular deck (golden test
+`content_hash_golden.rs`, macOS arm64, plus `import_hex == import` on every fixture). A hex deck's
+section is `CsgIr::hex_section_hash() -> Option<ContentHash>`: `None` when `hex_lattices` is empty
+(rectangular decks never emit it), else a hash over tag `csgio.hex.v1` and, per lattice in id order,
+orientation, rings, layers, pitches, centre, `outer` and the universes in OpenMC order. The flat model of
+a hex deck (W4-CSG-HEX) appends this section to its `content_hash` only when it is `Some`.
+
+## Confirmed against OpenMC 0.16.0 (ruling C7)
+
+`tests/fixtures/openmc_hex/gen_hex.py` (run with the `openmc` conda env's python) writes `geometry.xml`,
+`materials.xml` and `oracle.json` for `hex_x`, `hex_y` (3 rings, 19 elements) and `hex_x3d`, `hex_y3d`
+(3 rings, 2 layers), every element its own universe, the lattice off-centre. Before writing, the script
+asserts against OpenMC: the path indices of every element (`determine_paths`) equal the ring/position map
+above, the layer index equals `k`, and `find_cell` at each element centre (formulas above) is that
+element's cell. `tests/openmc_hex.rs` (no OpenMC needed) checks the reader's ring-order reading of the row
+picture, the index map and the centres against the recorded values, and an independent brute-force locator
+over the IR (hexagon test against every element centre) against `find_cell` at 600 points per model
+(uniform and within 5e-3 of flats and corners; points within 1e-9 of a face are skipped). Swapping the
+`Y` centre formula fails two of the ten tests.
