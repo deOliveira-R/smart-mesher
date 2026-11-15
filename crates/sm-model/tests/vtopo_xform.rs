@@ -346,3 +346,23 @@ fn a_scale_that_pushes_a_collapse_over_the_tolerance_cap_is_refused_with_a_typed
     assert_eq!(s.state().hash(), hash, "refusal leaves the state untouched");
     assert_clean(&s, "after refusal");
 }
+
+#[test]
+fn a_diagonal_realized_split_follows_reflections_with_a_partition_half_as_seed() {
+    for factory in [topo_store, cell_complex] {
+        for (n, f) in [
+            ([1.0, 0.0, 0.0], (&|p: Point3| Point3::new(-p.x, p.y, p.z)) as &dyn Fn(Point3) -> Point3),
+            ([0.0, 1.0, 0.0], &|p: Point3| Point3::new(p.x, -p.y, p.z)),
+            ([0.0, 0.0, 1.0], &|p: Point3| Point3::new(p.x, p.y, -p.z)),
+            ([0.0, 1.0, 1.0], &|p: Point3| Point3::new(p.x, -p.z, -p.y)),
+        ] {
+            for plane in [[1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0]] {
+                let mut s = session_for(factory);
+                go(&mut s, &CreateBrick { x: 2.0, y: Some(2.0), z: Some(2.0), center: Some([1.0, 1.0, 1.0]) });
+                let offset = if plane[1] > 0.0 && plane[0] > 0.0 { 2.0 } else { 0.0 };
+                go(&mut s, &SplitRealized { piece: id(EntityKind::TopoVolume, 1), normal: plane, offset });
+                follows(s, &Reflect { entities: vec![body()], normal: n, origin: Some([0.0, 0.0, 0.0]) }, f, "diagonal split + reflect");
+            }
+        }
+    }
+}

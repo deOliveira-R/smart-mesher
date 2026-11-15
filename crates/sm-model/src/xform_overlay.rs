@@ -78,7 +78,9 @@ impl Stepper {
                 minted = Minted::Halves(self.ov.partition_face(self.name(*face), cut.clone()).map_err(drop)?);
             }
             VirtualOp::PartitionVolume { volume, cut, children, .. } => {
-                self.ov.partition_volume(*volume, cut.clone(), *children).map_err(drop)?;
+                let mut cut = cut.clone();
+                cut.seed = self.name(cut.seed);
+                self.ov.partition_volume(self.name(*volume), cut, *children).map_err(drop)?;
             }
             VirtualOp::CompositeEdges { edges, .. } => {
                 self.ov.composite_edges(edges).map_err(drop)?;
