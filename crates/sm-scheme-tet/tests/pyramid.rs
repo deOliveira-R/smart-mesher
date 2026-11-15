@@ -16,7 +16,7 @@ use sm_scheme_api::{
 };
 use sm_scheme_tet::{NAME, TetParams, Transition};
 use sm_topo_api::fixtures::{BrickIds, brick, merge_touching_bricks, two_bricks, with_op};
-use sm_topo_api::{CellComplex, OpId};
+use sm_topo_api::{CellComplex, OpId, TopologyEdit};
 
 type Out = Meshed<ReferenceMesh>;
 
@@ -178,4 +178,28 @@ fn deterministic_across_runs_and_threads() {
     let thr = run(&topo, &[a.volume, b.volume], &it, &ScopedThreads(4)).unwrap();
     assert_eq!(h(&one), h(&two));
     assert_eq!(h(&one), h(&thr));
+}
+
+#[test]
+fn a_thin_slab_fails_typed_and_may_fall_back_not_internal() {
+    // Tet slab [1, 1.05] x [0,1]^2 next to the hex brick: the apex (h = 0.6 s) goes through the far face.
+    let mut topo = CellComplex::new();
+    let (a, b) = with_op(&mut topo, OpId(1), |t| {
+        let a = brick(t, sm_core::Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])?;
+        let b = brick(t, sm_core::Point3::new(1.0, 0.0, 0.0), [0.05, 1.0, 1.0])?;
+        t.record_coincidence(a.faces[1], b.faces[0], sm_topo_api::Coincidence::CoincidentUnimprinted)?;
+        merge_touching_bricks(t, &a, &b)?;
+        Ok((a, b))
+    })
+    .unwrap();
+    let mut it = intent(&a, &b, 4, pyramid_params());
+    it.set_intervals(b.edges[0], Firm::hard(IntervalRequest::Count(1)));
+    match run(&topo, &[a.volume, b.volume], &it, &Sequential) {
+        Ok(_) => {} // a fallback or a shallower apex is fine
+        Err(e) => {
+            let text = format!("{e}");
+            assert!(text.contains("(Geometry)") && text.contains("pyramid apex height"), "{text}");
+            assert!(!text.contains("(Internal)"), "pyramid failure must not be Internal: {text}");
+        }
+    }
 }

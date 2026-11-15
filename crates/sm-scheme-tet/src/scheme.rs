@@ -326,6 +326,7 @@ impl Scheme for TetVolume {
         let base = p.pyramid_height.unwrap_or(DEFAULT_PYRAMID_HEIGHT);
         let heights: &[f64] = if quads.is_empty() { &[1.0] } else { &[1.0, 0.6, 0.35] };
         let mut last: Option<GenerateFailure> = None;
+        let mut retried_out = false;
         for &scale in heights {
             let mut input = plain.clone();
             let mut keys = keys.clone();
@@ -363,13 +364,27 @@ impl Scheme for TetVolume {
                 Err(e) => {
                     let retry = matches!(e, TetError::RecoveryFailed { .. } | TetError::SelfIntersection { .. } | TetError::InvertedShell { .. });
                     last = Some(explain(&e, target, &input, &tri_keys, &tri_face, &keys));
+                    retried_out = retry;
                     if !retry {
                         break;
                     }
                 }
             }
         }
-        Err(last.unwrap_or_else(|| fail("no attempt ran".into())))
+        // With pyramids the failure is usually the apex leaving a thin volume, which a different
+        // scheme can fix: type it `Geometry` so the replan loop may fall back (D5).
+        match last {
+            Some(mut f) if !quads.is_empty() && f.kind == FailureKind::Internal && retried_out => {
+                f.kind = FailureKind::Geometry;
+                f.reason = format!(
+                    "pyramid transition failed: pyramid apex height exceeds the local thickness of the volume; lower pyramid_height or use transition none ({})",
+                    f.reason
+                );
+                Err(f)
+            }
+            Some(f) => Err(f),
+            None => Err(fail("no attempt ran".into())),
+        }
     }
 }
 
