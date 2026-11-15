@@ -260,16 +260,36 @@ pub struct HexLattice {
 }
 
 impl HexLattice {
-    /// Elements in one layer of `n_rings` rings, `3 n (n - 1) + 1` (0 for no rings).
+    /// Elements in one layer of `n_rings` rings, `3 n (n - 1) + 1` (0 for no rings; saturates
+    /// at `usize::MAX`, which no consistent lattice reaches).
     pub fn elements_per_layer(n_rings: u32) -> usize {
         let n = n_rings as usize;
-        if n == 0 { 0 } else { 3 * n * (n - 1) + 1 }
+        if n == 0 { 0 } else { n.saturating_mul(n - 1).saturating_mul(3).saturating_add(1) }
     }
 
-    /// Elements in ring `ring` (0 is the outermost) of `n_rings` rings; `ring < n_rings`.
+    /// Elements in ring `ring` (0 is the outermost) of `n_rings` rings; 0 when `ring >= n_rings`
+    /// (there is no such ring).
     pub fn ring_len(n_rings: u32, ring: u32) -> usize {
+        if ring >= n_rings {
+            return 0;
+        }
         let radius = (n_rings - 1 - ring) as usize;
         if radius == 0 { 1 } else { 6 * radius }
+    }
+
+    /// Elements in the rings before `ring` (the outermost `ring` rings): the offset of ring `ring`
+    /// within a layer, in closed form. `None` when `ring > n_rings`.
+    pub fn ring_offset(n_rings: u32, ring: u32) -> Option<usize> {
+        (ring <= n_rings).then(|| Self::elements_per_layer(n_rings) - Self::elements_per_layer(n_rings - ring))
+    }
+
+    /// Start corner and the six side directions of the ring of radius `radius` (see
+    /// [`Self::ring_axial`]).
+    fn ring_walk(orientation: HexOrientation, radius: i64) -> ((i64, i64), [(i64, i64); 6]) {
+        match orientation {
+            HexOrientation::X => ((radius, 0), [(0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1)]),
+            HexOrientation::Y => ((0, radius), [(1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0)]),
+        }
     }
 
     /// Centred axial indices `(q, r)` of position `pos` of ring `ring` (0 is the outermost), in
@@ -281,40 +301,59 @@ impl HexLattice {
         if ring >= n_rings || pos as usize >= Self::ring_len(n_rings, ring) {
             return None;
         }
-        let radius = (n_rings - 1 - ring) as i32;
+        let radius = i64::from(n_rings - 1 - ring);
         if radius == 0 {
             return Some((0, 0));
         }
-        let (start, dirs): ((i32, i32), [(i32, i32); 6]) = match orientation {
-            HexOrientation::X => ((radius, 0), [(0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1)]),
-            HexOrientation::Y => ((0, radius), [(1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0)]),
-        };
-        let side = (pos as i32 / radius) as usize;
-        let step = pos as i32 % radius;
+        let (start, dirs) = Self::ring_walk(orientation, radius);
+        let side = (i64::from(pos) / radius) as usize;
+        let step = i64::from(pos) % radius;
         // The corner at the start of side `side`, then `step` steps along it.
         let (mut q, mut r) = start;
         for d in &dirs[..side] {
             q += d.0 * radius;
             r += d.1 * radius;
         }
-        Some((q + dirs[side].0 * step, r + dirs[side].1 * step))
+        Some((i32::try_from(q + dirs[side].0 * step).ok()?, i32::try_from(r + dirs[side].1 * step).ok()?))
     }
 
     /// The inverse of [`Self::ring_axial`]: `(ring, position)` of the element at `(q, r)`, or `None`
     /// outside the `n_rings` rings.
+    ///
+    /// Closed form: the six sides of the ring of the element's radius are tried (a constant
+    /// number of steps), the step along the side follows from one coordinate.
     pub fn ring_position(orientation: HexOrientation, n_rings: u32, q: i32, r: i32) -> Option<(u32, u32)> {
-        let radius = q.abs().max(r.abs()).max((q + r).abs());
-        if radius >= n_rings as i32 {
+        let radius = i64::from(q).abs().max(i64::from(r).abs()).max((i64::from(q) + i64::from(r)).abs());
+        if radius >= i64::from(n_rings) {
             return None;
         }
         let ring = n_rings - 1 - radius as u32;
-        (0..Self::ring_len(n_rings, ring) as u32).find(|&pos| Self::ring_axial(orientation, n_rings, ring, pos) == Some((q, r))).map(|pos| (ring, pos))
+        if radius == 0 {
+            return Some((ring, 0));
+        }
+        let (q, r) = (i64::from(q), i64::from(r));
+        let (start, dirs) = Self::ring_walk(orientation, radius);
+        let (mut cq, mut cr) = start;
+        for (side, d) in dirs.iter().enumerate() {
+            // `(q, r) = corner + step * d` with 0 <= step < radius.
+            let step = if d.0 != 0 { (q - cq) / d.0 } else { (r - cr) / d.1 };
+            if (0..radius).contains(&step) && cq + d.0 * step == q && cr + d.1 * step == r {
+                return u32::try_from(side as i64 * radius + step).ok().map(|pos| (ring, pos));
+            }
+            cq += d.0 * radius;
+            cr += d.1 * radius;
+        }
+        None
     }
 
-    /// Index into [`Self::universes`] of layer `k`, ring `ring`, position `pos`.
-    pub fn flat_index(&self, k: u32, ring: u32, pos: u32) -> usize {
-        let before: usize = (0..ring).map(|g| Self::ring_len(self.n_rings, g)).sum();
-        k as usize * Self::elements_per_layer(self.n_rings) + before + pos as usize
+    /// Index into [`Self::universes`] of layer `k`, ring `ring`, position `pos`; `None` for a
+    /// layer, ring or position out of range.
+    pub fn flat_index(&self, k: u32, ring: u32, pos: u32) -> Option<usize> {
+        if k >= self.n_axial || pos as usize >= Self::ring_len(self.n_rings, ring) {
+            return None;
+        }
+        let before = Self::ring_offset(self.n_rings, ring)?;
+        (k as usize).checked_mul(Self::elements_per_layer(self.n_rings))?.checked_add(before + pos as usize)
     }
 
     /// The universe of the element at centred axial `(q, r)` and layer `k`; `None` outside the
@@ -324,7 +363,7 @@ impl HexLattice {
             return None;
         }
         let (ring, pos) = Self::ring_position(self.orientation, self.n_rings, q, r)?;
-        self.universes.get(self.flat_index(k, ring, pos)).copied()
+        self.universes.get(self.flat_index(k, ring, pos)?).copied()
     }
 
     /// Centre of the element at centred axial `(q, r)` and layer `k` in the deck frame (formulas in
@@ -338,6 +377,70 @@ impl HexLattice {
         };
         let z = if self.z_pitch.is_finite() { self.center[2] + self.z_pitch * (f64::from(k) + 0.5 - f64::from(self.n_axial) / 2.0) } else { self.center[2] };
         [self.center[0] + x, self.center[1] + y, z]
+    }
+
+    /// Unit normal (in the xy plane) of wall direction `dir` (0, 1, 2; taken modulo 3) of a
+    /// hexagonal element: the three directions to a neighbour across a flat (the other three flats
+    /// are the opposite normals). `X`: `0, 60, 120` degrees; `Y`: `90, 30, 150` degrees.
+    pub fn wall_normal(orientation: HexOrientation, dir: usize) -> [f64; 2] {
+        let s = 3f64.sqrt() / 2.0;
+        match (orientation, dir % 3) {
+            (HexOrientation::X, 0) => [1.0, 0.0],
+            (HexOrientation::X, 1) => [0.5, s],
+            (HexOrientation::X, _) => [-0.5, s],
+            (HexOrientation::Y, 0) => [0.0, 1.0],
+            (HexOrientation::Y, 1) => [s, 0.5],
+            (HexOrientation::Y, _) => [-s, 0.5],
+        }
+    }
+
+    /// `m` of the element `(q, r)` along wall direction `dir`: `normal . (centre - lattice centre) =
+    /// pitch * m / 2`, an exact integer. The two flats of that direction are at `m - 1` and
+    /// `m + 1`, so two neighbours compute the wall they share from the same integer and the planes
+    /// are bit-identical.
+    pub fn wall_m(orientation: HexOrientation, dir: usize, q: i64, r: i64) -> i64 {
+        match (orientation, dir % 3) {
+            (HexOrientation::X, 0) => 2 * q + r,
+            (HexOrientation::X, 1) => q + 2 * r,
+            (HexOrientation::Y, 0) => 2 * r + q,
+            (HexOrientation::Y, 1) => 2 * q + r,
+            (_, _) => r - q,
+        }
+    }
+
+    /// Offset `pitch * m / 2` of the wall at integer `m` from the lattice centre along the normal.
+    pub fn wall_offset(&self, m: i64) -> f64 {
+        self.pitch * m as f64 / 2.0
+    }
+
+    /// Normal of the hull planes of the array: the wall normals of the other orientation (the
+    /// outline of the array is a hexagon turned by 30 degrees against the element flats).
+    pub fn hull_normal(orientation: HexOrientation, dir: usize) -> [f64; 2] {
+        Self::wall_normal(
+            match orientation {
+                HexOrientation::X => HexOrientation::Y,
+                HexOrientation::Y => HexOrientation::X,
+            },
+            dir,
+        )
+    }
+
+    /// Offset of the hull planes `+-` [`Self::hull_normal`]: `sqrt(3)/2 * n_rings * pitch`, the
+    /// plane through the centres of the elements of the first ring outside the array.
+    pub fn hull_offset(&self) -> f64 {
+        0.5 * 3f64.sqrt() * f64::from(self.n_rings) * self.pitch
+    }
+
+    /// Centred axial indices of the `6 n_rings` elements of the first ring outside the array (ring
+    /// radius `n_rings`), in ring order.
+    ///
+    /// The part of space outside the array is exactly these hexagons clipped to the hull (the
+    /// notches of the zigzag outline) together with everything outside the hull planes
+    /// ([`Self::hull_normal`], [`Self::hull_offset`]): no element of a further ring reaches the
+    /// hull. This is how `outer` is placed without one term per element of the array.
+    pub fn outside_ring(&self) -> Vec<(i32, i32)> {
+        let n = self.n_rings.saturating_add(1);
+        (0..HexLattice::ring_len(n, 0) as u32).filter_map(|pos| Self::ring_axial(self.orientation, n, 0, pos)).collect()
     }
 
     /// Structural check: at least one ring and layer, `universes` count, finite positive pitch, a
@@ -385,7 +488,7 @@ pub struct CsgIr {
     pub lattices: BTreeMap<u32, Lattice>,
     /// Hexagonal lattices by deck id (the id space of `lattices`; a cell reaches either through
     /// [`Fill::Lattice`]). Empty for every rectangular deck. [`crate::ImportedCsg::instantiate`]
-    /// does not flatten them yet and refuses a deck that has one.
+    /// places each element as a hexagonal prism (path element `[q, r, k]`).
     pub hex_lattices: BTreeMap<u32, HexLattice>,
     /// Materials by deck id.
     pub materials: BTreeMap<u32, Material>,

@@ -10,7 +10,7 @@
 
 use crate::dnf::{Term, to_dnf};
 use crate::error::{CellSource, PathStep};
-use crate::ir::{BoundaryFlag, CsgIr, Expr, Fill, Lattice, Sign, axis_plane_def};
+use crate::ir::{BoundaryFlag, CsgIr, Expr, Fill, HexLattice, Lattice, Sign, Surf, axis_plane_def};
 use crate::ImportError;
 use sm_core::{Point3, Transform, Vector3};
 use sm_geom_api::{Frame, Plane, Sense, ShapeValue, SurfaceDef};
@@ -91,11 +91,6 @@ fn walk_surfaces(e: &Expr, f: &mut impl FnMut(u32)) {
 }
 
 fn validate(ir: &CsgIr, by_universe: &BTreeMap<u32, Vec<u32>>, max_cells: usize) -> Result<(), ImportError> {
-    // The IR holds hex lattices (ACR-CSG-HEXIR) but the flattener does not place them yet
-    // (W4-CSG-HEX): the same typed refusal the reader gave before, minus the line (an IR has none).
-    if let Some(id) = ir.hex_lattices.keys().next() {
-        return Err(ImportError::Unsupported { line: None, what: format!("hex_lattice {id}: <hex_lattice> is not supported (rectangular lattices only; no DAGMC universes)") });
-    }
     if !by_universe.contains_key(&ir.root_universe) {
         return Err(ImportError::UnknownUniverse { cell: None, universe: ir.root_universe });
     }
@@ -122,8 +117,11 @@ fn validate(ir: &CsgIr, by_universe: &BTreeMap<u32, Vec<u32>>, max_cells: usize)
                 }
             }
             Fill::Lattice { id: l, .. } => {
-                if !ir.lattices.contains_key(l) {
+                if !ir.lattices.contains_key(l) && !ir.hex_lattices.contains_key(l) {
                     return Err(ImportError::UnknownLattice { cell: *id, lattice: *l });
+                }
+                if ir.lattices.contains_key(l) && ir.hex_lattices.contains_key(l) {
+                    return Err(ImportError::Invalid(format!("id {l} is both a rectangular and a hexagonal lattice")));
                 }
             }
         }
@@ -147,6 +145,15 @@ fn validate(ir: &CsgIr, by_universe: &BTreeMap<u32, Vec<u32>>, max_cells: usize)
             return Err(ImportError::Invalid(format!("lattice {id} uses undefined universe {u}")));
         }
         if n > (max_cells as u64).saturating_mul(1024) {
+            return Err(ImportError::TooManyCells { limit: max_cells });
+        }
+    }
+    for (id, l) in &ir.hex_lattices {
+        l.check().map_err(|e| ImportError::Invalid(format!("hex lattice {id}: {e}")))?;
+        if let Some(u) = l.universes.iter().chain(l.outer.iter()).find(|u| !by_universe.contains_key(u)) {
+            return Err(ImportError::Invalid(format!("hex lattice {id} uses undefined universe {u}")));
+        }
+        if l.universes.len() > max_cells.saturating_mul(1024) {
             return Err(ImportError::TooManyCells { limit: max_cells });
         }
     }
@@ -258,8 +265,12 @@ impl Placer<'_> {
                     r?;
                 }
                 Fill::Lattice { id, xf } => {
-                    let lat = &ir.lattices[id];
-                    self.place_lattice(cid, lat, &t.compose(xf), &parts)?;
+                    if let Some(lat) = ir.hex_lattices.get(id) {
+                        self.place_hex_lattice(cid, lat, &t.compose(xf), &parts)?;
+                    } else {
+                        let lat = &ir.lattices[id];
+                        self.place_lattice(cid, lat, &t.compose(xf), &parts)?;
+                    }
                 }
             }
         }
@@ -313,6 +324,86 @@ impl Placer<'_> {
             let r = self.place_universe(outer, t, &parts);
             self.path.pop();
             r?;
+        }
+        Ok(())
+    }
+}
+
+impl Placer<'_> {
+    /// The half-space `normal . (x - centre) >= off` (`upper == false`) or `<= off`, in the frame of `t`.
+    fn hex_half(&mut self, l: &HexLattice, n: [f64; 2], off: f64, upper: bool, t: &Transform) -> Result<Expr, ImportError> {
+        let point = [l.center[0] + n[0] * off, l.center[1] + n[1] * off, l.center[2]];
+        let def = Surf::plane(point, [n[0], n[1], 0.0])?.def;
+        let (id, flip) = self.store(&def, t, BoundaryFlag::None)?;
+        Ok(Expr::Half(id, if (!upper) != flip { Sign::Positive } else { Sign::Negative }))
+    }
+
+    /// The six walls of the element `(q, r)` in the xy plane, as an intersection.
+    fn hex_prism(&mut self, l: &HexLattice, q: i32, r: i32, t: &Transform) -> Result<Vec<Expr>, ImportError> {
+        let mut parts = Vec::with_capacity(6);
+        for dir in 0..3 {
+            let (n, m) = (HexLattice::wall_normal(l.orientation, dir), HexLattice::wall_m(l.orientation, dir, i64::from(q), i64::from(r)));
+            parts.push(self.hex_half(l, n, l.wall_offset(m - 1), false, t)?);
+            parts.push(self.hex_half(l, n, l.wall_offset(m + 1), true, t)?);
+        }
+        Ok(parts)
+    }
+
+    /// z of the lower wall of layer `k` (`k == n_axial` is the top of the last layer).
+    fn hex_z(l: &HexLattice, k: u32) -> f64 {
+        l.center[2] + l.z_pitch * (f64::from(k) - f64::from(l.n_axial) / 2.0)
+    }
+
+    /// A hexagonal lattice: every element is the hexagonal prism of its `(q, r)` (and layer) with
+    /// the universe at its centre; `outer` fills the rest of the container. The path element of a
+    /// placed cell is `[q, r, k]` (centred axial indices and layer).
+    fn place_hex_lattice(&mut self, cid: u32, l: &HexLattice, t: &Transform, clips: &[Expr]) -> Result<(), ImportError> {
+        let bounded_z = l.z_pitch.is_finite();
+        for k in 0..l.n_axial {
+            for ring in 0..l.n_rings {
+                for pos in 0..HexLattice::ring_len(l.n_rings, ring) as u32 {
+                    let (q, r) = HexLattice::ring_axial(l.orientation, l.n_rings, ring, pos).ok_or_else(|| ImportError::Invalid("hex lattice index out of range".into()))?;
+                    let uid = l.flat_index(k, ring, pos).and_then(|i| l.universes.get(i)).copied().ok_or_else(|| ImportError::Invalid("hex lattice universes do not match its size".into()))?;
+                    let mut parts: Vec<Expr> = clips.to_vec();
+                    parts.extend(self.hex_prism(l, q, r, t)?);
+                    if bounded_z {
+                        parts.push(self.axis_half(2, Self::hex_z(l, k), false, t)?);
+                        parts.push(self.axis_half(2, Self::hex_z(l, k + 1), true, t)?);
+                    }
+                    let c = l.element_center(q, r, k);
+                    let el = t.compose(&Transform::translation(Vector3::new(c[0], c[1], c[2])));
+                    self.path.push(PathStep { cell: cid, element: Some([q, r, k as i32]) });
+                    let res = self.place_universe(uid, &el, &parts);
+                    self.path.pop();
+                    res?;
+                }
+            }
+        }
+        if let Some(outer) = l.outer {
+            // Outside the array: the notches of its zigzag outline (the elements of the first ring
+            // outside, `HexLattice::outside_ring`), everything beyond the hull planes, and beyond
+            // the layers.
+            let mut outside = Vec::new();
+            for (q, r) in l.outside_ring() {
+                outside.push(Expr::And(self.hex_prism(l, q, r, t)?));
+            }
+            let mut hull = Vec::with_capacity(6);
+            for dir in 0..3 {
+                let n = HexLattice::hull_normal(l.orientation, dir);
+                hull.push(self.hex_half(l, n, -l.hull_offset(), false, t)?);
+                hull.push(self.hex_half(l, n, l.hull_offset(), true, t)?);
+            }
+            outside.push(Expr::Not(Box::new(Expr::And(hull))));
+            if bounded_z {
+                let slab = vec![self.axis_half(2, Self::hex_z(l, 0), false, t)?, self.axis_half(2, Self::hex_z(l, l.n_axial), true, t)?];
+                outside.push(Expr::Not(Box::new(Expr::And(slab))));
+            }
+            let mut parts: Vec<Expr> = clips.to_vec();
+            parts.push(Expr::Or(outside));
+            self.path.push(PathStep { cell: cid, element: None });
+            let res = self.place_universe(outer, t, &parts);
+            self.path.pop();
+            res?;
         }
         Ok(())
     }
