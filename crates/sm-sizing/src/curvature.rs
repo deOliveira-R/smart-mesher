@@ -20,9 +20,10 @@
 //! edge curves and face surfaces of the region that pass within the entity tolerance of `p`,
 //! evaluated at the projection of `p`, and `h_max` elsewhere. That is the right field for curve
 //! interval goals (edge points lie on the carrier) but not for unstructured schemes, which query
-//! points slightly off the surface and would see `h_max`. A surface counts by its carrier (the
-//! trim is not re-checked at query time). **Otherwise `grade = g`** (default 0.5) the size is the minimum of that exact on-carrier value
-//! (`rule(proj p) + g dist`, wherever it can be below `h_max`; so the rule holds **exactly on the
+//! points slightly off the surface and would see `h_max`. A face counts through the foot point of
+//! `p` clamped to the face's parameter box (so extensions of the carrier beyond the face do not
+//! count; the trim inside the box is not re-checked). **Otherwise `grade = g`** (default 0.5) the size is the minimum of that exact on-carrier value
+//! (`rule(foot) + g |p - foot|`, the foot being the projection clamped to the face or edge range, wherever it can be below `h_max`; so the rule holds **exactly on the
 //! carriers** whatever the sample spacing) and
 //! `min(h_max, min_q (h_q + g |p - q|))` over a fixed sample set (`4 samples + 1` points per
 //! curved edge, `(samples + 1)^2` per curved face, trimmed by the face; a face whose trim cannot
@@ -226,7 +227,73 @@ fn gather(view: &dyn TopologyView, targets: &[EntityId]) -> (Vec<EntityId>, Vec<
 
 enum Kind {
     Curve { def: CurveDef, lo: f64, hi: f64 },
-    Surface { def: SurfaceDef },
+    Surface { def: SurfaceDef, u: Axis, v: Axis },
+}
+
+/// The parameter range of a face along one axis, used to clamp the foot point.
+#[derive(Clone, Copy)]
+enum Axis {
+    /// Bounded range.
+    Range(f64, f64),
+    /// Partial arc of a periodic axis: from `start`, length `len`, period `per`.
+    Arc { start: f64, len: f64, per: f64 },
+    /// Whole period starting at `lo`: no clamping.
+    Wrap { lo: f64, per: f64 },
+}
+
+impl Axis {
+    /// Parameter interval to sample (may exceed the domain by up to a period on periodic axes).
+    fn span(self) -> (f64, f64) {
+        match self {
+            Axis::Range(a, b) => (a, b),
+            Axis::Arc { start, len, .. } => (start, start + len),
+            Axis::Wrap { lo, per } => (lo, lo + per),
+        }
+    }
+
+    /// Nearest parameter of the range to `x`.
+    fn clamp(self, x: f64) -> f64 {
+        match self {
+            Axis::Range(a, b) => x.clamp(a, b),
+            Axis::Arc { start, len, per } => {
+                let rel = (x - start).rem_euclid(per);
+                if rel <= len {
+                    x
+                } else if rel - len < per - rel {
+                    start + len
+                } else {
+                    start
+                }
+            }
+            Axis::Wrap { .. } => x,
+        }
+    }
+}
+
+/// The range of the projected boundary parameters `xs` along an axis of domain `d`.
+fn axis_of(d: &sm_geom_api::Domain1, xs: &[f64]) -> Option<Axis> {
+    if xs.is_empty() {
+        return None;
+    }
+    if let Some(per) = d.period {
+        let lo = d.range.lo;
+        let mut r: Vec<f64> = xs.iter().map(|x| (x - lo).rem_euclid(per)).collect();
+        r.sort_by(f64::total_cmp);
+        // Largest circular gap: a boundary that does not wrap leaves a big one.
+        let (mut gap, mut at) = (r[0] + per - r[r.len() - 1], 0);
+        for i in 1..r.len() {
+            if r[i] - r[i - 1] > gap {
+                gap = r[i] - r[i - 1];
+                at = i;
+            }
+        }
+        // A boundary with no extent along the axis (a seam meridian, a pole) says nothing: whole period.
+        let partial = gap > 0.2 * per && per - gap > 0.01 * per;
+        return Some(if partial { Axis::Arc { start: lo + r[at], len: per - gap, per } } else { Axis::Wrap { lo, per } });
+    }
+    let a = xs.iter().copied().fold(f64::INFINITY, f64::min).max(d.range.lo);
+    let b = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max).min(d.range.hi);
+    (a.is_finite() && b.is_finite() && b >= a).then_some(Axis::Range(a, b))
 }
 
 /// A curved edge or face of the region: its geometry, the entity tolerance, a padded box of the
@@ -259,7 +326,7 @@ fn finish(kind: Kind, eps: f64, o: Opts, samples: Vec<(Point3, f64)>) -> Option<
         Some(g) if g > 0.0 => eps.max((o.h_max - hmin) / g),
         Some(_) => f64::INFINITY,
     };
-    let pad = if eps.is_finite() { 0.05 * diag + 10.0 * eps } else { f64::INFINITY };
+    let pad = if eps.is_finite() { 0.05 * diag + eps } else { f64::INFINITY };
     for k in 0..3 {
         lo[k] -= pad;
         hi[k] += pad;
@@ -326,31 +393,20 @@ fn surface_feature(view: &dyn TopologyView, f: EntityId, n: usize, o: Opts) -> O
     let def = view.shapes().surface_def(sc.surface)?.clone();
     let s = def.as_surface()?;
     let dom = s.domain();
-    // Parameter box: the whole period on a periodic axis, else the projected boundary samples.
-    let mut ulo = f64::INFINITY;
-    let mut uhi = f64::NEG_INFINITY;
-    let mut vlo = f64::INFINITY;
-    let mut vhi = f64::NEG_INFINITY;
+    // Parameter box from the projected boundary samples (a periodic axis the boundary wraps
+    // around keeps the whole period).
+    let (mut us, mut vs) = (Vec::new(), Vec::new());
     for &e in view.face_edges(f) {
         for i in 0..=16 {
             let Ok(p) = sm_scheme_api::geom::edge_point(view, e, f64::from(i) / 16.0) else { continue };
             if let Ok(pr) = s.project(p, None) {
-                ulo = ulo.min(pr.uv.u);
-                uhi = uhi.max(pr.uv.u);
-                vlo = vlo.min(pr.uv.v);
-                vhi = vhi.max(pr.uv.v);
+                us.push(pr.uv.u);
+                vs.push(pr.uv.v);
             }
         }
     }
-    let axis = |d: &sm_geom_api::Domain1, lo: f64, hi: f64| -> Option<(f64, f64)> {
-        if let Some(per) = d.period {
-            return Some((d.range.lo, d.range.lo + per));
-        }
-        let (a, b) = (lo.max(d.range.lo), hi.min(d.range.hi));
-        (a.is_finite() && b.is_finite() && b >= a).then_some((a, b))
-    };
-    let (u0, u1) = axis(&dom.u, ulo, uhi)?;
-    let (v0, v1) = axis(&dom.v, vlo, vhi)?;
+    let (ua, va) = (axis_of(&dom.u, &us)?, axis_of(&dom.v, &vs)?);
+    let ((u0, u1), (v0, v1)) = (ua.span(), va.span());
     let mut samples = Vec::new();
     for i in 0..=n {
         for j in 0..=n {
@@ -367,7 +423,7 @@ fn surface_feature(view: &dyn TopologyView, f: EntityId, n: usize, o: Opts) -> O
             }
         }
     }
-    finish(Kind::Surface { def }, view.tolerance_of(f), o, samples)
+    finish(Kind::Surface { def, u: ua, v: va }, view.tolerance_of(f), o, samples)
 }
 
 /// The exact, ungraded field: the minimum over the curved features that pass through `p`.
@@ -388,22 +444,33 @@ impl Local {
             Kind::Curve { def, lo, hi } => {
                 let c = def.as_curve();
                 let pr = c.project(p, None).ok()?;
-                if pr.distance > f.eps {
-                    return None;
-                }
                 let per = c.domain().period;
                 let slack = 1e-9 * (hi - lo);
                 let inside = |t: f64| t >= lo - slack && t <= hi + slack;
-                let ok = inside(pr.t) || per.is_some_and(|q| inside(pr.t + q) || inside(pr.t - q));
-                ok.then(|| self.o.size(curve_k(c, pr.t).1) + self.grade * pr.distance)
-            }
-            Kind::Surface { def } => {
-                let s = def.as_surface()?;
-                let pr = s.project(p, None).ok()?;
-                if pr.distance > f.eps {
+                let (t, d) = if inside(pr.t) || per.is_some_and(|q| inside(pr.t + q) || inside(pr.t - q)) {
+                    (pr.t, pr.distance)
+                } else {
+                    // Beyond the arc: the nearer end point (the term stays continuous).
+                    let (da, db) = ((p - curve_k(c, *lo).0).norm(), (p - curve_k(c, *hi).0).norm());
+                    if da <= db { (*lo, da) } else { (*hi, db) }
+                };
+                if d > f.eps {
                     return None;
                 }
-                surface_k(s, pr.uv).map(|(_, k)| self.o.size(k) + self.grade * pr.distance)
+                Some(self.o.size(curve_k(c, t).1) + self.grade * d)
+            }
+            Kind::Surface { def, u, v } => {
+                let s = def.as_surface()?;
+                let pr = s.project(p, None).ok()?;
+                // Foot clamped to the face's parameter box: the carrier beyond the face is no feature.
+                let uc = Uv::new(u.clamp(pr.uv.u), v.clamp(pr.uv.v));
+                let (k, d) = if uc.u == pr.uv.u && uc.v == pr.uv.v {
+                    (surface_k(s, pr.uv)?.1, pr.distance)
+                } else {
+                    let (q, k) = surface_k(s, uc)?;
+                    (k, (p - q).norm())
+                };
+                (d <= f.eps).then(|| self.o.size(k) + self.grade * d)
             }
         }
     }
@@ -418,5 +485,97 @@ impl SizeField for Local {
             }
         }
         h
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::Vector3;
+    use sm_geom_api::{Circle, Cylinder, Frame};
+    use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
+
+    const TOL: f64 = 0.01;
+    const H_MAX: f64 = 2.0;
+
+    fn frame() -> Frame {
+        Frame::from_zx(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 0.0, 0.0)).expect("frame")
+    }
+
+    fn rule() -> f64 {
+        2.0 * (TOL * (2.0 - TOL)).sqrt()
+    }
+
+    fn opts(g: f64) -> Opts {
+        Opts { tol: TOL, h_max: H_MAX, h_min: TOL * 1e-3, angle: None, grade: Some(g) }
+    }
+
+    fn local(kind: Kind, g: f64) -> Local {
+        let o = opts(g);
+        let samples = vec![(Point3::new(1.0, 0.0, 0.0), rule()), (Point3::new(0.0, 1.0, 2.0), rule())];
+        Local { feats: vec![finish(kind, 1e-6, o, samples).expect("feature")], h_max: H_MAX, o, grade: g }
+    }
+
+    fn cylinder_face(u: Axis) -> Kind {
+        Kind::Surface { def: SurfaceDef::Cylinder(Cylinder::new(frame(), 1.0).expect("cyl")), u, v: Axis::Range(0.0, 2.0) }
+    }
+
+    /// Beyond a finite cylinder face the size is `min(h_max, rule + g d)` with `d` the axial
+    /// distance (and `h_max` past the reach), for the full wrap and a quarter arc alike.
+    #[test]
+    fn carrier_extension_beyond_a_cylinder_face_grows_with_the_distance() {
+        for g in [0.5, 0.1] {
+            for u in [Axis::Wrap { lo: 0.0, per: TAU }, Axis::Arc { start: 0.0, len: FRAC_PI_2, per: TAU }] {
+                let f = local(cylinder_face(u), g);
+                for d in [0.0, 0.5, 1.0, 3.0, 10.0, 100.0] {
+                    let want = (rule() + g * d).min(H_MAX);
+                    for z in [2.0 + d, -d] {
+                        let got = f.size(Point3::new(1.0, 0.0, z));
+                        assert!((got - want).abs() < 1e-9, "g={g} d={d} z={z}: {got} vs {want}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A point on the carrier outside the quarter arc is measured from the arc end, and the
+    /// whole-period face keeps the rule on the far side.
+    #[test]
+    fn partial_cylinder_clamps_the_angle_and_the_full_wrap_does_not() {
+        let g = 0.5;
+        let q = local(cylinder_face(Axis::Arc { start: 0.0, len: FRAC_PI_2, per: TAU }), g);
+        let p = Point3::new(-1.0, 0.0, 1.0);
+        let want = (rule() + g * 2.0_f64.sqrt()).min(H_MAX);
+        assert!((q.size(p) - want).abs() < 1e-9, "{} vs {want}", q.size(p));
+        let w = local(cylinder_face(Axis::Wrap { lo: 0.0, per: TAU }), g);
+        assert!((w.size(p) - rule()).abs() < 1e-9);
+    }
+
+    /// A quarter circle edge: carrier points beyond the arc ends are measured from the nearer end.
+    #[test]
+    fn partial_arc_edge_clamps_to_the_end_points() {
+        let g = 0.5;
+        let kind = Kind::Curve { def: CurveDef::Circle(Circle::new(frame(), 1.0).expect("circle")), lo: 0.0, hi: FRAC_PI_2 };
+        let f = local(kind, g);
+        let on = f.size(Point3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0));
+        assert!((on - rule()).abs() < 1e-9, "{on}");
+        for (t, end) in [(PI, Point3::new(0.0, 1.0, 0.0)), (-FRAC_PI_2, Point3::new(1.0, 0.0, 0.0))] {
+            let p = Point3::new(t.cos(), t.sin(), 0.0);
+            let want = (rule() + g * (p - end).norm()).min(H_MAX);
+            assert!((f.size(p) - want).abs() < 1e-9, "t={t}: {} vs {want}", f.size(p));
+        }
+    }
+
+    #[test]
+    fn axis_detects_arcs_and_wraps() {
+        let d = sm_geom_api::Domain1::periodic(0.0, TAU);
+        let arc: Vec<f64> = (0..=16).map(|i| 5.5 + FRAC_PI_2 * f64::from(i) / 16.0).collect();
+        match axis_of(&d, &arc) {
+            Some(Axis::Arc { start, len, .. }) => assert!((start - 5.5).abs() < 1e-12 && (len - FRAC_PI_2).abs() < 1e-12, "{start} {len}"),
+            _ => panic!("arc expected"),
+        }
+        let ring: Vec<f64> = (0..=16).map(|i| TAU * f64::from(i) / 16.0).collect();
+        assert!(matches!(axis_of(&d, &ring), Some(Axis::Wrap { .. })));
+        assert!(matches!(axis_of(&d, &[1.0, 1.0, 1.0]), Some(Axis::Wrap { .. })), "a seam alone wraps");
     }
 }
