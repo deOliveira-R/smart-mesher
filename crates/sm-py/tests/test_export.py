@@ -341,3 +341,41 @@ def test_cgns_export_is_inferred_takes_polyhedra_and_matches_cli(s: sm.Session, 
         c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
         assert c.returncode == 0, (args, c.stdout, c.stderr)
     assert data == (tmp_path / "cli.cgns").read_bytes()
+
+
+@pytest.mark.parametrize("name", ["a.inp", "A.INP"])
+def test_abaqus_export_is_inferred_follows_the_polyhedra_policy_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
+    """A `.inp` path (any case) infers `abaqus`: an ASCII deck with C3D elements; polyhedra need a policy."""
+    slice_typed(s)
+    path = tmp_path / name
+    r = s.export(path)
+    assert r.format == "abaqus"
+    text = path.read_text()
+    assert text.startswith("*HEADING\n") and "\n*NODE\n" in text and "\n*ELEMENT, TYPE=C3D" in text
+    # Polyhedra are refused by default (typed), decomposed to C3D4 on request.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.inp"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        p.export(out, mesh=pm)
+    assert ei.value.kind == "polyhedra-unsupported"
+    assert not out.exists()
+    p.export(out, mesh=pm, options={"polyhedra": "decompose"})
+    assert "*ELEMENT, TYPE=C3D4\n" in out.read_text()
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.inp"
+    with pytest.raises(sm.SmartMeshError) as ei2:
+        s.export(bad, options={"binary": True})
+    assert ei2.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.inp")],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert path.read_bytes() == (tmp_path / "cli.inp").read_bytes()

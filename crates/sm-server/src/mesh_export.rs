@@ -1,11 +1,12 @@
 //! Mesh export formats that are not in `sm-fem`: DAGMC `.h5m`, Gmsh `.msh` 4.1, Fluent `.msh`,
-//! CGNS `.cgns` and the `.smrt` tracking image. Each is a pure function of the state and the options.
+//! CGNS `.cgns`, Abaqus `.inp` and the `.smrt` tracking image. Each is a pure function of the state and the options.
 
 use serde_json::{Map, Value};
 use sm_core::EntityId;
 use sm_fem::region::RegionSplit;
 use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, SplitError, lower, lower_split};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
+use sm_meshio::abaqus::{AbaqusError, AbaqusOptions, PyramidPolicy, write_abaqus};
 use sm_meshio::cgns::{CgnsError, CgnsOptions, write_cgns};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
 use sm_meshio::fluent::{FluentError, FluentOptions, write_fluent};
@@ -25,7 +26,7 @@ use crate::host::export_error;
 
 /// The formats this module writes.
 pub(crate) fn handles(format: ExportFormat) -> bool {
-    matches!(format, ExportFormat::Dagmc | ExportFormat::Gmsh | ExportFormat::Fluent | ExportFormat::Cgns | ExportFormat::Smrt)
+    matches!(format, ExportFormat::Dagmc | ExportFormat::Gmsh | ExportFormat::Fluent | ExportFormat::Cgns | ExportFormat::Abaqus | ExportFormat::Smrt)
 }
 
 /// Bytes and loss notes (`code: detail xcount`) of one export.
@@ -229,6 +230,27 @@ fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
     Ok(o)
 }
 
+/// The `abaqus` options: `polyhedra` (`"error"`, `"decompose"` or `"drop"`), `pyramids`
+/// (`"error"`, `"c3d5"` or `"degenerate_hex"`), `nsets` (bool) and `select`.
+fn abaqus_options(options: Option<&Value>) -> Result<AbaqusOptions, SessionError> {
+    let m = options_map("abaqus", options, &["polyhedra", "pyramids", "nsets", "select"])?;
+    let mut o = AbaqusOptions::default();
+    if let Some(v) = m.and_then(|m| m.get("polyhedra")).filter(|v| !v.is_null()) {
+        let p: PolyPolicy = serde_json::from_value(v.clone())
+            .map_err(|_| SessionError::bad_request(format!("`abaqus` option `polyhedra` must be \"error\", \"decompose\" or \"drop\", found {v}")))?;
+        o = o.with_polyhedra(p);
+    }
+    if let Some(v) = m.and_then(|m| m.get("pyramids")).filter(|v| !v.is_null()) {
+        let p: PyramidPolicy = serde_json::from_value(v.clone())
+            .map_err(|_| SessionError::bad_request(format!("`abaqus` option `pyramids` must be \"error\", \"c3d5\" or \"degenerate_hex\", found {v}")))?;
+        o = o.with_pyramids(p);
+    }
+    if let Some(b) = bool_option("abaqus", m, "nsets")? {
+        o = o.with_nsets(b);
+    }
+    Ok(o)
+}
+
 /// The `fluent` options: `cell_zones` (`"all"`, `"none"` or `{"names": [..]}`), `boundary_types`
 /// (set name to a Fluent boundary type) and `select`.
 fn fluent_options(options: Option<&Value>) -> Result<FluentOptions, SessionError> {
@@ -355,6 +377,15 @@ pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>
             let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
             let mut bytes = Vec::new();
             let rep = write_fluent((*lowered.mesh).as_read(), &o, &mut bytes).map_err(fluent_error)?;
+            notes.extend(notes_of(&rep.loss));
+            Ok(Written { bytes, notes })
+        }
+        ExportFormat::Abaqus => {
+            let o = abaqus_options(options)?;
+            let sel = select_option("abaqus", options_map("abaqus", options, &["polyhedra", "pyramids", "nsets", "select"])?)?;
+            let (lowered, mut notes) = lowered_selected(state, named, sel.as_ref())?;
+            let mut bytes = Vec::new();
+            let rep = write_abaqus((*lowered.mesh).as_read(), &o, &mut bytes).map_err(abaqus_error)?;
             notes.extend(notes_of(&rep.loss));
             Ok(Written { bytes, notes })
         }
@@ -546,6 +577,20 @@ fn fluent_error(e: FluentError) -> SessionError {
     }
 }
 
+fn abaqus_error(e: AbaqusError) -> SessionError {
+    match &e {
+        AbaqusError::PolyhedraUnsupported { count } => {
+            SessionError::new("polyhedra-unsupported", format!("{e}")).with_data(serde_json::json!({ "count": count }))
+        }
+        AbaqusError::PyramidsUnsupported { count } => SessionError::new("pyramids-unsupported", e.to_string()).with_data(serde_json::json!({ "count": count })),
+        AbaqusError::NonconformingDecomposition { .. } => SessionError::new("nonconforming-decomposition", e.to_string()),
+        AbaqusError::Unsupported(_) => SessionError::new("unsupported", e.to_string()),
+        AbaqusError::Mesh(_) => SessionError::new("mesh", e.to_string()),
+        AbaqusError::Io(_) => SessionError::new("io", e.to_string()),
+        _ => SessionError::new("export-failed", e.to_string()),
+    }
+}
+
 fn cgns_error(e: CgnsError) -> SessionError {
     match &e {
         CgnsError::UnknownBoundary(_) => SessionError::bad_request(e.to_string()),
@@ -603,16 +648,22 @@ mod tests {
         assert!(cgns_options(Some(&json!({"layout": "polyhedral"}))).is_err());
         assert!(cgns_options(Some(&json!({"boundary_types": {"inlet": "porous"}}))).is_err());
         assert!(cgns_options(None).is_ok());
+        let a = abaqus_options(Some(&json!({"polyhedra": "decompose", "pyramids": "degenerate_hex", "nsets": false}))).expect("abaqus options");
+        assert!(!a.nsets);
+        assert!(abaqus_options(Some(&json!({"binary": true}))).is_err());
+        assert!(abaqus_options(Some(&json!({"polyhedra": "fix"}))).is_err());
+        assert!(abaqus_options(Some(&json!({"pyramids": "c3d5x"}))).is_err());
+        assert!(abaqus_options(Some(&json!({"nsets": "yes"}))).is_err());
+        assert!(abaqus_options(None).is_ok());
     }
 
     #[test]
     fn a_format_without_a_write_arm_is_refused_never_written_as_smrt() {
         let state = State::default();
-        for f in [ExportFormat::Smsh, ExportFormat::Abaqus] {
-            assert!(!handles(f));
-            let e = write(&state, f, None, None).err().expect("refused");
-            assert_eq!(e.code, "format-not-implemented", "{f:?}");
-        }
+        let f = ExportFormat::Smsh;
+        assert!(!handles(f));
+        let e = write(&state, f, None, None).err().expect("refused");
+        assert_eq!(e.code, "format-not-implemented", "{f:?}");
         // The smrt arm is the only one that reaches the tracker (here: no model layer).
         let e = write(&state, ExportFormat::Smrt, None, None).err().expect("no model");
         assert_ne!(e.code, "format-not-implemented");

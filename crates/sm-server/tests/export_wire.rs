@@ -132,7 +132,7 @@ fn mcp(server: &mut Server, tool: &str, args: Value) -> Value {
 fn each_format_is_byte_identical_in_process_cli_and_mcp() {
     let dir = TempDir::new("wire-same");
     let s = Rc::new(RefCell::new(hex_server()));
-    for ext in ["h5m", "msh", "smrt", "cgns"] {
+    for ext in ["h5m", "msh", "smrt", "cgns", "inp"] {
         let p0 = dir.path().join(format!("inproc.{ext}"));
         let r = export(&mut s.borrow_mut(), &p0, None, None).unwrap_or_else(|e| panic!("{ext}: {e} {}", e.data));
         let want = read(&p0);
@@ -285,29 +285,21 @@ fn inline_req(format: ExportFormat) -> Request {
 }
 
 #[test]
-fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
-    let dir = TempDir::new("wire-notimpl");
+fn extensions_infer_their_formats_and_mismatches_are_refused() {
+    let dir = TempDir::new("wire-infer");
     let mut s = hex_server();
-    let cases = [(ExportFormat::Abaqus, "a.inp", "abaqus")];
-    for (fmt, name, wire) in cases {
-        let p = dir.path().join(name);
-        let e = export(&mut s, &p, Some(fmt), None).expect_err(name);
-        assert_eq!(e.kind, "format-not-implemented", "{name}: {e}");
-        assert!(e.message.contains(wire) && e.message.contains("not implemented yet"), "{e}");
-        assert!(!p.exists(), "{name}: nothing written");
-        let e = s.call(inline_req(fmt)).expect_err("inline");
-        assert_eq!(e.kind, "format-not-implemented");
-    }
-    // `.inp` infers its format; `.msh` still means Gmsh and still exports.
-    let e = export(&mut s, &dir.path().join("b.inp"), None, None).expect_err("b.inp");
-    assert_eq!(e.kind, "format-not-implemented", "{e}");
+    // `.inp` infers Abaqus; `.msh` still means Gmsh.
+    let inp = export(&mut s, &dir.path().join("b.inp"), None, None).expect("b.inp");
+    assert_eq!(inp.format, ExportFormat::Abaqus);
     let gmsh = export(&mut s, &dir.path().join("b.msh"), None, None).expect("msh is gmsh");
     assert_eq!(gmsh.format, ExportFormat::Gmsh);
-    // A real extension mismatch is still a bad request.
-    let e = export(&mut s, &dir.path().join("c.vtu"), Some(ExportFormat::Cgns), None).expect_err("mismatch");
-    assert_eq!(e.kind, "bad-request");
-    let e = export(&mut s, &dir.path().join("c.cgns"), Some(ExportFormat::Fluent), None).expect_err("mismatch");
-    assert_eq!(e.kind, "bad-request");
+    // A real extension mismatch is still a bad request, and writes nothing.
+    for (name, fmt) in [("c.vtu", ExportFormat::Cgns), ("c.cgns", ExportFormat::Fluent), ("c.msh", ExportFormat::Abaqus)] {
+        let p = dir.path().join(name);
+        let e = export(&mut s, &p, Some(fmt), None).expect_err("mismatch");
+        assert_eq!(e.kind, "bad-request", "{name}: {e}");
+        assert!(!p.exists(), "{name}: nothing written");
+    }
 }
 
 #[test]
@@ -444,44 +436,97 @@ fn cgns_options_are_checked_and_boundary_types_apply() {
 }
 
 #[test]
-fn unimplemented_formats_reach_the_cli_user_as_a_typed_error_and_write_nothing() {
-    let dir = TempDir::new("wire-notimpl-cli");
+fn abaqus_is_inferred_and_is_the_same_bytes_in_process_cli_and_mcp() {
+    let dir = TempDir::new("wire-abaqus");
     let s = Rc::new(RefCell::new(hex_server()));
-    let msh = dir.path().join("a.msh");
-    let inp = dir.path().join("a.inp");
-    let cases: [(&Path, &[&str]); 1] = [(&inp, &[])];
-    for (path, extra) in cases {
-        let p = path.to_string_lossy().into_owned();
-        let mut args = vec!["export", p.as_str()];
-        args.extend_from_slice(extra);
-        let (code, out, err) = cli(&s, &args);
-        assert_ne!(code, 0, "{args:?}: must fail ({out}{err})");
-        assert!(err.contains("format-not-implemented"), "{args:?}: {err}");
-        assert!(!path.exists(), "{args:?}: nothing written");
-    }
-    // `.msh` with no `--format` still exports Gmsh.
-    let (code, _, err) = cli(&s, &["export", &msh.to_string_lossy()]);
+    let p0 = dir.path().join("inproc.inp");
+    let r = export(&mut s.borrow_mut(), &p0, None, None).unwrap_or_else(|e| panic!("{e} {}", e.data));
+    assert_eq!(r.format, ExportFormat::Abaqus);
+    let want = read(&p0);
+    assert_eq!(r.bytes as usize, want.len());
+    assert_eq!(r.sha256, Hash256::of(&want));
+    let text = String::from_utf8(want.clone()).expect("ascii");
+    assert!(text.starts_with("*HEADING\n") && text.contains("\n*NODE\n") && text.contains("\n*ELEMENT, TYPE=C3D8\n"), "{}", &text[..80]);
+    // One ELSET and one NSET per block.
+    assert!(text.contains("*ELSET, ELSET=fuel\n") && text.contains("*ELSET, ELSET=water\n"));
+    assert!(text.contains("*NSET, NSET=fuel\n") && text.contains("*NSET, NSET=water\n"));
+    assert!(r.notes.iter().all(|n| n.code.starts_with("abaqus.")), "{:?}", r.notes);
+    // An explicit format on another extension writes the same bytes.
+    let p1 = dir.path().join("other.dat");
+    export(&mut s.borrow_mut(), &p1, Some(ExportFormat::Abaqus), None).expect("any extension");
+    assert_eq!(read(&p1), want);
+    let p2 = dir.path().join("cli.inp");
+    let (code, _, err) = cli(&s, &["export", p2.to_str().expect("utf8")]);
     assert_eq!(code, 0, "{err}");
-    assert!(msh.exists());
+    assert_eq!(read(&p2), want, "cli differs");
+    let p3 = dir.path().join("mcp.inp");
+    let reply = mcp(&mut s.borrow_mut(), "session_export", json!({"path": p3.to_string_lossy()}));
+    assert!(reply["result"]["isError"] != json!(true), "{reply}");
+    assert_eq!(read(&p3), want, "mcp differs");
+    let v = s.borrow_mut().call(inline_req(ExportFormat::Abaqus)).expect("inline");
+    let inline: ExportResult = serde_json::from_value(v).expect("result");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(inline.base64.expect("base64")).expect("decode");
+    assert_eq!(bytes, want);
+    // `nsets: false` drops the node sets only.
+    let p4 = dir.path().join("nonsets.inp");
+    export(&mut s.borrow_mut(), &p4, None, Some(json!({"nsets": false}))).expect("nsets");
+    let t4 = String::from_utf8(read(&p4)).expect("ascii");
+    assert!(!t4.contains("*NSET") && t4.contains("*ELSET, ELSET=fuel\n"));
+    // The CLI option reaches the writer.
+    let p5 = dir.path().join("cli_opt.inp");
+    let (code, _, err) = cli(&s, &["export", p5.to_str().expect("utf8"), "--option", "nsets=false"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read(&p5), read(&p4), "cli option reaches the writer");
 }
 
 #[test]
-fn unimplemented_formats_reach_the_mcp_client_as_a_tool_error() {
-    let dir = TempDir::new("wire-notimpl-mcp");
+fn abaqus_sidesets_become_element_surfaces_with_one_face_per_boundary_quad() {
+    let dir = TempDir::new("wire-abaqus-surf");
+    let faces = "topo.related(kind: \"TopoFace\", within: a.volume)";
+    let mut s = server(&[TWO_BRICKS, &format!("fem.sideset_add(sideset: 1, faces: {faces}, wrt: a.volume, name: \"outer\")\n"), HEX]);
+    let p = dir.path().join("a.inp");
+    let r = export(&mut s, &p, None, None).unwrap_or_else(|e| panic!("{e} {}", e.data));
+    let text = String::from_utf8(read(&p)).expect("ascii");
+    let at = text.find("*SURFACE, TYPE=ELEMENT, NAME=outer\n").expect("surface block");
+    let body: Vec<&str> = text[at..].lines().skip(1).take_while(|l| !l.starts_with('*')).collect();
+    // The `fuel` brick (2x2x2, size 1 -> 8 hexes) has 6 faces of 2x2 quads; every entry is `id, Sn`.
+    assert_eq!(body.len(), 24, "{body:?}");
+    assert!(body.iter().all(|l| l.split(", ").count() == 2 && l.split(", ").nth(1).is_some_and(|s| s.starts_with('S'))), "{body:?}");
+    assert!(r.notes.iter().all(|n| n.code.starts_with("abaqus.")), "{:?}", r.notes);
+}
+
+#[test]
+fn abaqus_options_are_checked_and_polyhedra_follow_the_policy() {
+    let dir = TempDir::new("wire-abaqus-opts");
     let mut s = hex_server();
-    let msh = dir.path().join("a.msh");
-    let inp = dir.path().join("a.inp");
-    let cases = [
-        json!({"format": "abaqus", "path": msh.with_extension("dat").to_string_lossy()}),
-        json!({"path": inp.to_string_lossy()}),
-        json!({"format": "abaqus", "inline": true}),
+    let bad = [
+        json!({"binary": true}),
+        json!({"polyhedra": "repair"}),
+        json!({"pyramids": "c3d5x"}),
+        json!({"nsets": "yes"}),
+        json!({"layout": "ngon"}),
     ];
-    for args in cases {
-        let r = mcp(&mut s, "session_export", args.clone());
-        assert_eq!(r["result"]["isError"], true, "{args}: {r}");
-        assert!(r.to_string().contains("format-not-implemented"), "{args}: {r}");
+    for options in bad {
+        let p = dir.path().join("bad.inp");
+        let e = export(&mut s, &p, None, Some(options.clone())).expect_err(&options.to_string());
+        assert_eq!(e.kind, "bad-request", "{options}: {e}");
+        assert!(!p.exists(), "{options}: nothing written");
     }
-    assert!(!msh.exists() && !inp.exists(), "nothing written");
+    let mut s = server(&[TWO_BRICKS, POLY]);
+    let p = dir.path().join("poly.inp");
+    let e = export(&mut s, &p, None, None).expect_err("polyhedra refused by default");
+    assert_eq!(e.kind, "polyhedra-unsupported", "{e}");
+    assert!(e.data["count"].as_u64().unwrap_or(0) > 0, "{}", e.data);
+    assert!(!p.exists(), "nothing is written on failure");
+    let r = export(&mut s, &p, None, Some(json!({"polyhedra": "decompose"}))).expect("decompose");
+    assert!(r.notes.iter().any(|n| n.code == "abaqus.poly_decomposed"), "{:?}", r.notes);
+    let text = String::from_utf8(read(&p)).expect("ascii");
+    assert!(text.contains("*ELEMENT, TYPE=C3D4\n") && !text.contains("C3D8"));
+    // Dropping every cell leaves nothing to write: a typed refusal, not an empty deck.
+    let q = dir.path().join("dropped.inp");
+    let e = export(&mut s, &q, None, Some(json!({"polyhedra": "drop"}))).expect_err("nothing left");
+    assert_eq!(e.kind, "unsupported", "{e}");
+    assert!(!q.exists());
 }
 
 #[test]
@@ -489,7 +534,7 @@ fn exports_are_deterministic_across_runs_and_thread_counts() {
     let dir = TempDir::new("wire-det");
     let mut s = hex_server();
     let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
-    for ext in ["h5m", "msh", "smrt", "cgns"] {
+    for ext in ["h5m", "msh", "smrt", "cgns", "inp"] {
         let p = dir.path().join(format!("x.{ext}"));
         let first = export(&mut s, &p, None, None).expect("first").sha256;
         let again = export(&mut s, &p, None, None).expect("again").sha256;

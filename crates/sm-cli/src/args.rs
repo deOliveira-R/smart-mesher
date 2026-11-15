@@ -30,7 +30,9 @@ pub enum Format {
     /// polyhedra), BCs per face set, cell sets as sub-regions and families. Inferred from `.cgns`.
     /// Options: `--option layout=ngon`, `--option boundary_types={"inlet":"inflow"}`.
     Cgns,
-    /// Abaqus `.inp` input deck (not implemented yet).
+    /// Abaqus `.inp` deck: `*NODE`, `*ELEMENT` (C3D4, C3D6, C3D8), `*ELSET` per cell set, `*NSET`
+    /// and element-based `*SURFACE` per face set. Inferred from `.inp`. Options:
+    /// `--option polyhedra=decompose`, `--option pyramids=degenerate_hex`, `--option nsets=false`.
     Abaqus,
 }
 
