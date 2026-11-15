@@ -270,30 +270,77 @@ impl Axis {
     }
 }
 
-/// The range of the projected boundary parameters `xs` along an axis of domain `d`.
-fn axis_of(d: &sm_geom_api::Domain1, xs: &[f64]) -> Option<Axis> {
+/// Candidate ranges of the projected boundary parameters `xs` along an axis of domain `d`: on a
+/// periodic axis one arc per circular gap that could be the face's complement (ties give several).
+fn axis_cands(d: &sm_geom_api::Domain1, xs: &[f64]) -> Vec<Axis> {
     if xs.is_empty() {
-        return None;
+        return Vec::new();
     }
     if let Some(per) = d.period {
         let lo = d.range.lo;
         let mut r: Vec<f64> = xs.iter().map(|x| (x - lo).rem_euclid(per)).collect();
         r.sort_by(f64::total_cmp);
-        // Largest circular gap: a boundary that does not wrap leaves a big one.
-        let (mut gap, mut at) = (r[0] + per - r[r.len() - 1], 0);
-        for i in 1..r.len() {
-            if r[i] - r[i - 1] > gap {
-                gap = r[i] - r[i - 1];
-                at = i;
-            }
-        }
+        let n = r.len();
+        // Circular gaps: gap i runs from r[i-1] to r[i] (gap 0 wraps around the period).
+        let gaps: Vec<f64> = (0..n).map(|i| if i == 0 { r[0] + per - r[n - 1] } else { r[i] - r[i - 1] }).collect();
+        let big = gaps.iter().copied().fold(0.0, f64::max);
         // A boundary with no extent along the axis (a seam meridian, a pole) says nothing: whole period.
-        let partial = gap > 0.2 * per && per - gap > 0.01 * per;
-        return Some(if partial { Axis::Arc { start: lo + r[at], len: per - gap, per } } else { Axis::Wrap { lo, per } });
+        let partial = big > 0.2 * per && per - big > 0.01 * per;
+        if !partial {
+            return vec![Axis::Wrap { lo, per }];
+        }
+        // Every gap within 1% of the largest is a candidate (a face bounded by two meridians has two).
+        return (0..n)
+            .filter(|&i| gaps[i] >= big - 0.01 * per)
+            .map(|i| Axis::Arc { start: lo + r[i], len: per - gaps[i], per })
+            .collect();
     }
     let a = xs.iter().copied().fold(f64::INFINITY, f64::min).max(d.range.lo);
     let b = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max).min(d.range.hi);
-    (a.is_finite() && b.is_finite() && b >= a).then_some(Axis::Range(a, b))
+    if a.is_finite() && b.is_finite() && b >= a { vec![Axis::Range(a, b)] } else { Vec::new() }
+}
+
+/// The range along one axis; `None` when empty or when the side of a periodic face is undecided
+/// by `pick` (callers then fall back to the whole period).
+#[cfg(test)]
+fn axis_of(d: &sm_geom_api::Domain1, xs: &[f64]) -> Option<Axis> {
+    let c = axis_cands(d, xs);
+    (c.len() == 1).then(|| c[0])
+}
+
+/// Choose the parameter box among the candidates by classifying the box centre against the face
+/// (a pole or meridian-only boundary leaves tied arcs). Undecided: whole period (finer, safe).
+fn pick_axes(view: &dyn TopologyView, f: EntityId, dom: &sm_geom_api::Domain2, ucs: &[Axis], vcs: &[Axis]) -> Option<(Axis, Axis)> {
+    if ucs.is_empty() || vcs.is_empty() {
+        return None;
+    }
+    if ucs.len() == 1 && vcs.len() == 1 {
+        return Some((ucs[0], vcs[0]));
+    }
+    let mid = |a: Axis| {
+        let (x0, x1) = a.span();
+        0.5 * (x0 + x1)
+    };
+    let mut hit = None;
+    for &ua in ucs {
+        for &va in vcs {
+            if matches!(view.classify_point_on_face(f, Uv::new(mid(ua), mid(va))), Ok(PointClass::In)) {
+                if hit.is_some() {
+                    return Some((wrap_of(&dom.u, ucs[0]), wrap_of(&dom.v, vcs[0])));
+                }
+                hit = Some((ua, va));
+            }
+        }
+    }
+    Some(hit.unwrap_or_else(|| (wrap_of(&dom.u, ucs[0]), wrap_of(&dom.v, vcs[0]))))
+}
+
+/// The whole-period axis of a periodic domain, or the (single) range otherwise.
+fn wrap_of(d: &sm_geom_api::Domain1, fallback: Axis) -> Axis {
+    match d.period {
+        Some(per) if matches!(fallback, Axis::Arc { .. }) => Axis::Wrap { lo: d.range.lo, per },
+        _ => fallback,
+    }
 }
 
 /// A curved edge or face of the region: its geometry, the entity tolerance, a padded box of the
@@ -405,7 +452,8 @@ fn surface_feature(view: &dyn TopologyView, f: EntityId, n: usize, o: Opts) -> O
             }
         }
     }
-    let (ua, va) = (axis_of(&dom.u, &us)?, axis_of(&dom.v, &vs)?);
+    let (ucs, vcs) = (axis_cands(&dom.u, &us), axis_cands(&dom.v, &vs));
+    let (ua, va) = pick_axes(view, f, &dom, &ucs, &vcs)?;
     let ((u0, u1), (v0, v1)) = (ua.span(), va.span());
     let mut samples = Vec::new();
     for i in 0..=n {
@@ -577,5 +625,15 @@ mod tests {
         let ring: Vec<f64> = (0..=16).map(|i| TAU * f64::from(i) / 16.0).collect();
         assert!(matches!(axis_of(&d, &ring), Some(Axis::Wrap { .. })));
         assert!(matches!(axis_of(&d, &[1.0, 1.0, 1.0]), Some(Axis::Wrap { .. })), "a seam alone wraps");
+    }
+
+    #[test]
+    fn two_meridians_leave_two_tied_arcs() {
+        let d = sm_geom_api::Domain1::periodic(0.0, TAU);
+        let c = axis_cands(&d, &[0.0, std::f64::consts::PI, 0.0, std::f64::consts::PI]);
+        assert_eq!(c.len(), 2);
+        assert!(axis_of(&d, &[0.0, std::f64::consts::PI]).is_none(), "tie is undecided without the face");
+        let starts: Vec<f64> = c.iter().map(|a| if let Axis::Arc { start, len, .. } = a { assert!((len - std::f64::consts::PI).abs() < 1e-12); *start } else { f64::NAN }).collect();
+        assert!(starts.contains(&0.0) && starts.contains(&std::f64::consts::PI), "{starts:?}");
     }
 }
