@@ -306,10 +306,15 @@ pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>
             notes.extend(notes_of(&rep.loss));
             Ok(Written { bytes, notes })
         }
-        _ => {
+        ExportFormat::Smrt => {
             let m = options_map("smrt", options, &["regions"])?;
             smrt(state, named, &regions_option("smrt", m)?)
         }
+        // A format without a write arm is refused, never written as another format.
+        other => Err(SessionError::new(
+            "format-not-implemented",
+            format!("export format `{}` is not implemented yet", other.name()),
+        )),
     }
 }
 
@@ -505,5 +510,18 @@ mod tests {
         assert!(dagmc_options(Some(&json!({"chord_tol": 0.0})), true).is_err());
         assert!(dagmc_options(Some(&json!({"chord_tol": "fine"})), true).is_err());
         assert!(options_map("smrt", Some(&json!({"x": 1})), &[]).is_err());
+    }
+
+    #[test]
+    fn a_format_without_a_write_arm_is_refused_never_written_as_smrt() {
+        let state = State::default();
+        for f in [ExportFormat::Smsh, ExportFormat::Fluent, ExportFormat::Cgns, ExportFormat::Abaqus] {
+            assert!(!handles(f));
+            let e = write(&state, f, None, None).err().expect("refused");
+            assert_eq!(e.code, "format-not-implemented", "{f:?}");
+        }
+        // The smrt arm is the only one that reaches the tracker (here: no model layer).
+        let e = write(&state, ExportFormat::Smrt, None, None).err().expect("no model");
+        assert_ne!(e.code, "format-not-implemented");
     }
 }

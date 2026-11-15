@@ -468,53 +468,34 @@ fn format_of(path: &Path) -> Result<ExportFormat, SessionError> {
 }
 
 fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
-    match s {
-        "smsh" => Ok(ExportFormat::Smsh),
-        "vtu" => Ok(ExportFormat::Vtu),
-        "exodus" => Ok(ExportFormat::Exodus),
-        "openfoam" => Ok(ExportFormat::Openfoam),
-        "dagmc" => Ok(ExportFormat::Dagmc),
-        "gmsh" => Ok(ExportFormat::Gmsh),
-        "smrt" => Ok(ExportFormat::Smrt),
-        "fluent" => Ok(ExportFormat::Fluent),
-        "cgns" => Ok(ExportFormat::Cgns),
-        "abaqus" => Ok(ExportFormat::Abaqus),
-        other => Err(SessionError::bad_request(format!(
-            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus`, `openfoam`, `dagmc`, `gmsh`, `smrt`, `fluent`, `cgns` or `abaqus`)"
-        ))),
-    }
+    const ALL: [ExportFormat; 10] = [
+        ExportFormat::Smsh,
+        ExportFormat::Vtu,
+        ExportFormat::Exodus,
+        ExportFormat::Openfoam,
+        ExportFormat::Dagmc,
+        ExportFormat::Gmsh,
+        ExportFormat::Smrt,
+        ExportFormat::Fluent,
+        ExportFormat::Cgns,
+        ExportFormat::Abaqus,
+    ];
+    ALL.into_iter().find(|f| f.name() == s).ok_or_else(|| {
+        SessionError::bad_request(format!(
+            "unknown export format `{s}` (expected `smsh`, `vtu`, `exodus`, `openfoam`, `dagmc`, `gmsh`, `smrt`, `fluent`, `cgns` or `abaqus`)"
+        ))
+    })
 }
 
-/// The format a known extension names (`.smsh`, `.vtu`, `.exo` `.e` `.g` `.exodus`, `.h5m`, `.msh`,
-/// `.smrt`, `.cgns`, `.inp`); none for any
-/// other extension. `.msh` is Gmsh. OpenFOAM (a directory) and Fluent are never inferred.
+/// The format a known extension names, case-insensitive (the table is
+/// [`ExportFormat::from_extension`]); none for any other extension. `.msh` is Gmsh. OpenFOAM
+/// (a directory) and Fluent are never inferred.
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
-    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("smsh") => Some(ExportFormat::Smsh),
-        Some("vtu") => Some(ExportFormat::Vtu),
-        Some("exo" | "e" | "g" | "exodus") => Some(ExportFormat::Exodus),
-        Some("h5m") => Some(ExportFormat::Dagmc),
-        Some("msh") => Some(ExportFormat::Gmsh),
-        Some("smrt") => Some(ExportFormat::Smrt),
-        Some("cgns") => Some(ExportFormat::Cgns),
-        Some("inp") => Some(ExportFormat::Abaqus),
-        _ => None,
-    }
+    path.extension().and_then(|e| e.to_str()).and_then(ExportFormat::from_extension)
 }
 
 fn format_name(f: ExportFormat) -> &'static str {
-    match f {
-        ExportFormat::Vtu => "vtu",
-        ExportFormat::Exodus => "exodus",
-        ExportFormat::Openfoam => "openfoam",
-        ExportFormat::Dagmc => "dagmc",
-        ExportFormat::Gmsh => "gmsh",
-        ExportFormat::Smrt => "smrt",
-        ExportFormat::Fluent => "fluent",
-        ExportFormat::Cgns => "cgns",
-        ExportFormat::Abaqus => "abaqus",
-        _ => "smsh",
-    }
+    f.name()
 }
 
 /// Whether `format` is named in the protocol (`fluent`, `cgns`, `abaqus`) but this server has no
@@ -709,5 +690,25 @@ mod tests {
         let h = Hash256::of(b"node");
         assert_eq!(provenance_of(Some(h)), Some(h.to_hex()));
         assert_eq!(provenance_of(None), None);
+    }
+
+    #[test]
+    fn one_extension_table_case_insensitive() {
+        use std::path::Path;
+        for (name, f) in [
+            ("a.cgns", ExportFormat::Cgns),
+            ("a.CGNS", ExportFormat::Cgns),
+            ("a.Msh", ExportFormat::Gmsh),
+            ("a.INP", ExportFormat::Abaqus),
+            ("a.E", ExportFormat::Exodus),
+            ("a.h5m", ExportFormat::Dagmc),
+        ] {
+            assert_eq!(known_format_of(Path::new(name)), Some(f), "{name}");
+        }
+        assert_eq!(known_format_of(Path::new("a.cas")), None);
+        for f in [ExportFormat::Smsh, ExportFormat::Openfoam, ExportFormat::Fluent, ExportFormat::Cgns, ExportFormat::Abaqus] {
+            assert_eq!(parse_format(format_name(f)).expect("round trip"), f);
+        }
+        assert!(parse_format("nope").is_err());
     }
 }

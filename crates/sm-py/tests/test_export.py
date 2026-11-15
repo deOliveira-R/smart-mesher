@@ -269,3 +269,13 @@ def test_source_model_exports_dagmc_without_a_mesh(s: sm.Session, tmp_path: path
     with pytest.raises(sm.SmartMeshError) as ei:
         s.export(tmp_path / "f.h5m", chord_tol=1e-3)  # a mesh is not re-faceted
     assert ei.value.kind == "bad-request"
+
+
+@pytest.mark.parametrize("name", ["a.cgns", "A.CGNS"])
+def test_cgns_export_is_refused_typed_and_writes_no_file(cube: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
+    """A `.cgns` path (any case) infers `cgns`; until an exporter exists it is `format-not-implemented`."""
+    path = tmp_path / name
+    with pytest.raises(sm.ApplicationError) as ei:
+        cube.export(path=path)
+    assert ei.value.kind == "format-not-implemented"
+    assert not path.exists()

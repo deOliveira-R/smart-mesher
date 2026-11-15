@@ -9,8 +9,9 @@
 # library instead (volume and surface ids, `mat:` properties, the queries), built below.
 # Nothing here is executed on our files except through those libraries; the input is mounted
 # read-only. `cgns` (the CGNS library tools `cgnscheck` and `cgnslist`; W4 ACR-EXPFMT) is here for
-# the W4-EXPORT-CGNS oracle, h5py (already here) reads the structure. The image is judged only on whether it reads OUR output: a failure on a fixture
-# that fails `smesh validate` is our bug, not theirs.
+# the W4-EXPORT-CGNS oracle, h5py (already here) reads the structure. The image is judged
+# only on whether it reads OUR output: a failure on a fixture that fails `smesh validate`
+# is our bug, not theirs.
 FROM condaforge/miniforge3:latest
 RUN mamba install -y -c conda-forge moab dagmc numpy h5py cxx-compiler eigen cgns \
     && mamba clean -afy

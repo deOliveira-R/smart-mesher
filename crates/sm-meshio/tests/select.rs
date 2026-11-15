@@ -271,3 +271,24 @@ fn selection_is_deterministic_across_threads() {
         .expect("pool");
     assert_eq!(a, pool.install(run));
 }
+
+/// The documented rule is exact: the synthetic `TopoFace` id is the source's highest classified
+/// `TopoFace` serial plus one, not merely above it.
+#[test]
+fn the_synthetic_cut_face_id_is_the_source_max_serial_plus_one() {
+    use sm_core::EntityKind;
+    let (pts, cells) = rig::row_points_cells(&[1, 1, 1]);
+    let mesh = sm_testkit::meshes::build_mesh_volumes(&pts, &cells, &mut SerialAlloc::new()).expect("mesh");
+    let mut specs = rig::plane_sidesets(&mesh);
+    specs.push(SetSpec::new("A", SetMembers::Cells(vec![CellIx::new(0)])));
+    specs.push(SetSpec::new("B", SetMembers::Cells(vec![CellIx::new(1), CellIx::new(2)])));
+    let host = with_sets(rig::fixture(mesh, 3), &specs).expect("sets").mesh;
+    let top_of = |m: &dyn MeshRead| -> u64 {
+        m.classified_entities().iter().filter(|e| e.kind() == EntityKind::TopoFace).map(|e| e.serial()).max().expect("a model face")
+    };
+    let host_top = top_of(&host);
+    for pick in [&["A"][..], &["B"][..]] {
+        let sel = apply(&host, &blocks(pick), &Roles::by_kind()).expect("select");
+        assert_eq!(top_of(&sel.mesh), host_top + 1, "{pick:?}: the synthetic id is the source max + 1");
+    }
+}
