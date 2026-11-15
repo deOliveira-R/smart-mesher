@@ -119,6 +119,46 @@ fn an_unclosable_sheet_is_reported_not_imported() {
     assert!(m.notes.iter().any(|n| n.code == NoteCode::RepairFailed));
 }
 
+fn sheet_with(shells: &str, extra: &str) -> Vec<u8> {
+    let text = String::from_utf8(data("sheet_open_box.stp")).expect("utf8");
+    let text = text.replace("#155 = SHELL_BASED_SURFACE_MODEL('open box',(#154));", &format!("{extra}\n{shells}"));
+    text.into_bytes()
+}
+
+fn repaired(m: &sm_cadio::BrepModel) -> usize {
+    m.notes.iter().filter(|n| n.code == NoteCode::Repaired).count()
+}
+
+fn failed(m: &sm_cadio::BrepModel) -> usize {
+    m.notes.iter().filter(|n| n.code == NoteCode::RepairFailed).count()
+}
+
+#[test]
+fn a_single_face_sheet_is_not_capped_onto_itself() {
+    let b = sheet_with("#155 = SHELL_BASED_SURFACE_MODEL('one face',(#900));", "#900 = OPEN_SHELL('',(#93));");
+    let m = read_step(&b, &repair_opts()).expect("read");
+    assert!(m.solids.is_empty(), "{:?}", m.solids.len());
+    assert_eq!(repaired(&m), 0);
+    assert_eq!(failed(&m), 1);
+}
+
+#[test]
+fn a_brick_plus_a_stray_face_gives_one_brick_and_one_failure() {
+    let b = sheet_with("#155 = SHELL_BASED_SURFACE_MODEL('brick',(#154));\n#901 = SHELL_BASED_SURFACE_MODEL('stray',(#900));", "#900 = OPEN_SHELL('',(#153));");
+    let m = read_step(&b, &repair_opts()).expect("read");
+    assert_eq!(m.solids.len(), 1);
+    assert_eq!((repaired(&m), failed(&m)), (1, 1));
+    check_brick(&m);
+}
+
+#[test]
+fn a_multi_shell_surface_model_is_not_repaired() {
+    let b = sheet_with("#155 = SHELL_BASED_SURFACE_MODEL('two shells',(#154,#900));", "#900 = OPEN_SHELL('',(#153));");
+    let m = read_step(&b, &repair_opts()).expect("read");
+    assert!(m.solids.is_empty());
+    assert_eq!((repaired(&m), failed(&m)), (0, 1));
+}
+
 #[test]
 fn the_op_refuses_without_repair_and_imports_with_it() {
     let store = Arc::new(MemoryInputStore::new());

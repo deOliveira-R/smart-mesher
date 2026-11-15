@@ -654,12 +654,14 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     }
     if kind == SolidKind::Sheet && opts.repair && !opts.sheets {
         // An open sheet is a repair candidate: closed, it becomes a solid; else it is skipped.
-        match crate::repair::close_shells(&mut solid, opts.weld_tol) {
+        // Shell roles cannot be guessed, so a multi-shell surface model is not repaired.
+        let multi = (solid.shells.len() > 1).then(|| StepError::Unsupported { id, entity: format!("surface model with {} shells", solid.shells.len()) });
+        match multi.map_or_else(|| crate::repair::close_shells(&mut solid, opts.weld_tol), Err) {
             Ok(n) => {
                 notes.extend(n);
                 solid.kind = SolidKind::Manifold;
-                for (i, sh) in solid.shells.iter_mut().enumerate() {
-                    sh.kind = if i == 0 { ShellKind::Outer } else { ShellKind::Void };
+                for sh in &mut solid.shells {
+                    sh.kind = ShellKind::Outer;
                 }
             }
             Err(e) => notes.push(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![id])),

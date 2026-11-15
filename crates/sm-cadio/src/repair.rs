@@ -6,7 +6,8 @@
 //! gets a planar cap face. Anything else (an edge used two or more times net, a branching
 //! boundary, a curved edge, a non-planar loop, coplanar loops that would need a hole) is not
 //! guessed: the shell stays open and the caller gets the same [`StepError::OpenShell`] as
-//! without repair. The result is all or nothing per solid.
+//! without repair. A cap that lands on an existing face, or a closed shell of about zero volume,
+//! is refused too (a displaced face is not a missing one). The result is all or nothing per solid.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,6 +28,8 @@ pub(crate) fn close_shells(solid: &mut Solid, tol: f64) -> Result<Vec<Note>, Ste
     let mut new_faces: Vec<Face> = Vec::new();
     let mut new_surfaces: Vec<SurfaceRec> = Vec::new();
     for si in 0..solid.shells.len() {
+        let first_new = new_faces.len();
+        let mut caps: Vec<(Vector3, sm_core::Point3, Vec<usize>)> = Vec::new();
         let mut net: BTreeMap<usize, i64> = BTreeMap::new();
         for &fi in &solid.shells[si].faces {
             for lp in &solid.faces[fi].loops {
@@ -102,6 +105,17 @@ pub(crate) fn close_shells(solid: &mut Solid, tol: f64) -> Result<Vec<Note>, Ste
                 return Err(refuse());
             }
             planes.push((nh, pts[0]));
+            // A cap that lands on an existing face means that face is displaced, not missing.
+            let cap_verts: BTreeSet<usize> = lp.iter().map(|c| coedge_start(solid, c)).collect();
+            for &fi in &solid.shells[si].faces {
+                let f = &solid.faces[fi];
+                let SurfaceDef::Plane(pl) = &solid.surfaces[f.surface].def else { continue };
+                let coplanar = pl.frame.z.dot(nh).abs() > 1.0 - 1e-9 && (pl.frame.origin - pts[0]).dot(nh).abs() <= flat;
+                if coplanar && f.loops.first().is_some_and(|l| l.iter().all(|c| cap_verts.contains(&coedge_start(solid, c)))) {
+                    return Err(refuse());
+                }
+            }
+            caps.push((nh, pts[0], cap_verts.into_iter().collect()));
             let frame = Frame::from_z(pts[0], nv).map_err(|_| refuse())?;
             let fid = solid.edges[lp[0].edge].id;
             let ids: Vec<u64> = lp.iter().map(|c| solid.edges[c.edge].id).collect();
@@ -113,6 +127,23 @@ pub(crate) fn close_shells(solid: &mut Solid, tol: f64) -> Result<Vec<Note>, Ste
             new_surfaces.push(SurfaceRec { id: fid, def: SurfaceDef::Plane(Plane { frame }) });
             new_faces.push(Face { id: fid, surface: solid.surfaces.len() + new_surfaces.len() - 1, sense: Sense::Forward, loops: vec![lp], shell: si });
         }
+        if caps.is_empty() {
+            continue;
+        }
+        // The closed shell must enclose volume and not lie flat in a cap plane.
+        let flat_all = solid.shells[si].faces.iter().all(|&fi| match &solid.surfaces[solid.faces[fi].surface].def {
+            SurfaceDef::Plane(pl) => caps.iter().any(|(nh, o, _)| pl.frame.z.dot(*nh).abs() > 1.0 - 1e-9 && (pl.frame.origin - *o).dot(*nh).abs() <= tol.max(1e-9)),
+            _ => false,
+        });
+        if flat_all {
+            return Err(refuse());
+        }
+        let all: Vec<&Face> = solid.shells[si].faces.iter().map(|&fi| &solid.faces[fi]).chain(new_faces[first_new..].iter()).collect();
+        if let Some((v, extent)) = polyhedron_volume(solid, &all, &new_surfaces)
+            && v.abs() <= tol.max(1e-9 * extent) * extent * extent
+        {
+            return Err(refuse());
+        }
     }
     let base = solid.faces.len();
     for (k, f) in new_faces.iter().enumerate() {
@@ -121,4 +152,39 @@ pub(crate) fn close_shells(solid: &mut Solid, tol: f64) -> Result<Vec<Note>, Ste
     solid.faces.extend(new_faces);
     solid.surfaces.extend(new_surfaces);
     Ok(notes)
+}
+
+fn coedge_start(solid: &Solid, c: &Coedge) -> usize {
+    let e = &solid.edges[c.edge];
+    if c.sense == Sense::Forward { e.start } else { e.end }
+}
+
+/// Signed volume and bounding-box diagonal of a shell whose faces are all planar polygons with
+/// straight edges; `None` when any face or edge is curved.
+fn polyhedron_volume(solid: &Solid, faces: &[&Face], extra: &[SurfaceRec]) -> Option<(f64, f64)> {
+    let (mut v6, mut lo, mut hi) = (0.0, [f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for f in faces {
+        let surf = solid.surfaces.get(f.surface).unwrap_or_else(|| &extra[f.surface - solid.surfaces.len()]);
+        if !matches!(surf.def, SurfaceDef::Plane(_)) {
+            return None;
+        }
+        for lp in &f.loops {
+            if lp.iter().any(|c| !matches!(solid.curves[solid.edges[c.edge].curve].def, CurveDef::Line(_))) {
+                return None;
+            }
+            let pts: Vec<sm_core::Point3> = lp.iter().map(|c| solid.vertices[coedge_start(solid, c)].point).collect();
+            for p in &pts {
+                for (k, x) in [p.x, p.y, p.z].into_iter().enumerate() {
+                    lo[k] = lo[k].min(x);
+                    hi[k] = hi[k].max(x);
+                }
+            }
+            for i in 1..pts.len().saturating_sub(1) {
+                let (a, b, c) = (pts[0], pts[i], pts[i + 1]);
+                v6 += a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x);
+            }
+        }
+    }
+    let extent = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+    Some((v6 / 6.0, extent))
 }
