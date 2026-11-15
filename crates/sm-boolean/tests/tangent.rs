@@ -16,7 +16,13 @@ fn failed(e: TimelineError) -> OpError {
 }
 
 fn sub(r: &mut Rig, t: &Solid, tool: &Solid) -> Result<sm_op_api::Delta, TimelineError> {
-    r.run(&Subtract { targets: vec![t.body], tools: vec![tool.body], keep: None, regularize: None, tol: None })
+    r.run(&Subtract {
+        targets: vec![t.body],
+        tools: vec![tool.body],
+        keep: None,
+        regularize: None,
+        tol: None,
+    })
 }
 
 /// A 4^3 brick centred at 2 minus a through cylinder (r = 1, axis z) whose axis is at x = 1 + gap.
@@ -36,8 +42,14 @@ fn clearances_of_1e_2_and_above_work() {
         let t = r.topo();
         assert_valid(t);
         let v = d.outputs["volumes"][0];
-        assert!((volume_of(t, v) - (64.0 - 4.0 * PI)).abs() < 1e-8 * 64.0, "gap {gap}");
-        assert!((total_area(t) - (96.0 + 6.0 * PI)).abs() < 1e-8 * 100.0, "gap {gap}");
+        assert!(
+            (volume_of(t, v) - (64.0 - 4.0 * PI)).abs() < 1e-8 * 64.0,
+            "gap {gap}"
+        );
+        assert!(
+            (total_area(t) - (96.0 + 6.0 * PI)).abs() < 1e-8 * 100.0,
+            "gap {gap}"
+        );
         assert_eq!(counts(t), [10, 15, 7, 1, 1], "gap {gap}");
     }
 }
@@ -52,11 +64,19 @@ fn near_tangent_clearances_are_rolled_back_with_a_typed_error() {
                 let t = r.topo();
                 assert_valid(t);
                 let v = d.outputs["volumes"][0];
-                assert!((volume_of(t, v) - (64.0 - 4.0 * PI)).abs() < 1e-8 * 64.0, "gap {gap}");
+                assert!(
+                    (volume_of(t, v) - (64.0 - 4.0 * PI)).abs() < 1e-8 * 64.0,
+                    "gap {gap}"
+                );
             }
             Err(e) => {
                 let msg = failed(e).to_string();
-                assert!(msg.contains("invalid") && msg.contains("rolled back") && msg.contains("nearly tangent"), "gap {gap}: {msg}");
+                assert!(
+                    msg.contains("invalid")
+                        && msg.contains("rolled back")
+                        && msg.contains("nearly tangent"),
+                    "gap {gap}: {msg}"
+                );
             }
         }
     }
@@ -69,8 +89,14 @@ fn internal_line_tangent_cylinder_is_a_tangent_contact_error() {
     let msg = e.to_string();
     assert!(matches!(e, OpError::Unsupported(_)), "{msg}");
     assert!(msg.contains("tangent"), "{msg}");
-    assert!(msg.contains("perturb") || msg.contains("move"), "names the way out: {msg}");
-    assert!(msg.contains("face") || msg.contains("volume"), "names an entity: {msg}");
+    assert!(
+        msg.contains("perturb") || msg.contains("move"),
+        "names the way out: {msg}"
+    );
+    assert!(
+        msg.contains("face") || msg.contains("volume"),
+        "names an entity: {msg}"
+    );
     let _ = r;
 }
 
@@ -81,11 +107,21 @@ fn external_line_tangent_cylinder_is_a_tangent_contact_error() {
     let b = r.brick([4.0; 3], [2.0; 3]);
     let c = r.cylinder(2.0, 1.0, [-1.0, 2.0, 2.0]);
     let h = r.hash();
-    let e = r.run(&sm_boolean::ops::Unite { bodies: vec![b.body, c.body], keep: None, regularize: None, tol: None }).unwrap_err();
+    let e = r
+        .run(&sm_boolean::ops::Unite {
+            bodies: vec![b.body, c.body],
+            keep: None,
+            regularize: None,
+            tol: None,
+        })
+        .unwrap_err();
     let e = failed(e);
     let msg = e.to_string();
     assert!(matches!(e, OpError::Unsupported(_)), "{msg}");
     assert!(msg.contains("tangent"), "{msg}");
-    assert!(msg.contains("face") || msg.contains("volume"), "names an entity: {msg}");
+    assert!(
+        msg.contains("face") || msg.contains("volume"),
+        "names an entity: {msg}"
+    );
     assert_eq!(r.hash(), h);
 }

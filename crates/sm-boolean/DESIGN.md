@@ -170,12 +170,12 @@ A sphere is rotation symmetric, so `webcut` re-frames it per target (`sphere_fra
 along a cut circle's normal (latitude circles are exact), failing that to a fixed direction with
 a margin of 0.5 rad to every circle, because a cut circle near a pole costs accuracy (1e-4 at 3
 degrees from the pole) and a loop straddling the seam is the weakest case of the arrangement. The
-cut face is stored on the re-framed surface.
+cut face is stored on the re-framed surface. Circles come from planes, spheres, and cylinders and cones coaxial with the sphere; a cylinder or cone off the centre's axis cuts a non-circular curve, sampled for its distance to the poles. A target the sphere cannot touch (by its box) adds no re-framed surface.
 
 Limits: a tool surface that coincides with part of the target boundary is `Unsupported`; spindle and
 horn tori do not exist (`Torus::new`); NURBS and implicit tools stay typed refusals. Volumes of
 curved pieces come from `volume_moments` quadrature; the property tests (random sphere,
-torus and elliptic cylinder frames) hold them to 1e-9 of the analytic value. A cut loop near a
+torus and elliptic cylinder frames) hold them to 1e-9 of the analytic value. That holds for brick targets. Curved-on-curved pieces (a sphere in a coaxial cylinder) are good to about 4e-8 (sphere R=1.5 in a coaxial r=1 cylinder: webcut -4.0e-8, intersect -1.9e-8), and a cone whose apex lies on a target face is a typed `ResultInvalid`. A cut loop near a
 torus or elliptic-cone singularity is not re-framed (only spheres are), so a tilted torus whose
 loop passes near its seam crossing is the next place to watch.
 

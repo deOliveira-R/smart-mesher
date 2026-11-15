@@ -3,11 +3,13 @@
 //! the faces they must be inserted into. Nothing here edits the topology.
 
 use rayon::prelude::*;
-use smallvec::SmallVec;
 use sm_core::{Aabb, EntityId, Point3};
-use sm_geom::{CurveGeometry, CurveSurface, SsiOptions, SsiResult, curve_surface, intersect_surfaces};
+use sm_geom::{
+    CurveGeometry, CurveSurface, SsiOptions, SsiResult, curve_surface, intersect_surfaces,
+};
 use sm_geom_api::{CurveDef, Interval, ModelTolerance, SurfaceDef};
 use sm_topo_api::{Carrier, PointClass, TopologyView, TopologyViewExt};
+use smallvec::SmallVec;
 
 use crate::bvh::{Bvh, CandidateStats};
 use crate::cc;
@@ -86,7 +88,10 @@ pub(crate) struct Computed {
     pub any_curves: bool,
 }
 
-pub(crate) fn surface_def_of<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<&SurfaceDef> {
+pub(crate) fn surface_def_of<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+) -> Option<&SurfaceDef> {
     match view.carrier(f) {
         Carrier::Surface(sc) => view.shapes().surface_def(sc.surface),
         _ => None,
@@ -94,19 +99,36 @@ pub(crate) fn surface_def_of<V: TopologyView + ?Sized>(view: &V, f: EntityId) ->
 }
 
 fn pad_box(b: Aabb, pad: f64) -> Aabb {
-    Aabb { lo: Point3::new(b.lo.x - pad, b.lo.y - pad, b.lo.z - pad), hi: Point3::new(b.hi.x + pad, b.hi.y + pad, b.hi.z + pad) }
+    Aabb {
+        lo: Point3::new(b.lo.x - pad, b.lo.y - pad, b.lo.z - pad),
+        hi: Point3::new(b.hi.x + pad, b.hi.y + pad, b.hi.z + pad),
+    }
 }
 
 /// Candidate pairs `(a, b)` with `a` from `fa` and `b` from `fb` whose padded boxes overlap,
 /// ascending by `(a, b)`. Boxes are computed in parallel and collected in index order; the
 /// pairs come from a BVH over `fb`'s boxes, so the work is near `|fa| log |fb|`.
-pub(crate) fn candidate_pairs<V: TopologyView + ?Sized>(view: &V, fa: &[EntityId], fb: &[EntityId], pad: f64) -> Vec<(EntityId, EntityId)> {
+pub(crate) fn candidate_pairs<V: TopologyView + ?Sized>(
+    view: &V,
+    fa: &[EntityId],
+    fb: &[EntityId],
+    pad: f64,
+) -> Vec<(EntityId, EntityId)> {
     candidate_pairs_counted(view, fa, fb, pad).0
 }
 
 /// [`candidate_pairs`] with its work counters.
-pub(crate) fn candidate_pairs_counted<V: TopologyView + ?Sized>(view: &V, fa: &[EntityId], fb: &[EntityId], pad: f64) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
-    let boxes = |list: &[EntityId]| -> Vec<Aabb> { list.par_iter().map(|&f| geo::face_aabb(view, f, pad)).collect() };
+pub(crate) fn candidate_pairs_counted<V: TopologyView + ?Sized>(
+    view: &V,
+    fa: &[EntityId],
+    fb: &[EntityId],
+    pad: f64,
+) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
+    let boxes = |list: &[EntityId]| -> Vec<Aabb> {
+        list.par_iter()
+            .map(|&f| geo::face_aabb(view, f, pad))
+            .collect()
+    };
     let (ba, bb) = (boxes(fa), boxes(fb));
     let tree = Bvh::build(&bb);
     let per: Vec<(Vec<u32>, CandidateStats)> = ba
@@ -139,7 +161,12 @@ pub(crate) fn candidate_pairs_counted<V: TopologyView + ?Sized>(view: &V, fa: &[
 /// ascending, excluding `a == b`. `candidate_tests` counts the leaf-level box pair tests and
 /// `node_visits` the BVH node visits; both depend only on the inputs. Diagnostic entry point
 /// for the work-bound tests.
-pub fn candidate_pair_stats(view: &dyn TopologyView, fa: &[EntityId], fb: &[EntityId], pad: f64) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
+pub fn candidate_pair_stats(
+    view: &dyn TopologyView,
+    fa: &[EntityId],
+    fb: &[EntityId],
+    pad: f64,
+) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
     candidate_pairs_counted(view, fa, fb, pad)
 }
 
@@ -165,8 +192,17 @@ struct Proto {
 }
 
 /// Compute the pieces of `pairs`. The pairs are evaluated in parallel and joined in index order.
-pub(crate) fn compute<V: TopologyView + ?Sized>(view: &V, pairs: &[PairSpec], share: Share, group_of: &dyn Fn(EntityId) -> usize, window_pad: f64) -> Result<Computed, BooleanError> {
-    let outs: Vec<Result<PairOut, BooleanError>> = pairs.par_iter().map(|p| compute_pair(view, p, window_pad)).collect();
+pub(crate) fn compute<V: TopologyView + ?Sized>(
+    view: &V,
+    pairs: &[PairSpec],
+    share: Share,
+    group_of: &dyn Fn(EntityId) -> usize,
+    window_pad: f64,
+) -> Result<Computed, BooleanError> {
+    let outs: Vec<Result<PairOut, BooleanError>> = pairs
+        .par_iter()
+        .map(|p| compute_pair(view, p, window_pad))
+        .collect();
     let mut c = Computed::default();
     let mut key = 0usize;
     for (pi, out) in outs.into_iter().enumerate() {
@@ -174,30 +210,56 @@ pub(crate) fn compute<V: TopologyView + ?Sized>(view: &V, pairs: &[PairSpec], sh
         c.any_curves |= out.any_curves;
         c.tangent_points.extend(out.tangent);
         if out.coincident
-            && let Other::Face(b) = pairs[pi].b {
-                c.coincident.push((pairs[pi].a, b));
-            }
+            && let Other::Face(b) = pairs[pi].b
+        {
+            c.coincident.push((pairs[pi].a, b));
+        }
         let base = key;
         let max_idx = out.next_idx;
         for pr in out.pieces {
             let k = base + pr.curve_idx;
             match share {
-                Share::Shared => c.pieces.push(Piece { src: pr.src, key: k, range: pr.range, closed: pr.closed, faces: pr.faces, on_boundary: pr.on_boundary, group: 0, source_edge: pr.source_edge, pair: pi }),
+                Share::Shared => c.pieces.push(Piece {
+                    src: pr.src,
+                    key: k,
+                    range: pr.range,
+                    closed: pr.closed,
+                    faces: pr.faces,
+                    on_boundary: pr.on_boundary,
+                    group: 0,
+                    source_edge: pr.source_edge,
+                    pair: pi,
+                }),
                 Share::Private => {
                     // One copy per face of the pair that needs it, each with its own curve.
                     for f in [pr.both.0, pr.both.1] {
                         let Some(f) = f else { continue };
                         let g = group_of(f);
-                        let faces: SmallVec<[EntityId; 2]> = pr.faces.iter().copied().filter(|x| *x == f).collect();
+                        let faces: SmallVec<[EntityId; 2]> =
+                            pr.faces.iter().copied().filter(|x| *x == f).collect();
                         if faces.is_empty() {
                             continue;
                         }
-                        let on_boundary: SmallVec<[EntityId; 2]> = pr.on_boundary.iter().copied().filter(|x| *x == f).collect();
+                        let on_boundary: SmallVec<[EntityId; 2]> =
+                            pr.on_boundary.iter().copied().filter(|x| *x == f).collect();
                         let src = match &pr.src {
-                            CurveSrc::Existing(h) => view.shapes().curve_def(*h).map_or(CurveSrc::Existing(*h), |d| CurveSrc::New(d.clone())),
+                            CurveSrc::Existing(h) => view
+                                .shapes()
+                                .curve_def(*h)
+                                .map_or(CurveSrc::Existing(*h), |d| CurveSrc::New(d.clone())),
                             other => other.clone(),
                         };
-                        c.pieces.push(Piece { src, key: k, range: pr.range, closed: pr.closed, faces, on_boundary, group: g, source_edge: None, pair: pi });
+                        c.pieces.push(Piece {
+                            src,
+                            key: k,
+                            range: pr.range,
+                            closed: pr.closed,
+                            faces,
+                            on_boundary,
+                            group: g,
+                            source_edge: None,
+                            pair: pi,
+                        });
                     }
                 }
             }
@@ -208,7 +270,11 @@ pub(crate) fn compute<V: TopologyView + ?Sized>(view: &V, pairs: &[PairSpec], sh
 }
 
 fn unique_edges<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Vec<EntityId> {
-    view.face_edges(f).iter().copied().filter(|&e| !geo::is_degenerate(view, e)).collect()
+    view.face_edges(f)
+        .iter()
+        .copied()
+        .filter(|&e| !geo::is_degenerate(view, e))
+        .collect()
 }
 
 fn window_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: &Other, pad: f64) -> [f64; 6] {
@@ -223,11 +289,17 @@ fn window_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: &Other, pad: f6
     [bx.lo.x, bx.lo.y, bx.lo.z, bx.hi.x, bx.hi.y, bx.hi.z]
 }
 
-fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad: f64) -> Result<PairOut, BooleanError> {
+fn compute_pair<V: TopologyView + ?Sized>(
+    view: &V,
+    spec: &PairSpec,
+    window_pad: f64,
+) -> Result<PairOut, BooleanError> {
     let tol: ModelTolerance = *view.tolerance();
     let lin = tol.linear;
     let a = spec.a;
-    let Some(sa) = surface_def_of(view, a) else { return Err(BooleanError::Unsupported("a face has no surface carrier")) };
+    let Some(sa) = surface_def_of(view, a) else {
+        return Err(BooleanError::Unsupported("a face has no surface carrier"));
+    };
     let (sb, bface): (SurfaceDef, Option<EntityId>) = match &spec.b {
         Other::Face(b) => match surface_def_of(view, *b) {
             Some(s) => (s.clone(), Some(*b)),
@@ -237,10 +309,22 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
     };
     let cache = faceclass::FaceCache::new();
     let window = window_of(view, a, &spec.b, window_pad);
-    let opts = SsiOptions::new(tol).with_window(window).with_chord_tol(100.0 * lin);
+    let opts = SsiOptions::new(tol)
+        .with_window(window)
+        .with_chord_tol(100.0 * lin);
     let bid = bface.unwrap_or(a);
-    let res = intersect_surfaces(sa, &sb, &opts).map_err(|e| BooleanError::Ssi { a, b: bid, source: e })?;
-    let mut out = PairOut { pieces: Vec::new(), coincident: false, tangent: Vec::new(), any_curves: false, next_idx: 0 };
+    let res = intersect_surfaces(sa, &sb, &opts).map_err(|e| BooleanError::Ssi {
+        a,
+        b: bid,
+        source: e,
+    })?;
+    let mut out = PairOut {
+        pieces: Vec::new(),
+        coincident: false,
+        tangent: Vec::new(),
+        any_curves: false,
+        next_idx: 0,
+    };
     match res {
         SsiResult::Empty => {}
         SsiResult::Point(p) => out.tangent.push(p),
@@ -258,7 +342,11 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
                 let (def, range, closed) = match ic.geometry {
                     CurveGeometry::Analytic { curve, range } => (curve, range, ic.closed),
                     CurveGeometry::Marched(mc) => {
-                        let nc = mc.to_nurbs().map_err(|e| BooleanError::Ssi { a, b: bid, source: e })?;
+                        let nc = mc.to_nurbs().map_err(|e| BooleanError::Ssi {
+                            a,
+                            b: bid,
+                            source: e,
+                        })?;
                         let closed = mc.closed;
                         let r = Interval::new(0.0, 1.0);
                         (CurveDef::Nurbs(nc), r, closed)
@@ -266,9 +354,13 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
                     _ => return Err(BooleanError::Unsupported("unknown intersection curve kind")),
                 };
                 if !(range.lo.is_finite() && range.hi.is_finite()) {
-                    return Err(BooleanError::Unsupported("an intersection curve is unbounded: the window did not clip it"));
+                    return Err(BooleanError::Unsupported(
+                        "an intersection curve is unbounded: the window did not clip it",
+                    ));
                 }
-                clip_curve(view, &cache, a, bface, sa, &sb, &def, range, closed, ci, lin, &mut out)?;
+                clip_curve(
+                    view, &cache, a, bface, sa, &sb, &def, range, closed, ci, lin, &mut out,
+                )?;
                 out.next_idx = out.next_idx.max(ci + 1);
             }
         }
@@ -279,10 +371,22 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
 
 /// Breakpoints (curve parameter and point) where the boundary edges of `face` meet the surface
 /// `other` and lie on the curve `c` within `reach`.
-fn edge_breakpoints<V: TopologyView + ?Sized>(view: &V, face: EntityId, other: &SurfaceDef, c: &dyn sm_geom_api::ParametricCurve, reach: f64, tol: &ModelTolerance, out: &mut Vec<(f64, Point3)>) {
+fn edge_breakpoints<V: TopologyView + ?Sized>(
+    view: &V,
+    face: EntityId,
+    other: &SurfaceDef,
+    c: &dyn sm_geom_api::ParametricCurve,
+    reach: f64,
+    tol: &ModelTolerance,
+    out: &mut Vec<(f64, Point3)>,
+) {
     for e in unique_edges(view, face) {
-        let Carrier::Curve(cc) = view.carrier(e) else { continue };
-        let Some(def) = view.shapes().curve_def(cc.curve) else { continue };
+        let Carrier::Curve(cc) = view.carrier(e) else {
+            continue;
+        };
+        let Some(def) = view.shapes().curve_def(cc.curve) else {
+            continue;
+        };
         let mut add = |p: Point3| {
             if let Ok(pr) = c.project(p, None)
                 && pr.distance <= reach
@@ -430,24 +534,49 @@ fn clip_curve<V: TopologyView + ?Sized>(
             // Runs along the boundary of both: nothing to insert.
             continue;
         }
-        out.pieces.push(Proto { src: CurveSrc::New(def.clone()), curve_idx, range: Interval::new(t0, t1), closed: whole, faces, on_boundary, source_edge: None, both: (Some(a), b) });
+        out.pieces.push(Proto {
+            src: CurveSrc::New(def.clone()),
+            curve_idx,
+            range: Interval::new(t0, t1),
+            closed: whole,
+            faces,
+            on_boundary,
+            source_edge: None,
+            both: (Some(a), b),
+        });
     }
     Ok(())
 }
 
 /// Boundary edges of `src_face` clipped to the interior of `into` (both on one surface):
 /// cut pieces for `into`.
-fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, src_face: EntityId, into: EntityId, slot: u8, lin: f64, out: &mut PairOut) -> Result<(), BooleanError> {
+fn coplanar_pieces<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &faceclass::FaceCache,
+    src_face: EntityId,
+    into: EntityId,
+    slot: u8,
+    lin: f64,
+    out: &mut PairOut,
+) -> Result<(), BooleanError> {
     let into_edges = unique_edges(view, into);
     for e in unique_edges(view, src_face) {
         let curve_idx = out.next_idx;
         out.next_idx += 1;
-        let Carrier::Curve(cc) = view.carrier(e) else { continue };
-        let Some(def) = view.shapes().curve_def(cc.curve) else { continue };
+        let Carrier::Curve(cc) = view.carrier(e) else {
+            continue;
+        };
+        let Some(def) = view.shapes().curve_def(cc.curve) else {
+            continue;
+        };
         let mut cuts: Vec<f64> = Vec::new();
         for ie in &into_edges {
-            let Carrier::Curve(icc) = view.carrier(*ie) else { continue };
-            let Some(idef) = view.shapes().curve_def(icc.curve) else { continue };
+            let Carrier::Curve(icc) = view.carrier(*ie) else {
+                continue;
+            };
+            let Some(idef) = view.shapes().curve_def(icc.curve) else {
+                continue;
+            };
             let r = cc::curve_curve(def, cc.range, idef, icc.range, lin);
             cuts.extend(r.points.iter().map(|h| h.t1));
             for o in &r.overlaps {
@@ -457,7 +586,10 @@ fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCa
         }
         // Vertices of `into` lying on this edge are found as edge/edge contacts; add the ends.
         let mut ts: Vec<f64> = vec![cc.range.lo, cc.range.hi];
-        ts.extend(cuts.into_iter().filter(|t| *t > cc.range.lo && *t < cc.range.hi));
+        ts.extend(
+            cuts.into_iter()
+                .filter(|t| *t > cc.range.lo && *t < cc.range.hi),
+        );
         ts.sort_by(|x, y| x.total_cmp(y));
         ts.dedup_by(|x, y| geo::dist(def.as_curve().eval(*x), def.as_curve().eval(*y)) <= lin);
         for w in ts.windows(2) {
@@ -470,7 +602,9 @@ fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCa
             if class != PointClass::In {
                 continue;
             }
-            let whole = (t1 - t0 - (cc.range.hi - cc.range.lo)).abs() <= 1e-12 * (cc.range.hi - cc.range.lo).abs() && view.edge_ends(e).is_some_and(|(s, t)| s == t);
+            let whole = (t1 - t0 - (cc.range.hi - cc.range.lo)).abs()
+                <= 1e-12 * (cc.range.hi - cc.range.lo).abs()
+                && view.edge_ends(e).is_some_and(|(s, t)| s == t);
             out.pieces.push(Proto {
                 src: CurveSrc::Existing(cc.curve),
                 curve_idx,
@@ -479,7 +613,11 @@ fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCa
                 faces: SmallVec::from_slice(&[into]),
                 on_boundary: SmallVec::new(),
                 source_edge: Some(e),
-                both: if slot == 0 { (Some(into), None) } else { (None, Some(into)) },
+                both: if slot == 0 {
+                    (Some(into), None)
+                } else {
+                    (None, Some(into))
+                },
             });
         }
     }

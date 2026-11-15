@@ -5,7 +5,7 @@ use sm_core::{EntityId, EntityKind, Point3};
 use sm_mesh::MeshBuilder;
 use sm_mesh_api::{
     CellIx, Classification, FaceIx, FaceKind, LevelMap, MeshBuild, MeshDim, MeshEdit, MeshEntityRef, MeshRead, PointIx,
-    SerialAlloc, VertexIx, validate,
+    SerialAlloc, SetMembers, VertexIx, validate,
 };
 use sm_modify::refine;
 
@@ -127,4 +127,20 @@ fn a_sheared_quad_mesh_keeps_the_quarters() {
     for (k, p) in r.coarse_of.iter().enumerate() {
         assert!((area(&r.finished.mesh, k) - area(&m, p.get()) / 4.0).abs() <= 1e-15);
     }
+}
+
+/// A node set on the boundary edge y = 0 of a 2 x 2 quad block (3 nodes) carries to the 3 nodes
+/// plus the 2 refined edge midpoints on that edge: 5 nodes, all with y = 0, no cell centres.
+#[test]
+fn vertex_set_on_one_boundary_edge_carries_edge_midpoints_not_centres() {
+    let mut src = grid(2, false);
+    let set: Vec<VertexIx> = (0..src.vertex_count()).map(VertexIx::new).filter(|v| src.point(v.get()).y == 0.0).collect();
+    assert_eq!(set.len(), 3);
+    src.add_set("bottom", SetMembers::Vertices(set), &mut SerialAlloc::new()).expect("set");
+    let r = refine(&src, None, true, MeshBuilder::surface(), &mut SerialAlloc::new()).expect("refine");
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("bottom").expect("set").members else { panic!("vertices") };
+    assert_eq!(vs.len(), 5);
+    assert!(vs.iter().all(|v| m.point(v.get()).y == 0.0), "no cell centre or interior node joins");
+    assert!(r.notes.is_empty());
 }

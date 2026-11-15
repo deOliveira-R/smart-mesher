@@ -16,7 +16,12 @@ fn grid(nx: usize, ny: usize, nz: usize, pitch: f64) -> CellComplex {
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
-                brick(&mut t, op, [i as f64 * pitch, j as f64 * pitch, k as f64 * pitch], [1.0; 3]);
+                brick(
+                    &mut t,
+                    op,
+                    [i as f64 * pitch, j as f64 * pitch, k as f64 * pitch],
+                    [1.0; 3],
+                );
                 op += 1;
             }
         }
@@ -86,9 +91,16 @@ fn candidate_tests_within_the_fixed_bound_on_a_1e4_face_assembly() {
     // adjacent faces share edges), nothing else.
     assert!(!pairs.is_empty());
     let bound = 500_000u64;
-    assert!(stats.candidate_tests <= bound, "candidate_tests {} > {bound}", stats.candidate_tests);
+    assert!(
+        stats.candidate_tests <= bound,
+        "candidate_tests {} > {bound}",
+        stats.candidate_tests
+    );
     let c = stats.candidate_tests as f64 / (f as f64 * (f as f64).log2());
-    eprintln!("F = {f}, candidate_tests = {}, node_visits = {}, c = {c:.4}", stats.candidate_tests, stats.node_visits);
+    eprintln!(
+        "F = {f}, candidate_tests = {}, node_visits = {}, c = {c:.4}",
+        stats.candidate_tests, stats.node_visits
+    );
 }
 
 #[test]
@@ -97,7 +109,10 @@ fn counters_and_pairs_do_not_depend_on_threads() {
     let all = faces(&t);
     let pad = t.tolerance().linear_max;
     let run = |n: usize| -> (Vec<(EntityId, EntityId)>, CandidateStats) {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .unwrap();
         pool.install(|| candidate_pair_stats(&t, &all, &all, pad))
     };
     let one = run(1);

@@ -292,6 +292,13 @@ fn wanted(pick: &Pick, name: &str) -> bool {
 
 /// Cut `src` down to `sel`. See the module documentation.
 ///
+/// A face that loses a cell is classified on one synthetic `TopoFace`, numbered one above the
+/// highest `TopoFace` the source mesh classifies on. The mesh has no access to the model, so a
+/// model face that no mesh entity lies on (an unmeshed volume's face) is unknown here and the
+/// synthetic id may equal its id. The exported mesh is a standalone file with no model behind it,
+/// so nothing reads the id back; it only never collides with a face the mesh itself mentions
+/// (tested in `tests/select.rs`).
+///
 /// # Errors
 /// [`SelectError`]: unknown names, a dimension mismatch, no cell left, high-order data, or a cut
 /// that the classification rules refuse.

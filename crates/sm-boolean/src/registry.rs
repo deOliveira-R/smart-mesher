@@ -21,7 +21,12 @@ pub(crate) struct VertexIndex {
 
 impl VertexIndex {
     pub(crate) fn new(tol: f64) -> Self {
-        Self { tol, cell: (tol * 8.0).max(1e-12), cells: BTreeMap::new(), all: Vec::new() }
+        Self {
+            tol,
+            cell: (tol * 8.0).max(1e-12),
+            cells: BTreeMap::new(),
+            all: Vec::new(),
+        }
     }
 
     fn key(&self, p: Point3) -> (i64, i64, i64) {
@@ -42,7 +47,9 @@ impl VertexIndex {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let Some(list) = self.cells.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                    let Some(list) = self.cells.get(&(cx + dx, cy + dy, cz + dz)) else {
+                        continue;
+                    };
                     for &(id, q) in list {
                         let d = geo::dist(p, q);
                         if d <= self.tol && best.is_none_or(|b| d < b.0 || (d == b.0 && id < b.1)) {

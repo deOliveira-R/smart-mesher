@@ -67,11 +67,16 @@ fn tie_width(o: [f64; 3], t: f64) -> f64 {
 /// The cell walk of `Tracker::fire`'s default implementation.
 fn walk(t: &MeshTracker, st: &mut TrackState, limit: f64, max_steps: u32, sc: &mut Scratch) -> Result<FireResult> {
     let mut total = 0.0;
+    let mut guard = crate::graze::Guard::new();
     for _ in 0..max_steps {
         let s = t.step(st, (limit - total).max(0.0), sc)?;
         total += s.dist;
         if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
             return Ok(FireResult::new(total, s.end));
+        }
+        match t.graze_check(&mut guard, s.dist, st, (limit - total).max(0.0), sc) {
+            Ok(hop) => total += hop.unwrap_or(0.0),
+            Err(l) => return Ok(FireResult::new(total, StepEnd::Lost(l))),
         }
     }
     Ok(FireResult::new(total, StepEnd::Lost(sm_rt_api::lost(st, sm_rt_api::LostCause::MaxStepsExceeded))))

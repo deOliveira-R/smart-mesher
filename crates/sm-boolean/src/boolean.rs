@@ -60,7 +60,12 @@ pub struct BoolOptions {
 
 impl Default for BoolOptions {
     fn default() -> Self {
-        Self { keep: false, regularize: true, merge: true, max_gap: None }
+        Self {
+            keep: false,
+            regularize: true,
+            merge: true,
+            max_gap: None,
+        }
     }
 }
 
@@ -93,21 +98,48 @@ pub(crate) enum Class {
 }
 
 /// Outward unit normal of volume `own` at the face point nearest `p`.
-fn outward_normal<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId, p: Point3) -> Result<Vector3, BooleanError> {
-    let (n, _, _) = geo::face_normal_near(view, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
-    let sense = view.face_use_in(f, own).first().copied().unwrap_or(Sense::Forward);
+fn outward_normal<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+    own: EntityId,
+    p: Point3,
+) -> Result<Vector3, BooleanError> {
+    let (n, _, _) = geo::face_normal_near(view, f, p)
+        .ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+    let sense = view
+        .face_use_in(f, own)
+        .first()
+        .copied()
+        .unwrap_or(Sense::Forward);
     Ok(n * sense.sign())
 }
 
 /// Class of a fragment, with its interior probe point and its outward normal there.
-fn classify_frag<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, f: EntityId, own: EntityId, other: EntityId, other_idx: &locate::UseIndex) -> Result<(Class, Point3, Vector3), BooleanError> {
+fn classify_frag<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &faceclass::FaceCache,
+    f: EntityId,
+    own: EntityId,
+    other: EntityId,
+    other_idx: &locate::UseIndex,
+) -> Result<(Class, Point3, Vector3), BooleanError> {
     let tol = *view.tolerance();
     let lin = tol.linear;
-    let p = faceclass::interior_point(view, cache, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
+    let p = faceclass::interior_point(view, cache, f)?.ok_or(BooleanError::Unsupported(
+        "cannot find a point inside a fragment",
+    ))?;
     let n_own = outward_normal(view, f, own, p)?;
     if let Some((g, _)) = other_idx.on_which(view, cache, p, lin)? {
         let n_g = outward_normal(view, g, other, p)?;
-        return Ok((if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite }, p, n_own));
+        return Ok((
+            if n_own.dot(n_g) > 0.0 {
+                Class::OnSame
+            } else {
+                Class::OnOpposite
+            },
+            p,
+            n_own,
+        ));
     }
     let loc = locate::locate_indexed(view, cache, other_idx, p, &tol)?;
     match loc {
@@ -152,7 +184,13 @@ struct Stage {
 /// that meet along an edge or at a vertex only; the intersect of those is `EmptyResult` and the
 /// subtract leaves the target) and `Unsupported` for geometry the arrangement cannot express, and
 /// `ResultInvalid` when an assembled volume is open or has no positive volume.
-pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[EntityId], b: &[EntityId], o: &BoolOptions) -> Result<BoolOutcome, BooleanError> {
+pub fn boolean<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    rule: BoolRule,
+    a: &[EntityId],
+    b: &[EntityId],
+    o: &BoolOptions,
+) -> Result<BoolOutcome, BooleanError> {
     boolean_ordered(topo, rule, a, b, o, &[], &mut None)
 }
 
@@ -161,30 +199,59 @@ pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[Enti
 /// fails with `TangentContact` after edits started, `culprit` receives the position of the
 /// operand being fused, so a caller that can roll the whole operation back (the ops do) may
 /// retry with that operand deferred: a later operand can cover the tangent line.
-pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[EntityId], b: &[EntityId], o: &BoolOptions, defer: &[usize], culprit: &mut Option<usize>) -> Result<BoolOutcome, BooleanError> {
+pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    rule: BoolRule,
+    a: &[EntityId],
+    b: &[EntityId],
+    o: &BoolOptions,
+    defer: &[usize],
+    culprit: &mut Option<usize>,
+) -> Result<BoolOutcome, BooleanError> {
     let va = bodies::volumes_of(&*topo, a)?;
     let vb = bodies::volumes_of(&*topo, b)?;
     if va.is_empty() {
-        return Err(BooleanError::Invalid("the first operand list is empty".into()));
+        return Err(BooleanError::Invalid(
+            "the first operand list is empty".into(),
+        ));
     }
-    if rule != BoolRule::Unite && vb.is_empty() || (rule == BoolRule::Unite && va.len() + vb.len() < 2) {
-        return Err(BooleanError::Invalid("a boolean needs at least two operands".into()));
+    if rule != BoolRule::Unite && vb.is_empty()
+        || (rule == BoolRule::Unite && va.len() + vb.len() < 2)
+    {
+        return Err(BooleanError::Invalid(
+            "a boolean needs at least two operands".into(),
+        ));
     }
     if va.iter().any(|v| vb.contains(v)) {
-        return Err(BooleanError::Invalid("a volume cannot be both operands".into()));
+        return Err(BooleanError::Invalid(
+            "a volume cannot be both operands".into(),
+        ));
     }
     for &v in va.iter().chain(&vb) {
         bodies::check_manifold(&*topo, v)?;
     }
-    let (va, vb) = if o.keep { (copy_all(topo, &va)?, copy_all(topo, &vb)?) } else { (va, vb) };
+    let (va, vb) = if o.keep {
+        (copy_all(topo, &va)?, copy_all(topo, &vb)?)
+    } else {
+        (va, vb)
+    };
     let mut out = BoolOutcome::default();
     let mut new_faces: BTreeSet<EntityId> = BTreeSet::new();
     match rule {
         BoolRule::Unite | BoolRule::Intersect => {
-            let mut all: Vec<(usize, EntityId)> = va.iter().chain(vb.iter()).copied().enumerate().collect();
+            let mut all: Vec<(usize, EntityId)> =
+                va.iter().chain(vb.iter()).copied().enumerate().collect();
             if !defer.is_empty() {
-                let mut ordered: Vec<(usize, EntityId)> = all.iter().copied().filter(|(i, _)| !defer.contains(i)).collect();
-                ordered.extend(defer.iter().filter_map(|d| all.iter().copied().find(|(i, _)| i == d)));
+                let mut ordered: Vec<(usize, EntityId)> = all
+                    .iter()
+                    .copied()
+                    .filter(|(i, _)| !defer.contains(i))
+                    .collect();
+                ordered.extend(
+                    defer
+                        .iter()
+                        .filter_map(|d| all.iter().copied().find(|(i, _)| i == d)),
+                );
                 all = ordered;
             }
             let mut cur = all[0].1;
@@ -203,10 +270,17 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: Bool
                             fused = Some((i, s));
                             break;
                         }
-                        Err(BooleanError::Invalid(m)) if rule == BoolRule::Unite && m.starts_with(NO_TOUCH) => {
+                        Err(BooleanError::Invalid(m))
+                            if rule == BoolRule::Unite && m.starts_with(NO_TOUCH) =>
+                        {
                             untouched.get_or_insert(BooleanError::Invalid(m));
                         }
-                        Err(e @ BooleanError::TangentContact { detail: CONTACT_ONLY, .. }) if rule == BoolRule::Unite => {
+                        Err(
+                            e @ BooleanError::TangentContact {
+                                detail: CONTACT_ONLY,
+                                ..
+                            },
+                        ) if rule == BoolRule::Unite => {
                             untouched.get_or_insert(e);
                         }
                         Err(e) => {
@@ -241,7 +315,11 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: Bool
                 let last = current.len().saturating_sub(1);
                 for (ti, &t) in current.iter().enumerate() {
                     // Every fuse consumes its tool: all but the last target get a copy.
-                    let tool_now = if ti < last { crate::copy::copy_volume(topo, tool)? } else { tool };
+                    let tool_now = if ti < last {
+                        crate::copy::copy_volume(topo, tool)?
+                    } else {
+                        tool
+                    };
                     let s = fuse2(topo, rule, t, tool_now, o)?;
                     for (v, nb) in s.volumes.iter().zip(&s.bodies) {
                         bodies_now.insert(*v, *nb);
@@ -254,7 +332,10 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: Bool
                 }
                 current = next;
             }
-            out.bodies = current.iter().filter_map(|v| bodies_now.get(v).copied()).collect();
+            out.bodies = current
+                .iter()
+                .filter_map(|v| bodies_now.get(v).copied())
+                .collect();
             out.volumes = current;
         }
     }
@@ -263,14 +344,25 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: Bool
     for &v in &out.volumes {
         faces.extend(topo.volume_faces(v).iter().copied());
     }
-    out.new_faces = new_faces.iter().copied().filter(|f| faces.contains(f)).collect();
-    out.faces = faces.iter().copied().filter(|f| !new_faces.contains(f)).collect();
+    out.new_faces = new_faces
+        .iter()
+        .copied()
+        .filter(|f| faces.contains(f))
+        .collect();
+    out.faces = faces
+        .iter()
+        .copied()
+        .filter(|f| !new_faces.contains(f))
+        .collect();
     out.volumes.sort();
     out.bodies.sort();
     Ok(out)
 }
 
-fn copy_all<E: TopologyEdit + ?Sized>(topo: &mut E, vols: &[EntityId]) -> Result<Vec<EntityId>, BooleanError> {
+fn copy_all<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    vols: &[EntityId],
+) -> Result<Vec<EntityId>, BooleanError> {
     let mut out = Vec::new();
     for &v in vols {
         out.push(crate::copy::copy_volume(topo, v)?);
@@ -291,26 +383,42 @@ pub(crate) struct Imprinted {
 
 /// Imprint the boundaries of `va` and `vb` on each other, then classify each fragment against
 /// the other volume.
-pub(crate) fn imprint_classify<E: TopologyEdit + ?Sized>(topo: &mut E, va: EntityId, vb: EntityId) -> Result<Imprinted, BooleanError> {
+pub(crate) fn imprint_classify<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    va: EntityId,
+    vb: EntityId,
+) -> Result<Imprinted, BooleanError> {
     let tol = *topo.tolerance();
     let lin = tol.linear;
     // 1-4. Imprint the boundaries on each other.
     let fa: Vec<EntityId> = topo.volume_faces(va).to_vec();
     let fb: Vec<EntityId> = topo.volume_faces(vb).to_vec();
-    let pairs: Vec<PairSpec> = pieces::candidate_pairs(&*topo, &fa, &fb, tol.linear_max).into_iter().map(|(a, b)| PairSpec { a, b: Other::Face(b) }).collect();
+    let pairs: Vec<PairSpec> = pieces::candidate_pairs(&*topo, &fa, &fb, tol.linear_max)
+        .into_iter()
+        .map(|(a, b)| PairSpec {
+            a,
+            b: Other::Face(b),
+        })
+        .collect();
     let computed = pieces::compute(&*topo, &pairs, Share::Shared, &|_| 0, 10.0 * tol.linear_max)?;
     // Surfaces that touch at isolated points (a sphere on a plane) are tangent contact for every
     // rule: a fragment's probe point may sit exactly on the other surface, so classification is
     // not reliable.
-    let contact_only = BooleanError::TangentContact { entity: va, detail: CONTACT_ONLY };
-    if computed.pieces.is_empty() && computed.coincident.is_empty() && !computed.tangent_points.is_empty() {
+    let contact_only = BooleanError::TangentContact {
+        entity: va,
+        detail: CONTACT_ONLY,
+    };
+    if computed.pieces.is_empty()
+        && computed.coincident.is_empty()
+        && !computed.tangent_points.is_empty()
+    {
         return Err(contact_only);
     }
     if !computed.pieces.is_empty() {
         let ps: Vec<&pieces::Piece> = computed.pieces.iter().collect();
         let order: Vec<EntityId> = fa.iter().chain(fb.iter()).copied().collect();
         arrange::apply(topo, &ps, lin, &order)?;
-        }
+    }
     // 5. Classification.
     let fa_now: Vec<EntityId> = topo.volume_faces(va).to_vec();
     let fb_now: Vec<EntityId> = topo.volume_faces(vb).to_vec();
@@ -327,26 +435,59 @@ pub(crate) fn imprint_classify<E: TopologyEdit + ?Sized>(topo: &mut E, va: Entit
         let (c, p, n) = classify_frag(&*topo, &cache, f, vb, va, &uses_a)?;
         class_b.push((f, c, p, n));
     }
-    Ok(Imprinted { fa_now, fb_now, class_a, class_b, no_pieces: computed.pieces.is_empty(), cache })
+    Ok(Imprinted {
+        fa_now,
+        fb_now,
+        class_a,
+        class_b,
+        no_pieces: computed.pieces.is_empty(),
+        cache,
+    })
 }
 
-fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, vb: EntityId, o: &BoolOptions) -> Result<Stage, BooleanError> {
+fn fuse2<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    rule: BoolRule,
+    va: EntityId,
+    vb: EntityId,
+    o: &BoolOptions,
+) -> Result<Stage, BooleanError> {
     let tol = *topo.tolerance();
     let lin = tol.linear;
-    let body_of = |t: &E, v: EntityId| -> Option<EntityId> { t.coboundary(v).iter().find(|e| t.dim_of(e.cell) == Some(Dim::Body)).map(|e| e.cell) };
+    let body_of = |t: &E, v: EntityId| -> Option<EntityId> {
+        t.coboundary(v)
+            .iter()
+            .find(|e| t.dim_of(e.cell) == Some(Dim::Body))
+            .map(|e| e.cell)
+    };
     let (body_a, body_b) = (body_of(&*topo, va), body_of(&*topo, vb));
     for (b, v) in [(body_a, va), (body_b, vb)] {
         if let Some(b) = b {
             let members: Vec<EntityId> = topo.boundary(b).iter().map(|e| e.cell).collect();
             if members.iter().any(|m| *m != v) {
-                return Err(BooleanError::Unsupported("a boolean operand shares its body with other cells: separate them first"));
+                return Err(BooleanError::Unsupported(
+                    "a boolean operand shares its body with other cells: separate them first",
+                ));
             }
         }
     }
     // 1-5. Imprint the boundaries on each other and classify every fragment.
-    let Imprinted { fa_now, fb_now, class_a, class_b, no_pieces, cache } = imprint_classify(topo, va, vb)?;
-    let contact_only = BooleanError::TangentContact { entity: va, detail: CONTACT_ONLY };
-    let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
+    let Imprinted {
+        fa_now,
+        fb_now,
+        class_a,
+        class_b,
+        no_pieces,
+        cache,
+    } = imprint_classify(topo, va, vb)?;
+    let contact_only = BooleanError::TangentContact {
+        entity: va,
+        detail: CONTACT_ONLY,
+    };
+    let all_out = class_a
+        .iter()
+        .chain(&class_b)
+        .all(|(_, c, _, _)| *c == Class::Out);
     if all_out && no_pieces {
         match rule {
             BoolRule::Unite => {
@@ -355,7 +496,9 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
                 if boundary_contact(&*topo, &cache, &fa_now, &fb_now, lin)? {
                     return Err(contact_only);
                 }
-                return Err(BooleanError::Invalid(format!("{NO_TOUCH}: volumes {va} and {vb} neither overlap nor share a face; unite needs operands that overlap or share a face")));
+                return Err(BooleanError::Invalid(format!(
+                    "{NO_TOUCH}: volumes {va} and {vb} neither overlap nor share a face; unite needs operands that overlap or share a face"
+                )));
             }
             BoolRule::Intersect => return Err(BooleanError::EmptyResult),
             BoolRule::Subtract => {
@@ -366,7 +509,11 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
                 } else {
                     topo.kill_cascade(vb)?;
                 }
-                return Ok(Stage { volumes: vec![va], bodies: body_a.into_iter().collect(), new_faces: BTreeSet::new() });
+                return Ok(Stage {
+                    volumes: vec![va],
+                    bodies: body_a.into_iter().collect(),
+                    new_faces: BTreeSet::new(),
+                });
             }
         }
     }
@@ -379,7 +526,12 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
             BoolRule::Subtract => matches!(c, Class::Out | Class::OnOpposite),
         };
         if keep {
-            kept.push(Kept { face: f, pt, n_res: n, from_b: false });
+            kept.push(Kept {
+                face: f,
+                pt,
+                n_res: n,
+                from_b: false,
+            });
         }
     }
     for &(f, c, pt, n) in &class_b {
@@ -389,7 +541,12 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
             BoolRule::Subtract => (c == Class::In, true),
         };
         if keep {
-            kept.push(Kept { face: f, pt, n_res: if flip { n * -1.0 } else { n }, from_b: true });
+            kept.push(Kept {
+                face: f,
+                pt,
+                n_res: if flip { n * -1.0 } else { n },
+                from_b: true,
+            });
         }
     }
     if kept.is_empty() {
@@ -407,15 +564,31 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     }
     topo.kill(va)?;
     topo.kill(vb)?;
-    for f in old_faces.iter().copied().filter(|f| !kept_faces.contains(f)) {
-        if topo.is_alive(f) && topo.coboundary(f).iter().all(|e| topo.dim_of(e.cell) != Some(Dim::Volume)) {
+    for f in old_faces
+        .iter()
+        .copied()
+        .filter(|f| !kept_faces.contains(f))
+    {
+        if topo.is_alive(f)
+            && topo
+                .coboundary(f)
+                .iter()
+                .all(|e| topo.dim_of(e.cell) != Some(Dim::Volume))
+        {
             topo.kill_cascade(f)?;
         }
     }
     // 8. Weld the coincident vertices and edges of the kept fragments.
     if o.merge {
         let scope: Vec<EntityId> = kept_faces.iter().copied().collect();
-        let opts = MergeOptions { tol: o.max_gap, kinds: MergeKinds { vertex: true, edge: true, face: false } };
+        let opts = MergeOptions {
+            tol: o.max_gap,
+            kinds: MergeKinds {
+                vertex: true,
+                edge: true,
+                face: false,
+            },
+        };
         merge(topo, &scope, &[], &opts)?;
     }
     // 9. Shells and volumes.
@@ -464,7 +637,10 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     for &v in &new_volumes {
         let m = topo.volume_moments(v)?;
         if m.volume.is_nan() || m.volume <= 0.0 {
-            return Err(BooleanError::ResultInvalid { volume: v, rule: rule.name() });
+            return Err(BooleanError::ResultInvalid {
+                volume: v,
+                rule: rule.name(),
+            });
         }
     }
     let mut nf: BTreeSet<EntityId> = BTreeSet::new();
@@ -475,12 +651,22 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
             }
         }
     }
-    Ok(Stage { volumes: new_volumes, bodies: new_bodies, new_faces: nf.into_iter().filter(|f| topo.is_alive(*f)).collect() })
+    Ok(Stage {
+        volumes: new_volumes,
+        bodies: new_bodies,
+        new_faces: nf.into_iter().filter(|f| topo.is_alive(*f)).collect(),
+    })
 }
 
 /// True if a vertex of one operand lies on a face of the other (within `lin`): with every
 /// fragment outside and nothing imprinted, that is contact along an edge or at a vertex.
-fn boundary_contact<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, fa: &[EntityId], fb: &[EntityId], lin: f64) -> Result<bool, BooleanError> {
+fn boundary_contact<V: TopologyView + ?Sized>(
+    view: &V,
+    cache: &faceclass::FaceCache,
+    fa: &[EntityId],
+    fb: &[EntityId],
+    lin: f64,
+) -> Result<bool, BooleanError> {
     for (own, other) in [(fa, fb), (fb, fa)] {
         let mut verts: BTreeSet<EntityId> = BTreeSet::new();
         for &f in own {
@@ -492,7 +678,9 @@ fn boundary_contact<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceC
             }
         }
         for v in verts {
-            let Some(p) = geo::vertex_point(view, v) else { continue };
+            let Some(p) = geo::vertex_point(view, v) else {
+                continue;
+            };
             for &g in other {
                 if locate::on_face(view, cache, g, p, lin)? {
                     return Ok(true);
@@ -505,12 +693,25 @@ fn boundary_contact<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceC
 
 /// Group the kept face uses into shells and make the volumes. Returns the new volumes in
 /// ascending creation order (by lowest face id of the outer shell).
-fn assemble<E: TopologyEdit + ?Sized>(topo: &mut E, kept: &[Kept], rule: BoolRule, probe_volume: EntityId) -> Result<Vec<EntityId>, BooleanError> {
+fn assemble<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    kept: &[Kept],
+    rule: BoolRule,
+    probe_volume: EntityId,
+) -> Result<Vec<EntityId>, BooleanError> {
     // The side the result occupies, from the face's current orientation.
     let mut uses: Vec<(EntityId, Side)> = Vec::with_capacity(kept.len());
     for k in kept {
-        let (nf, _, _) = geo::face_normal_near(&*topo, k.face, k.pt).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
-        uses.push((k.face, if nf.dot(k.n_res) > 0.0 { Side::Left } else { Side::Right }));
+        let (nf, _, _) = geo::face_normal_near(&*topo, k.face, k.pt)
+            .ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+        uses.push((
+            k.face,
+            if nf.dot(k.n_res) > 0.0 {
+                Side::Left
+            } else {
+                Side::Right
+            },
+        ));
     }
     let groups = crate::assemble::group_shells(&*topo, &uses, probe_volume, rule.name())?;
     crate::assemble::make_volumes(topo, &groups)

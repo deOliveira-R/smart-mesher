@@ -50,8 +50,13 @@ fn arr(p: sm_core::Point3) -> [f64; 3] {
 impl Bvh {
     /// Build over `boxes`; empty boxes never match anything.
     pub(crate) fn build(boxes: &[Aabb]) -> Bvh {
-        let mut items: Vec<u32> = (0..boxes.len() as u32).filter(|&i| !boxes[i as usize].is_empty()).collect();
-        let mut bvh = Bvh { nodes: Vec::new(), items: Vec::new() };
+        let mut items: Vec<u32> = (0..boxes.len() as u32)
+            .filter(|&i| !boxes[i as usize].is_empty())
+            .collect();
+        let mut bvh = Bvh {
+            nodes: Vec::new(),
+            items: Vec::new(),
+        };
         if items.is_empty() {
             return bvh;
         }
@@ -77,11 +82,22 @@ impl Bvh {
             }
         }
         let me = self.nodes.len();
-        self.nodes.push(Node { lo, hi, a: start as u32, n: (end - start) as u32 });
+        self.nodes.push(Node {
+            lo,
+            hi,
+            a: start as u32,
+            n: (end - start) as u32,
+        });
         if end - start <= LEAF_SIZE {
             return me;
         }
-        let axis = (0..3).max_by(|&x, &y| (chi[x] - clo[x]).total_cmp(&(chi[y] - clo[y])).then(y.cmp(&x))).unwrap_or(0);
+        let axis = (0..3)
+            .max_by(|&x, &y| {
+                (chi[x] - clo[x])
+                    .total_cmp(&(chi[y] - clo[y]))
+                    .then(y.cmp(&x))
+            })
+            .unwrap_or(0);
         let cen = |i: u32| -> f64 {
             let b = &boxes[i as usize];
             0.5 * (arr(b.lo)[axis] + arr(b.hi)[axis])
@@ -96,7 +112,14 @@ impl Bvh {
     }
 
     /// Push the items whose box passes `leaf`, descending only into nodes whose box passes `node`.
-    fn visit(&self, boxes: &[Aabb], node: &dyn Fn(&[f64; 3], &[f64; 3]) -> bool, leaf: &dyn Fn(&Aabb) -> bool, out: &mut Vec<u32>, stats: &mut CandidateStats) {
+    fn visit(
+        &self,
+        boxes: &[Aabb],
+        node: &dyn Fn(&[f64; 3], &[f64; 3]) -> bool,
+        leaf: &dyn Fn(&Aabb) -> bool,
+        out: &mut Vec<u32>,
+        stats: &mut CandidateStats,
+    ) {
         if self.nodes.is_empty() {
             return;
         }
@@ -122,13 +145,33 @@ impl Bvh {
     }
 
     /// Items whose box overlaps `q` (closed boxes).
-    pub(crate) fn overlapping(&self, boxes: &[Aabb], q: &Aabb, out: &mut Vec<u32>, stats: &mut CandidateStats) {
+    pub(crate) fn overlapping(
+        &self,
+        boxes: &[Aabb],
+        q: &Aabb,
+        out: &mut Vec<u32>,
+        stats: &mut CandidateStats,
+    ) {
         let (ql, qh) = (arr(q.lo), arr(q.hi));
-        self.visit(boxes, &|lo, hi| (0..3).all(|k| lo[k] <= qh[k] && ql[k] <= hi[k]), &|b| crate::geo::aabb_overlap(b, q), out, stats);
+        self.visit(
+            boxes,
+            &|lo, hi| (0..3).all(|k| lo[k] <= qh[k] && ql[k] <= hi[k]),
+            &|b| crate::geo::aabb_overlap(b, q),
+            out,
+            stats,
+        );
     }
 
     /// Items whose box meets the segment `origin + t dir`, `t` in `[0, reach]`.
-    pub(crate) fn along_ray(&self, boxes: &[Aabb], origin: [f64; 3], dir: [f64; 3], reach: f64, out: &mut Vec<u32>, stats: &mut CandidateStats) {
+    pub(crate) fn along_ray(
+        &self,
+        boxes: &[Aabb],
+        origin: [f64; 3],
+        dir: [f64; 3],
+        reach: f64,
+        out: &mut Vec<u32>,
+        stats: &mut CandidateStats,
+    ) {
         let hit = |lo: &[f64; 3], hi: &[f64; 3]| -> bool {
             let (mut t0, mut t1) = (0.0f64, reach);
             for k in 0..3 {
@@ -157,7 +200,9 @@ mod tests {
     use sm_core::Point3;
 
     fn lcg(s: &mut u64) -> f64 {
-        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (*s >> 11) as f64 / (1u64 << 53) as f64
     }
 
@@ -165,9 +210,16 @@ mod tests {
         let mut s = seed;
         (0..n)
             .map(|_| {
-                let (x, y, z) = (lcg(&mut s) * 100.0, lcg(&mut s) * 100.0, lcg(&mut s) * 100.0);
+                let (x, y, z) = (
+                    lcg(&mut s) * 100.0,
+                    lcg(&mut s) * 100.0,
+                    lcg(&mut s) * 100.0,
+                );
                 let (a, b, c) = (lcg(&mut s) * 6.0, lcg(&mut s) * 6.0, lcg(&mut s) * 6.0);
-                Aabb { lo: Point3::new(x, y, z), hi: Point3::new(x + a, y + b, z + c) }
+                Aabb {
+                    lo: Point3::new(x, y, z),
+                    hi: Point3::new(x + a, y + b, z + c),
+                }
             })
             .collect()
     }
@@ -180,7 +232,9 @@ mod tests {
             let (mut got, mut st) = (Vec::new(), CandidateStats::default());
             t.overlapping(&bx, q, &mut got, &mut st);
             got.sort();
-            let want: Vec<u32> = (0..bx.len() as u32).filter(|&i| crate::geo::aabb_overlap(&bx[i as usize], q)).collect();
+            let want: Vec<u32> = (0..bx.len() as u32)
+                .filter(|&i| crate::geo::aabb_overlap(&bx[i as usize], q))
+                .collect();
             assert_eq!(got, want);
         }
     }
@@ -191,7 +245,11 @@ mod tests {
         let t = Bvh::build(&bx);
         let mut s = 11u64;
         for _ in 0..30 {
-            let o = [lcg(&mut s) * 100.0, lcg(&mut s) * 100.0, lcg(&mut s) * 100.0];
+            let o = [
+                lcg(&mut s) * 100.0,
+                lcg(&mut s) * 100.0,
+                lcg(&mut s) * 100.0,
+            ];
             let d = [lcg(&mut s) - 0.5, lcg(&mut s) - 0.5, lcg(&mut s) - 0.5];
             let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
             let d = [d[0] / n, d[1] / n, d[2] / n];
@@ -201,7 +259,13 @@ mod tests {
                 let t = 0.1 * k as f64;
                 let p = Point3::new(o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t);
                 for (i, b) in bx.iter().enumerate() {
-                    if b.lo.x <= p.x && p.x <= b.hi.x && b.lo.y <= p.y && p.y <= b.hi.y && b.lo.z <= p.z && p.z <= b.hi.z {
+                    if b.lo.x <= p.x
+                        && p.x <= b.hi.x
+                        && b.lo.y <= p.y
+                        && p.y <= b.hi.y
+                        && b.lo.z <= p.z
+                        && p.z <= b.hi.z
+                    {
                         assert!(got.contains(&(i as u32)));
                     }
                 }

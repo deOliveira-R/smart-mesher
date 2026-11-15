@@ -544,6 +544,22 @@ fn vertex_set_on_a_one_interval_thick_wall_keeps_edge_midpoints_and_centres() {
     let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
     assert_eq!((vs.len(), on_patch), (9, 9));
     assert!(vs.iter().all(|v| m.point(v.get()).x == 0.0 && m.point(v.get()).y <= 1.0));
+    // The ambiguous rule is reported once, naming the set and the model face; a wall that has
+    // interior vertices (the 2 x 2 x 2 patch above) reports nothing.
+    let amb: Vec<_> = r.notes.iter().filter(|(c, _)| *c == "refine.set_ambiguous").collect();
+    assert_eq!(amb.len(), 1, "{:?}", r.notes);
+    assert!(amb[0].1.contains("`patch`") && amb[0].1.contains("TopoFace#"), "{}", amb[0].1);
+}
+
+/// An empty vertex set carries over empty and reports nothing.
+#[test]
+fn empty_vertex_set_carries_empty_without_notes() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    src.add_set("none", SetMembers::Vertices(Vec::new()), &mut alloc).expect("set");
+    let r = run(&src);
+    let SetMembers::Vertices(vs) = &r.finished.mesh.set_by_name("none").expect("set").members else { panic!("vertices") };
+    assert!(vs.is_empty() && r.notes.is_empty());
 }
 
 #[test]

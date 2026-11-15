@@ -1,7 +1,7 @@
 //! Every committed OpenMC fixture imports or returns a typed `csg.unsupported` naming the element
 //! (sphere, cone and torus decks wait for the sm-boolean tools; `outer_structured` is refused by
-//! the reader). `ref_beavrs_assembly` (460 cm) is refused typed by
-//! the test of `oracle.rs`. Anything else, a kernel error or a panic, fails the test.
+//! the reader). `ref_beavrs_assembly` (460 cm) is checked by the
+//! ignored slow test of `oracle.rs`. Anything else, a kernel error or a panic, fails the test.
 mod common;
 use common::*;
 

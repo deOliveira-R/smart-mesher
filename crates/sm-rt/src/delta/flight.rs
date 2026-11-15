@@ -163,9 +163,10 @@ impl MajorantTracker for MeshTracker {
                     // A model boundary or the complement may be inside: walk the cells (events
                     // are those of `step`), but only up to the wall.
                     let mut iters = 0u32;
+                    let mut guard = crate::graze::Guard::new();
                     loop {
                         let s = self.step(st, (limit - total).max(0.0), sc)?;
-                                total += s.dist;
+                        total += s.dist;
                         end = s.end;
                         let more = match end {
                             StepEnd::CellFace { .. } => true,
@@ -174,6 +175,14 @@ impl MajorantTracker for MeshTracker {
                         };
                         if !more {
                             break;
+                        }
+                        // The same bound on grazing traps as the other walks.
+                        match self.graze_check(&mut guard, s.dist, st, (limit - total).max(0.0), sc) {
+                            Ok(hop) => total += hop.unwrap_or(0.0),
+                            Err(l) => {
+                                end = StepEnd::Lost(l);
+                                break;
+                            }
                         }
                         iters += 1;
                         if iters > self.info.max_events {

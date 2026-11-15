@@ -14,7 +14,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{SurfaceDef, Uv};
-use sm_topo_api::{Coincidence, Dim, EntityState, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{
+    Coincidence, Dim, EntityState, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt,
+};
 
 use crate::error::BooleanError;
 use crate::geo;
@@ -33,7 +35,11 @@ pub struct MergeKinds {
 
 impl Default for MergeKinds {
     fn default() -> Self {
-        Self { vertex: true, edge: true, face: true }
+        Self {
+            vertex: true,
+            edge: true,
+            face: true,
+        }
     }
 }
 
@@ -48,7 +54,9 @@ pub struct MergeOptions {
 }
 
 /// The rank of a merge candidate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum MergeKind {
     /// Two vertices.
@@ -135,8 +143,14 @@ pub struct MergeReport {
 
 impl MergeReport {
     /// Pairs of one status.
-    pub fn with_status(&self, kind: MergeKind, status: MergeStatus) -> impl Iterator<Item = &MergePair> {
-        self.pairs.iter().filter(move |p| p.kind == kind && p.status == status)
+    pub fn with_status(
+        &self,
+        kind: MergeKind,
+        status: MergeStatus,
+    ) -> impl Iterator<Item = &MergePair> {
+        self.pairs
+            .iter()
+            .filter(move |p| p.kind == kind && p.status == status)
     }
 }
 
@@ -146,7 +160,10 @@ struct Scope {
     faces: Vec<EntityId>,
 }
 
-fn resolve_scope<V: TopologyView + ?Sized>(view: &V, scope: &[EntityId]) -> Result<Scope, BooleanError> {
+fn resolve_scope<V: TopologyView + ?Sized>(
+    view: &V,
+    scope: &[EntityId],
+) -> Result<Scope, BooleanError> {
     let mut cells: BTreeSet<EntityId> = BTreeSet::new();
     if scope.is_empty() {
         for d in [Dim::Vertex, Dim::Edge, Dim::Face] {
@@ -155,29 +172,51 @@ fn resolve_scope<V: TopologyView + ?Sized>(view: &V, scope: &[EntityId]) -> Resu
     } else {
         for &id in scope {
             if !view.is_alive(id) {
-                return Err(BooleanError::Invalid(format!("{id} is not a live topology cell")));
+                return Err(BooleanError::Invalid(format!(
+                    "{id} is not a live topology cell"
+                )));
             }
             cells.extend(view.closure(id));
         }
     }
-    let pick = |d: Dim| cells.iter().copied().filter(|c| Dim::of_real_kind(c.kind()) == Some(d) && view.is_alive(*c)).collect::<Vec<_>>();
-    Ok(Scope { vertices: pick(Dim::Vertex), edges: pick(Dim::Edge), faces: pick(Dim::Face) })
+    let pick = |d: Dim| {
+        cells
+            .iter()
+            .copied()
+            .filter(|c| Dim::of_real_kind(c.kind()) == Some(d) && view.is_alive(*c))
+            .collect::<Vec<_>>()
+    };
+    Ok(Scope {
+        vertices: pick(Dim::Vertex),
+        edges: pick(Dim::Edge),
+        faces: pick(Dim::Face),
+    })
 }
 
 fn check_tol<V: TopologyView + ?Sized>(view: &V, o: &MergeOptions) -> Result<(), BooleanError> {
     if let Some(t) = o.tol {
         let max = view.tolerance().linear_max;
         if !(t.is_finite() && t >= 0.0) || t > max {
-            return Err(BooleanError::Invalid(format!("merge tolerance {t:e} is outside [0, linear_max = {max:e}]; lower `tol` or raise the model's linear_max")));
+            return Err(BooleanError::Invalid(format!(
+                "merge tolerance {t:e} is outside [0, linear_max = {max:e}]; lower `tol` or raise the model's linear_max"
+            )));
         }
     }
     Ok(())
 }
 
 /// Classify a measured gap between two cells.
-fn gap_status<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, gap: f64, o: &MergeOptions) -> Option<MergeStatus> {
+fn gap_status<V: TopologyView + ?Sized>(
+    view: &V,
+    a: EntityId,
+    b: EntityId,
+    gap: f64,
+    o: &MergeOptions,
+) -> Option<MergeStatus> {
     let tol = view.tolerance();
-    if tol.coincident(gap, view.tolerance_of(a), view.tolerance_of(b)) || o.tol.is_some_and(|t| gap <= t) {
+    if tol.coincident(gap, view.tolerance_of(a), view.tolerance_of(b))
+        || o.tol.is_some_and(|t| gap <= t)
+    {
         Some(MergeStatus::Mergeable)
     } else if gap <= tol.linear_max {
         Some(MergeStatus::Near)
@@ -187,13 +226,22 @@ fn gap_status<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, gap:
 }
 
 fn near_hint(kind: MergeKind, gap: f64) -> String {
-    format!("{kind:?} pair is {gap:.3e} apart, within linear_max but not within tolerance: pass tol >= {gap:.3e} to merge it")
+    format!(
+        "{kind:?} pair is {gap:.3e} apart, within linear_max but not within tolerance: pass tol >= {gap:.3e} to merge it"
+    )
 }
 
 /// Vertex candidate pairs by an x-sorted sweep, ascending `(a, b)`.
-fn vertex_pairs<V: TopologyView + ?Sized>(view: &V, verts: &[EntityId], o: &MergeOptions) -> Vec<MergePair> {
+fn vertex_pairs<V: TopologyView + ?Sized>(
+    view: &V,
+    verts: &[EntityId],
+    o: &MergeOptions,
+) -> Vec<MergePair> {
     let reach = view.tolerance().linear_max;
-    let mut pts: Vec<(f64, EntityId, Point3)> = verts.iter().filter_map(|&v| geo::vertex_point(view, v).map(|p| (p.x, v, p))).collect();
+    let mut pts: Vec<(f64, EntityId, Point3)> = verts
+        .iter()
+        .filter_map(|&v| geo::vertex_point(view, v).map(|p| (p.x, v, p)))
+        .collect();
     pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut out = Vec::new();
     for i in 0..pts.len() {
@@ -202,18 +250,43 @@ fn vertex_pairs<V: TopologyView + ?Sized>(view: &V, verts: &[EntityId], o: &Merg
                 break;
             }
             let d = geo::dist(pts[i].2, pts[j].2);
-            let (a, b) = if pts[i].1 < pts[j].1 { (pts[i].1, pts[j].1) } else { (pts[j].1, pts[i].1) };
-            let Some(status) = gap_status(view, a, b, d, o) else { continue };
+            let (a, b) = if pts[i].1 < pts[j].1 {
+                (pts[i].1, pts[j].1)
+            } else {
+                (pts[j].1, pts[i].1)
+            };
+            let Some(status) = gap_status(view, a, b, d, o) else {
+                continue;
+            };
             // Two ends of one edge must not merge: the edge would collapse.
-            let joined = view.coboundary(a).iter().any(|e| Dim::of_real_kind(e.cell.kind()) == Some(Dim::Edge) && view.edge_ends(e.cell).is_some_and(|(s, t)| (s == b && t == a) || (s == a && t == b)));
+            let joined = view.coboundary(a).iter().any(|e| {
+                Dim::of_real_kind(e.cell.kind()) == Some(Dim::Edge)
+                    && view
+                        .edge_ends(e.cell)
+                        .is_some_and(|(s, t)| (s == b && t == a) || (s == a && t == b))
+            });
             let (status, hint) = if joined {
-                (MergeStatus::Conflict, format!("{a} and {b} bound one edge, which would collapse: the edge is shorter than the tolerance"))
+                (
+                    MergeStatus::Conflict,
+                    format!(
+                        "{a} and {b} bound one edge, which would collapse: the edge is shorter than the tolerance"
+                    ),
+                )
             } else if status == MergeStatus::Near {
                 (status, near_hint(MergeKind::Vertex, d))
             } else {
                 (status, "coincident vertices".to_owned())
             };
-            out.push(MergePair { kind: MergeKind::Vertex, a, b, status, gap: d, overlap_area: None, reason: None, hint });
+            out.push(MergePair {
+                kind: MergeKind::Vertex,
+                a,
+                b,
+                status,
+                gap: d,
+                overlap_area: None,
+                reason: None,
+                hint,
+            });
         }
     }
     out.sort_by_key(|p| (p.a, p.b));
@@ -222,7 +295,9 @@ fn vertex_pairs<V: TopologyView + ?Sized>(view: &V, verts: &[EntityId], o: &Merg
 
 /// Distance from `p` to the edge `e` (restricted to the edge's parameter range).
 fn dist_point_edge<V: TopologyView + ?Sized>(view: &V, e: EntityId, p: Point3) -> f64 {
-    let ends = view.edge_ends(e).and_then(|(s, t)| Some((geo::vertex_point(view, s)?, geo::vertex_point(view, t)?)));
+    let ends = view
+        .edge_ends(e)
+        .and_then(|(s, t)| Some((geo::vertex_point(view, s)?, geo::vertex_point(view, t)?)));
     if let Some((c, cc)) = geo::edge_curve(view, e) {
         if let Ok(pr) = c.project(p, None) {
             let dom = c.domain();
@@ -248,7 +323,11 @@ fn dist_point_edge<V: TopologyView + ?Sized>(view: &V, e: EntityId, p: Point3) -
         Some((a, b)) => {
             let ab = b - a;
             let l2 = ab.dot(ab);
-            let t = if l2 > 0.0 { ((p - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let t = if l2 > 0.0 {
+                ((p - a).dot(ab) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             geo::dist(p, geo::lerp(a, b, t))
         }
         None => f64::INFINITY,
@@ -257,7 +336,12 @@ fn dist_point_edge<V: TopologyView + ?Sized>(view: &V, e: EntityId, p: Point3) -
 
 /// The measured gap and relative sense of `drop` against `keep`, comparing both edges at nine
 /// fractions by closest distance to the other edge.
-fn edge_gap<V: TopologyView + ?Sized>(view: &V, keep: EntityId, drop: EntityId, rep: &dyn Fn(EntityId) -> EntityId) -> Option<(f64, Sense)> {
+fn edge_gap<V: TopologyView + ?Sized>(
+    view: &V,
+    keep: EntityId,
+    drop: EntityId,
+    rep: &dyn Fn(EntityId) -> EntityId,
+) -> Option<(f64, Sense)> {
     let (sk, tk) = view.edge_ends(keep)?;
     let (sd, td) = view.edge_ends(drop)?;
     let (sk, tk, sd, td) = (rep(sk), rep(tk), rep(sd), rep(td));
@@ -275,8 +359,15 @@ fn edge_gap<V: TopologyView + ?Sized>(view: &V, keep: EntityId, drop: EntityId, 
             return None;
         }
         let q = geo::edge_sample(view, drop, 0.25)?;
-        let (f, r) = (geo::edge_sample(view, keep, 0.25)?, geo::edge_sample(view, keep, 0.75)?);
-        if geo::dist(q, f) <= geo::dist(q, r) { Sense::Forward } else { Sense::Reversed }
+        let (f, r) = (
+            geo::edge_sample(view, keep, 0.25)?,
+            geo::edge_sample(view, keep, 0.75)?,
+        );
+        if geo::dist(q, f) <= geo::dist(q, r) {
+            Sense::Forward
+        } else {
+            Sense::Reversed
+        }
     };
     let mut gap = 0.0f64;
     for k in 0..=8 {
@@ -296,13 +387,20 @@ struct EdgePair {
     rel: Sense,
 }
 
-fn edge_pairs<V: TopologyView + ?Sized>(view: &V, edges: &[EntityId], rep: &dyn Fn(EntityId) -> EntityId, o: &MergeOptions) -> Vec<EdgePair> {
+fn edge_pairs<V: TopologyView + ?Sized>(
+    view: &V,
+    edges: &[EntityId],
+    rep: &dyn Fn(EntityId) -> EntityId,
+    o: &MergeOptions,
+) -> Vec<EdgePair> {
     let mut buckets: BTreeMap<(EntityId, EntityId), Vec<EntityId>> = BTreeMap::new();
     for &e in edges {
         if geo::is_degenerate(view, e) {
             continue;
         }
-        let Some((s, t)) = view.edge_ends(e) else { continue };
+        let Some((s, t)) = view.edge_ends(e) else {
+            continue;
+        };
         let (s, t) = (rep(s), rep(t));
         buckets.entry((s.min(t), s.max(t))).or_default().push(e);
     }
@@ -310,10 +408,30 @@ fn edge_pairs<V: TopologyView + ?Sized>(view: &V, edges: &[EntityId], rep: &dyn 
     for list in buckets.values() {
         for (i, &a) in list.iter().enumerate() {
             for &b in &list[i + 1..] {
-                let Some((gap, rel)) = edge_gap(view, a, b, rep) else { continue };
-                let Some(status) = gap_status(view, a, b, gap, o) else { continue };
-                let hint = if status == MergeStatus::Near { near_hint(MergeKind::Edge, gap) } else { "coincident edges".to_owned() };
-                out.push(EdgePair { pair: MergePair { kind: MergeKind::Edge, a, b, status, gap, overlap_area: None, reason: None, hint }, rel });
+                let Some((gap, rel)) = edge_gap(view, a, b, rep) else {
+                    continue;
+                };
+                let Some(status) = gap_status(view, a, b, gap, o) else {
+                    continue;
+                };
+                let hint = if status == MergeStatus::Near {
+                    near_hint(MergeKind::Edge, gap)
+                } else {
+                    "coincident edges".to_owned()
+                };
+                out.push(EdgePair {
+                    pair: MergePair {
+                        kind: MergeKind::Edge,
+                        a,
+                        b,
+                        status,
+                        gap,
+                        overlap_area: None,
+                        reason: None,
+                        hint,
+                    },
+                    rel,
+                });
             }
         }
     }
@@ -327,7 +445,10 @@ struct FacePairInfo {
 }
 
 /// Which volume sits on each side of a face.
-fn face_occupancy<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> (Option<EntityId>, Option<EntityId>) {
+fn face_occupancy<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+) -> (Option<EntityId>, Option<EntityId>) {
     let (mut l, mut r) = (None, None);
     for u in view.coboundary(f) {
         if Dim::of_real_kind(u.cell.kind()) != Some(Dim::Volume) {
@@ -346,15 +467,30 @@ fn face_occupancy<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> (Option<En
 }
 
 /// Would merging `drop` into `keep` (normals `rel`) put two volumes on one side?
-fn side_conflict<V: TopologyView + ?Sized>(view: &V, keep: EntityId, drop: EntityId, rel: Sense) -> bool {
+fn side_conflict<V: TopologyView + ?Sized>(
+    view: &V,
+    keep: EntityId,
+    drop: EntityId,
+    rel: Sense,
+) -> bool {
     let (kl, kr) = face_occupancy(view, keep);
     let (dl, dr) = face_occupancy(view, drop);
-    let (dl, dr) = if rel == Sense::Reversed { (dr, dl) } else { (dl, dr) };
+    let (dl, dr) = if rel == Sense::Reversed {
+        (dr, dl)
+    } else {
+        (dl, dr)
+    };
     (kl.is_some() && dl.is_some()) || (kr.is_some() && dr.is_some())
 }
 
 /// Planar polygon (outer loop only) of a face in the plane frame `(origin, ex, ey)`.
-fn planar_outline<V: TopologyView + ?Sized>(view: &V, f: EntityId, origin: Point3, ex: sm_core::Vector3, ey: sm_core::Vector3) -> Vec<poly2::P2> {
+fn planar_outline<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+    origin: Point3,
+    ex: sm_core::Vector3,
+    ey: sm_core::Vector3,
+) -> Vec<poly2::P2> {
     let mut poly = Vec::new();
     for l in view.loops(f).filter(|l| l.ring == 0) {
         for en in l.entries {
@@ -363,7 +499,11 @@ fn planar_outline<V: TopologyView + ?Sized>(view: &V, f: EntityId, origin: Point
             }
             for k in 0..8 {
                 let frac = k as f64 / 8.0;
-                let fr = if en.side == Side::Right { 1.0 - frac } else { frac };
+                let fr = if en.side == Side::Right {
+                    1.0 - frac
+                } else {
+                    frac
+                };
                 if let Some(p) = geo::edge_sample(view, en.cell, fr) {
                     let d = p - origin;
                     poly.push([d.dot(ex), d.dot(ey)]);
@@ -374,7 +514,10 @@ fn planar_outline<V: TopologyView + ?Sized>(view: &V, f: EntityId, origin: Point
     poly
 }
 
-fn plane_of<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<(Point3, sm_core::Vector3, sm_core::Vector3, sm_core::Vector3)> {
+fn plane_of<V: TopologyView + ?Sized>(
+    view: &V,
+    f: EntityId,
+) -> Option<(Point3, sm_core::Vector3, sm_core::Vector3, sm_core::Vector3)> {
     let sid = match view.carrier(f) {
         sm_topo_api::Carrier::Surface(sc) => sc.surface,
         _ => return None,
@@ -385,11 +528,27 @@ fn plane_of<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<(Point3, 
     }
 }
 
-fn face_pairs<V: TopologyView + ?Sized>(view: &V, faces: &[EntityId], rep_e: &dyn Fn(EntityId) -> EntityId, skip: &BTreeSet<EntityId>, o: &MergeOptions) -> Vec<FacePairInfo> {
+fn face_pairs<V: TopologyView + ?Sized>(
+    view: &V,
+    faces: &[EntityId],
+    rep_e: &dyn Fn(EntityId) -> EntityId,
+    skip: &BTreeSet<EntityId>,
+    o: &MergeOptions,
+) -> Vec<FacePairInfo> {
     let pad = view.tolerance().linear_max;
-    let boxes: Vec<(EntityId, sm_core::Aabb)> = faces.iter().map(|&f| (f, geo::face_aabb(view, f, pad))).collect();
+    let boxes: Vec<(EntityId, sm_core::Aabb)> = faces
+        .iter()
+        .map(|&f| (f, geo::face_aabb(view, f, pad)))
+        .collect();
     let mut order: Vec<usize> = (0..boxes.len()).collect();
-    order.sort_by(|&i, &j| boxes[i].1.lo.x.total_cmp(&boxes[j].1.lo.x).then(boxes[i].0.cmp(&boxes[j].0)));
+    order.sort_by(|&i, &j| {
+        boxes[i]
+            .1
+            .lo
+            .x
+            .total_cmp(&boxes[j].1.lo.x)
+            .then(boxes[i].0.cmp(&boxes[j].0))
+    });
     let mut out = Vec::new();
     for (oi, &i) in order.iter().enumerate() {
         for &j in &order[oi + 1..] {
@@ -399,7 +558,11 @@ fn face_pairs<V: TopologyView + ?Sized>(view: &V, faces: &[EntityId], rep_e: &dy
             if !geo::aabb_overlap(&boxes[i].1, &boxes[j].1) {
                 continue;
             }
-            let (a, b) = if boxes[i].0 < boxes[j].0 { (boxes[i].0, boxes[j].0) } else { (boxes[j].0, boxes[i].0) };
+            let (a, b) = if boxes[i].0 < boxes[j].0 {
+                (boxes[i].0, boxes[j].0)
+            } else {
+                (boxes[j].0, boxes[i].0)
+            };
             if let Some(info) = classify_face_pair(view, a, b, rep_e, skip, o) {
                 out.push(info);
             }
@@ -409,10 +572,26 @@ fn face_pairs<V: TopologyView + ?Sized>(view: &V, faces: &[EntityId], rep_e: &dy
     out
 }
 
-fn classify_face_pair<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, rep_e: &dyn Fn(EntityId) -> EntityId, skip: &BTreeSet<EntityId>, o: &MergeOptions) -> Option<FacePairInfo> {
+fn classify_face_pair<V: TopologyView + ?Sized>(
+    view: &V,
+    a: EntityId,
+    b: EntityId,
+    rep_e: &dyn Fn(EntityId) -> EntityId,
+    skip: &BTreeSet<EntityId>,
+    o: &MergeOptions,
+) -> Option<FacePairInfo> {
     let (sa, _) = geo::face_surface(view, a)?;
     let (sb, _) = geo::face_surface(view, b)?;
-    let (da, db) = (view.shapes().surface_def(match view.carrier(a) { sm_topo_api::Carrier::Surface(s) => s.surface, _ => return None })?, view.shapes().surface_def(match view.carrier(b) { sm_topo_api::Carrier::Surface(s) => s.surface, _ => return None })?);
+    let (da, db) = (
+        view.shapes().surface_def(match view.carrier(a) {
+            sm_topo_api::Carrier::Surface(s) => s.surface,
+            _ => return None,
+        })?,
+        view.shapes().surface_def(match view.carrier(b) {
+            sm_topo_api::Carrier::Surface(s) => s.surface,
+            _ => return None,
+        })?,
+    );
     if core::mem::discriminant(da) != core::mem::discriminant(db) {
         return None;
     }
@@ -440,18 +619,32 @@ fn classify_face_pair<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: Entity
     if c.abs() < 0.999_999 {
         return None;
     }
-    let rel = if c > 0.0 { Sense::Forward } else { Sense::Reversed };
+    let rel = if c > 0.0 {
+        Sense::Forward
+    } else {
+        Sense::Reversed
+    };
     let ea: BTreeSet<EntityId> = view.face_edges(a).iter().map(|&e| rep_e(e)).collect();
     let eb: BTreeSet<EntityId> = view.face_edges(b).iter().map(|&e| rep_e(e)).collect();
     let nloops = |f: EntityId| view.loops(f).count();
     let same_edges = ea == eb && nloops(a) == nloops(b);
-    let mut pair = MergePair { kind: MergeKind::Face, a, b, status: MergeStatus::Mergeable, gap, overlap_area: None, reason: None, hint: String::new() };
+    let mut pair = MergePair {
+        kind: MergeKind::Face,
+        a,
+        b,
+        status: MergeStatus::Mergeable,
+        gap,
+        overlap_area: None,
+        reason: None,
+        hint: String::new(),
+    };
     if skip.contains(&a) || skip.contains(&b) {
         // Only report a skip where the faces would otherwise be a candidate.
         if same_edges || overlap_of(view, a, b, o).is_some() {
             pair.status = MergeStatus::Skipped;
             pair.reason = Some(SkipReason::Interface);
-            pair.hint = "an interface face of the model's boundary tables is never merged".to_owned();
+            pair.hint =
+                "an interface face of the model's boundary tables is never merged".to_owned();
             return Some(FacePairInfo { pair, rel });
         }
         return None;
@@ -459,7 +652,9 @@ fn classify_face_pair<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: Entity
     if same_edges {
         if side_conflict(view, a, b, rel) {
             pair.status = MergeStatus::Conflict;
-            pair.hint = format!("{a} and {b} each carry a volume on the side the merge would fill: the volumes overlap, or the normals disagree");
+            pair.hint = format!(
+                "{a} and {b} each carry a volume on the side the merge would fill: the volumes overlap, or the normals disagree"
+            );
             return Some(FacePairInfo { pair, rel });
         }
         match gap_status(view, a, b, gap, o)? {
@@ -474,17 +669,30 @@ fn classify_face_pair<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: Entity
     let area = overlap_of(view, a, b, o)?;
     pair.status = MergeStatus::Overlapping;
     pair.overlap_area = area;
-    pair.hint = format!("{a} and {b} overlap but their boundaries differ: imprint the bodies first (model.imprint), then merge");
+    pair.hint = format!(
+        "{a} and {b} overlap but their boundaries differ: imprint the bodies first (model.imprint), then merge"
+    );
     Some(FacePairInfo { pair, rel })
 }
 
 /// `Some(area)` when two coincident faces overlap with positive area (`Some(None)` when they
 /// overlap but the area is not available), `None` when they only touch along their boundaries.
 #[allow(clippy::option_option)]
-fn overlap_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, o: &MergeOptions) -> Option<Option<f64>> {
-    let tol = o.tol.unwrap_or(view.tolerance().linear).max(view.tolerance().linear);
+fn overlap_of<V: TopologyView + ?Sized>(
+    view: &V,
+    a: EntityId,
+    b: EntityId,
+    o: &MergeOptions,
+) -> Option<Option<f64>> {
+    let tol = o
+        .tol
+        .unwrap_or(view.tolerance().linear)
+        .max(view.tolerance().linear);
     if let (Some((org, ex, ey, _)), Some(_)) = (plane_of(view, a), plane_of(view, b)) {
-        let (pa, pb) = (planar_outline(view, a, org, ex, ey), planar_outline(view, b, org, ex, ey));
+        let (pa, pb) = (
+            planar_outline(view, a, org, ex, ey),
+            planar_outline(view, b, org, ex, ey),
+        );
         if let Some(area) = poly2::intersection_area(&pa, &pb, tol * tol) {
             return (area > tol * tol * 100.0).then_some(Some(area));
         }
@@ -492,11 +700,26 @@ fn overlap_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, o: &
     // Generic: a vertex or edge midpoint of one face strictly inside the other.
     let cache = crate::faceclass::FaceCache::new();
     let inside = |from: EntityId, into: EntityId| -> bool {
-        let Some((s, _)) = geo::face_surface(view, into) else { return false };
-        geo::face_boundary_samples(view, from, 2).into_iter().any(|p| {
-            let Ok(pr) = s.project(p, None) else { return false };
-            matches!(crate::faceclass::classify_uv(view, &cache, into, Uv::new(pr.uv.u, pr.uv.v), view.tolerance().linear), Ok((sm_topo_api::PointClass::In, _)))
-        })
+        let Some((s, _)) = geo::face_surface(view, into) else {
+            return false;
+        };
+        geo::face_boundary_samples(view, from, 2)
+            .into_iter()
+            .any(|p| {
+                let Ok(pr) = s.project(p, None) else {
+                    return false;
+                };
+                matches!(
+                    crate::faceclass::classify_uv(
+                        view,
+                        &cache,
+                        into,
+                        Uv::new(pr.uv.u, pr.uv.v),
+                        view.tolerance().linear
+                    ),
+                    Ok((sm_topo_api::PointClass::In, _))
+                )
+            })
     };
     (inside(a, b) || inside(b, a)).then_some(None)
 }
@@ -507,29 +730,57 @@ fn overlap_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, o: &
 /// mergeable or near, and face pairs through the edge pairs, so one call shows the whole chain
 /// a [`merge`] would follow once `tol` is raised far enough. An invalid `tol` is returned in
 /// [`MergeReport::error`].
-pub fn merge_check(view: &dyn TopologyView, scope: &[EntityId], skip_faces: &[EntityId], o: &MergeOptions) -> MergeReport {
+pub fn merge_check(
+    view: &dyn TopologyView,
+    scope: &[EntityId],
+    skip_faces: &[EntityId],
+    o: &MergeOptions,
+) -> MergeReport {
     match analyze(view, scope, skip_faces, o) {
         Ok(r) => r,
-        Err(e) => MergeReport { error: Some(e.to_string()), ..MergeReport::default() },
+        Err(e) => MergeReport {
+            error: Some(e.to_string()),
+            ..MergeReport::default()
+        },
     }
 }
 
-fn analyze<V: TopologyView + ?Sized>(view: &V, scope: &[EntityId], skip_faces: &[EntityId], o: &MergeOptions) -> Result<MergeReport, BooleanError> {
+fn analyze<V: TopologyView + ?Sized>(
+    view: &V,
+    scope: &[EntityId],
+    skip_faces: &[EntityId],
+    o: &MergeOptions,
+) -> Result<MergeReport, BooleanError> {
     check_tol(view, o)?;
     let sc = resolve_scope(view, scope)?;
     let skip: BTreeSet<EntityId> = skip_faces.iter().copied().collect();
     let mut report = MergeReport::default();
     // Virtual representatives: cluster by mergeable and near pairs.
-    let vp = if o.kinds.vertex { vertex_pairs(view, &sc.vertices, o) } else { Vec::new() };
-    let rep_v = representatives(vp.iter().filter(|p| matches!(p.status, MergeStatus::Mergeable | MergeStatus::Near)));
+    let vp = if o.kinds.vertex {
+        vertex_pairs(view, &sc.vertices, o)
+    } else {
+        Vec::new()
+    };
+    let rep_v = representatives(
+        vp.iter()
+            .filter(|p| matches!(p.status, MergeStatus::Mergeable | MergeStatus::Near)),
+    );
     let rv = |v: EntityId| *rep_v.get(&v).unwrap_or(&v);
     report.pairs.extend(vp.iter().cloned());
-    let ep = if o.kinds.edge { edge_pairs(view, &sc.edges, &rv, o) } else { Vec::new() };
+    let ep = if o.kinds.edge {
+        edge_pairs(view, &sc.edges, &rv, o)
+    } else {
+        Vec::new()
+    };
     let rep_e = representatives(ep.iter().map(|p| &p.pair));
     let re = |e: EntityId| *rep_e.get(&e).unwrap_or(&e);
     report.pairs.extend(ep.iter().map(|p| p.pair.clone()));
     if o.kinds.face {
-        report.pairs.extend(face_pairs(view, &sc.faces, &re, &skip, o).into_iter().map(|p| p.pair));
+        report.pairs.extend(
+            face_pairs(view, &sc.faces, &re, &skip, o)
+                .into_iter()
+                .map(|p| p.pair),
+        );
     }
     Ok(report)
 }
@@ -554,7 +805,9 @@ fn representatives<'a>(pairs: impl Iterator<Item = &'a MergePair>) -> BTreeMap<E
         }
     }
     let keys: Vec<EntityId> = parent.keys().copied().collect();
-    keys.into_iter().map(|k| (k, find(&mut parent, k))).collect()
+    keys.into_iter()
+        .map(|k| (k, find(&mut parent, k)))
+        .collect()
 }
 
 /// Merge coincident vertices, then edges, then faces in `scope` (empty = all cells), skipping
@@ -568,7 +821,12 @@ fn representatives<'a>(pairs: impl Iterator<Item = &'a MergePair>) -> BTreeMap<E
 /// # Errors
 /// `Invalid` if `tol` is negative, not finite or above the model's `linear_max`; `Topo` if an
 /// operator refuses a merge the analysis predicted valid.
-pub fn merge<E: TopologyEdit + ?Sized>(topo: &mut E, scope: &[EntityId], skip_faces: &[EntityId], o: &MergeOptions) -> Result<MergeReport, BooleanError> {
+pub fn merge<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    scope: &[EntityId],
+    skip_faces: &[EntityId],
+    o: &MergeOptions,
+) -> Result<MergeReport, BooleanError> {
     check_tol(&*topo, o)?;
     let sc = resolve_scope(&*topo, scope)?;
     let skip: BTreeSet<EntityId> = skip_faces.iter().copied().collect();
@@ -583,35 +841,66 @@ pub fn merge<E: TopologyEdit + ?Sized>(topo: &mut E, scope: &[EntityId], skip_fa
                 continue;
             }
             topo.merge_vertices(p.a, p.b, o.tol)?;
-            report.merged.push(MergedCell { kind: MergeKind::Vertex, keep: p.a, drop: p.b, gap: p.gap });
+            report.merged.push(MergedCell {
+                kind: MergeKind::Vertex,
+                keep: p.a,
+                drop: p.b,
+                gap: p.gap,
+            });
         }
     }
     if o.kinds.edge {
-        let edges: Vec<EntityId> = sc.edges.iter().copied().filter(|&e| alive(topo, e)).collect();
+        let edges: Vec<EntityId> = sc
+            .edges
+            .iter()
+            .copied()
+            .filter(|&e| alive(topo, e))
+            .collect();
         let ident = |c: EntityId| c;
         let ep = edge_pairs(&*topo, &edges, &ident, o);
         report.pairs.extend(ep.iter().map(|p| p.pair.clone()));
-        for p in ep.iter().filter(|p| p.pair.status == MergeStatus::Mergeable) {
+        for p in ep
+            .iter()
+            .filter(|p| p.pair.status == MergeStatus::Mergeable)
+        {
             if !alive(topo, p.pair.a) || !alive(topo, p.pair.b) {
                 continue;
             }
             topo.merge_edges(p.pair.a, p.pair.b, p.rel)?;
-            report.merged.push(MergedCell { kind: MergeKind::Edge, keep: p.pair.a, drop: p.pair.b, gap: p.pair.gap });
+            report.merged.push(MergedCell {
+                kind: MergeKind::Edge,
+                keep: p.pair.a,
+                drop: p.pair.b,
+                gap: p.pair.gap,
+            });
         }
     }
     if o.kinds.face {
-        let faces: Vec<EntityId> = sc.faces.iter().copied().filter(|&f| alive(topo, f)).collect();
+        let faces: Vec<EntityId> = sc
+            .faces
+            .iter()
+            .copied()
+            .filter(|&f| alive(topo, f))
+            .collect();
         let ident = |c: EntityId| c;
         let fp = face_pairs(&*topo, &faces, &ident, &skip, o);
         report.pairs.extend(fp.iter().map(|p| p.pair.clone()));
-        for p in fp.iter().filter(|p| p.pair.status == MergeStatus::Mergeable) {
+        for p in fp
+            .iter()
+            .filter(|p| p.pair.status == MergeStatus::Mergeable)
+        {
             if !alive(topo, p.pair.a) || !alive(topo, p.pair.b) {
                 continue;
             }
             // The pair goes imprinted-not-merged -> merged, as in `fixtures::merge_touching_bricks`.
             topo.record_coincidence(p.pair.a, p.pair.b, Coincidence::ImprintedNotMerged)?;
             topo.merge_faces(p.pair.a, p.pair.b, p.rel)?;
-            report.merged.push(MergedCell { kind: MergeKind::Face, keep: p.pair.a, drop: p.pair.b, gap: p.pair.gap });
+            report.merged.push(MergedCell {
+                kind: MergeKind::Face,
+                keep: p.pair.a,
+                drop: p.pair.b,
+                gap: p.pair.gap,
+            });
         }
     }
     Ok(report)

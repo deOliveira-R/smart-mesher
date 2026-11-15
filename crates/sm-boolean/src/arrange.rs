@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Interval, Uv};
-use sm_topo_api::{Carrier, CoedgeKey, CoedgeSpec, CornerKey, CurveCarrier, Dim, FaceCut, InnerLoopAssign, PointClass, Sense, Side, TopologyEdit, TopologyViewExt};
+use sm_topo_api::{
+    Carrier, CoedgeKey, CoedgeSpec, CornerKey, CurveCarrier, Dim, FaceCut, InnerLoopAssign,
+    PointClass, Sense, Side, TopologyEdit, TopologyViewExt,
+};
 
 use crate::cc;
 use crate::error::BooleanError;
@@ -59,8 +62,17 @@ struct Applier<'a, E: TopologyEdit + ?Sized> {
 
 /// Apply `pieces` (all of one group) to the topology. `generated_from` is recorded on every new
 /// edge's faces by the caller; here only geometry and topology change.
-pub(crate) fn apply<E: TopologyEdit + ?Sized>(topo: &mut E, pieces: &[&Piece], lin: f64, face_order: &[EntityId]) -> Result<Applied, BooleanError> {
-    let mut ap = Applier { topo, lin, out: Applied::default() };
+pub(crate) fn apply<E: TopologyEdit + ?Sized>(
+    topo: &mut E,
+    pieces: &[&Piece],
+    lin: f64,
+    face_order: &[EntityId],
+) -> Result<Applied, BooleanError> {
+    let mut ap = Applier {
+        topo,
+        lin,
+        out: Applied::default(),
+    };
     ap.run(pieces, face_order)?;
     Ok(ap.out)
 }
@@ -109,11 +121,17 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
         let mut ends: Vec<(EntityId, EntityId)> = Vec::with_capacity(pieces.len());
         let mut defs: Vec<CurveDef> = Vec::with_capacity(pieces.len());
         for p in pieces {
-            let def = piece_def(&*self.topo, &p.src).ok_or(BooleanError::Unsupported("a piece's curve is not in the store"))?;
+            let def = piece_def(&*self.topo, &p.src).ok_or(BooleanError::Unsupported(
+                "a piece's curve is not in the store",
+            ))?;
             let c = def.as_curve();
             let (a, b) = (c.eval(p.range.lo), c.eval(p.range.hi));
             let va = self.vertex_at(&mut index, a)?;
-            let vb = if p.closed { va } else { self.vertex_at(&mut index, b)? };
+            let vb = if p.closed {
+                va
+            } else {
+                self.vertex_at(&mut index, b)?
+            };
             ends.push((va, vb));
             defs.push(def);
         }
@@ -157,7 +175,12 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 }
                 let midp = c.eval(0.5 * (ta + tb));
                 // Reuse an edge that already runs between the same vertices along the same curve.
-                let target_faces: Vec<EntityId> = p.faces.iter().chain(p.on_boundary.iter()).copied().collect();
+                let target_faces: Vec<EntityId> = p
+                    .faces
+                    .iter()
+                    .chain(p.on_boundary.iter())
+                    .copied()
+                    .collect();
                 let existing = self.find_edge(u, v, midp, &edges, &edge_children);
                 let edge = match existing {
                     Some(e) => e,
@@ -166,7 +189,15 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                             CurveSrc::New(_) => handles[&p.key],
                             CurveSrc::Existing(h) => *h,
                         };
-                        let e = self.topo.make_edge(u, v, Some(CurveCarrier { curve: h, range: Interval::new(ta, tb), sense: Sense::Forward }))?;
+                        let e = self.topo.make_edge(
+                            u,
+                            v,
+                            Some(CurveCarrier {
+                                curve: h,
+                                range: Interval::new(ta, tb),
+                                sense: Sense::Forward,
+                            }),
+                        )?;
                         self.out.new_edges.push(e);
                         e
                     }
@@ -178,7 +209,12 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                     if self.topo.face_edges(f).binary_search(&edge).is_ok() {
                         continue;
                     }
-                    cuts.entry(f).or_default().push(Cut { edge, tail, head, mid: midp });
+                    cuts.entry(f).or_default().push(Cut {
+                        edge,
+                        tail,
+                        head,
+                        mid: midp,
+                    });
                     inserted_into.push(f);
                 }
                 let _ = target_faces;
@@ -186,7 +222,15 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             }
         }
         // Arrange each face.
-        let order: Vec<EntityId> = if face_order.is_empty() { cuts.keys().copied().collect() } else { face_order.iter().copied().filter(|f| cuts.contains_key(f)).collect() };
+        let order: Vec<EntityId> = if face_order.is_empty() {
+            cuts.keys().copied().collect()
+        } else {
+            face_order
+                .iter()
+                .copied()
+                .filter(|f| cuts.contains_key(f))
+                .collect()
+        };
         for f in order {
             let mut list = cuts.remove(&f).unwrap_or_default();
             list.sort_by_key(|c| c.edge);
@@ -218,10 +262,20 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
 
     /// Split `edge` at every indexed vertex lying strictly inside it; returns the live pieces in
     /// edge order (`[edge]` if nothing was split).
-    fn split_edge_at_vertices(&mut self, edge: EntityId, index: &VertexIndex) -> Result<Vec<EntityId>, BooleanError> {
-        let Some((vs, ve)) = self.topo.edge_ends(edge) else { return Ok(vec![edge]) };
-        let Carrier::Curve(cc0) = self.topo.carrier(edge).clone() else { return Ok(vec![edge]) };
-        let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Ok(vec![edge]) };
+    fn split_edge_at_vertices(
+        &mut self,
+        edge: EntityId,
+        index: &VertexIndex,
+    ) -> Result<Vec<EntityId>, BooleanError> {
+        let Some((vs, ve)) = self.topo.edge_ends(edge) else {
+            return Ok(vec![edge]);
+        };
+        let Carrier::Curve(cc0) = self.topo.carrier(edge).clone() else {
+            return Ok(vec![edge]);
+        };
+        let Some(curve) = self.topo.shapes().curve(cc0.curve) else {
+            return Ok(vec![edge]);
+        };
         let mut hits: Vec<(f64, EntityId)> = Vec::new();
         for &(v, q) in index.all() {
             if v == vs || v == ve {
@@ -258,7 +312,14 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
 
     /// A live edge between `u` and `v` that runs through `mid` (and, for a closed edge, covers the
     /// range), among the cells of this apply.
-    fn find_edge(&self, u: EntityId, v: EntityId, mid: Point3, edges: &BTreeSet<EntityId>, children: &BTreeMap<EntityId, Vec<EntityId>>) -> Option<EntityId> {
+    fn find_edge(
+        &self,
+        u: EntityId,
+        v: EntityId,
+        mid: Point3,
+        edges: &BTreeSet<EntityId>,
+        children: &BTreeMap<EntityId, Vec<EntityId>>,
+    ) -> Option<EntityId> {
         let mut cand: Vec<EntityId> = Vec::new();
         for inc in self.topo.coboundary(u) {
             if Dim::of_real_kind(inc.cell.kind()) == Some(Dim::Edge) {
@@ -272,16 +333,24 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 continue;
             }
             // Only edges of this apply: originals (or their pieces) and edges created here.
-            let known = edges.contains(&e) || children.values().any(|k| k.contains(&e)) || self.out.new_edges.contains(&e);
+            let known = edges.contains(&e)
+                || children.values().any(|k| k.contains(&e))
+                || self.out.new_edges.contains(&e);
             if !known {
                 continue;
             }
-            let Some((s, t)) = self.topo.edge_ends(e) else { continue };
+            let Some((s, t)) = self.topo.edge_ends(e) else {
+                continue;
+            };
             if !((s == u && t == v) || (s == v && t == u)) {
                 continue;
             }
-            let Carrier::Curve(cc0) = self.topo.carrier(e) else { continue };
-            let Some(ec) = self.topo.shapes().curve(cc0.curve) else { continue };
+            let Carrier::Curve(cc0) = self.topo.carrier(e) else {
+                continue;
+            };
+            let Some(ec) = self.topo.shapes().curve(cc0.curve) else {
+                continue;
+            };
             if let Some((d, _)) = cc::dist_to_range(ec, cc0.range, mid)
                 && d <= self.lin
             {
@@ -329,7 +398,11 @@ enum StepKind {
 
 impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
     /// Insert `cuts` into `face`; returns the live fragments (ascending).
-    pub(crate) fn arrange(&mut self, face: EntityId, cuts: Vec<Cut>) -> Result<Vec<EntityId>, BooleanError> {
+    pub(crate) fn arrange(
+        &mut self,
+        face: EntityId,
+        cuts: Vec<Cut>,
+    ) -> Result<Vec<EntityId>, BooleanError> {
         let mut work: Vec<(EntityId, Vec<Cut>)> = vec![(face, cuts)];
         let mut done: Vec<EntityId> = Vec::new();
         while let Some((f, cuts)) = work.pop() {
@@ -340,12 +413,21 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             let step = self.next_step(f, &cuts)?;
             if let StepKind::Bridge(e) = step.kind {
                 self.topo.bridge_loops(f, e)?;
-                let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
+                let rest: Vec<Cut> = cuts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !step.used.contains(i))
+                    .map(|(_, c)| *c)
+                    .collect();
                 work.push((f, rest));
                 continue;
             }
             let has_inner = self.topo.loops(f).any(|l| l.ring > 0);
-            let inner = if has_inner { InnerLoopAssign::ByPointTest } else { InnerLoopAssign::None };
+            let inner = if has_inner {
+                InnerLoopAssign::ByPointTest
+            } else {
+                InnerLoopAssign::None
+            };
             let corners = match step.ends {
                 Some((a, b)) => {
                     let ca = self.resolve_corner(f, a)?;
@@ -355,15 +437,32 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 None => None,
             };
             let cut = match (step.kind, corners) {
-                (StepKind::Chain, Some((start, end))) if step.chain.len() == 1 => FaceCut::ChordAt { edge: step.chain[0].edge, start, end },
-                (StepKind::Chain, Some((start, end))) => FaceCut::ChainAt { edges: &step.chain, start, end },
-                (StepKind::Chain, None) if step.chain.len() == 1 => FaceCut::Chord { edge: step.chain[0].edge },
+                (StepKind::Chain, Some((start, end))) if step.chain.len() == 1 => {
+                    FaceCut::ChordAt {
+                        edge: step.chain[0].edge,
+                        start,
+                        end,
+                    }
+                }
+                (StepKind::Chain, Some((start, end))) => FaceCut::ChainAt {
+                    edges: &step.chain,
+                    start,
+                    end,
+                },
+                (StepKind::Chain, None) if step.chain.len() == 1 => FaceCut::Chord {
+                    edge: step.chain[0].edge,
+                },
                 (StepKind::Chain, None) => FaceCut::Chain { edges: &step.chain },
                 (StepKind::Closed, _) => FaceCut::ClosedLoop { edges: &step.chain },
                 (StepKind::Bridge(_), _) => unreachable!("handled above"),
             };
             let [c0, c1] = self.topo.split_face(f, cut, inner)?;
-            let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
+            let rest: Vec<Cut> = cuts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !step.used.contains(i))
+                .map(|(_, c)| *c)
+                .collect();
             let (mut r0, mut r1) = (Vec::new(), Vec::new());
             let cache = faceclass::FaceCache::new();
             for c in rest {
@@ -371,9 +470,12 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 if class == PointClass::In {
                     r0.push(c);
                 } else {
-                    let (class1, _) = faceclass::classify(&*self.topo, &cache, c1, c.mid, self.lin)?;
+                    let (class1, _) =
+                        faceclass::classify(&*self.topo, &cache, c1, c.mid, self.lin)?;
                     if class1 != PointClass::In {
-                        return Err(BooleanError::Unsupported("a cut lies on neither side of the cut just inserted (crossing cuts inside a face)"));
+                        return Err(BooleanError::Unsupported(
+                            "a cut lies on neither side of the cut just inserted (crossing cuts inside a face)",
+                        ));
                     }
                     r1.push(c);
                 }
@@ -390,7 +492,9 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
         let mut m: BTreeMap<EntityId, Vec<(u16, usize)>> = BTreeMap::new();
         for lp in self.topo.loops(f) {
             for (i, key) in lp.keys().enumerate() {
-                let Some((s, t)) = self.topo.edge_ends(key.edge) else { continue };
+                let Some((s, t)) = self.topo.edge_ends(key.edge) else {
+                    continue;
+                };
                 let tail = if key.side == Side::Right { t } else { s };
                 m.entry(tail).or_default().push((lp.ring, i));
             }
@@ -400,19 +504,37 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
 
     /// Depth-first walk from `cur` along unused cuts to a vertex on a face loop. On success `path`
     /// holds `(cut index, vertex it is entered from)` and the loop vertex reached is returned.
-    fn walk(cuts: &[Cut], incident: &BTreeMap<EntityId, Vec<usize>>, pos: &BTreeMap<EntityId, Vec<(u16, usize)>>, cur: EntityId, used: &mut Vec<usize>, path: &mut Vec<(usize, EntityId)>, depth: usize) -> Option<EntityId> {
+    fn walk(
+        cuts: &[Cut],
+        incident: &BTreeMap<EntityId, Vec<usize>>,
+        pos: &BTreeMap<EntityId, Vec<(u16, usize)>>,
+        cur: EntityId,
+        used: &mut Vec<usize>,
+        path: &mut Vec<(usize, EntityId)>,
+        depth: usize,
+    ) -> Option<EntityId> {
         if pos.contains_key(&cur) {
             return Some(cur);
         }
         if depth > cuts.len() {
             return None;
         }
-        let mut nexts: Vec<usize> = incident.get(&cur).into_iter().flatten().copied().filter(|j| !used.contains(j)).collect();
+        let mut nexts: Vec<usize> = incident
+            .get(&cur)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|j| !used.contains(j))
+            .collect();
         nexts.sort_by_key(|&j| cuts[j].edge);
         for j in nexts {
             used.push(j);
             path.push((j, cur));
-            let nxt = if cuts[j].tail == cur { cuts[j].head } else { cuts[j].tail };
+            let nxt = if cuts[j].tail == cur {
+                cuts[j].head
+            } else {
+                cuts[j].tail
+            };
             if let Some(end) = Self::walk(cuts, incident, pos, nxt, used, path, depth + 1) {
                 return Some(end);
             }
@@ -423,7 +545,16 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
     }
 
     fn chain_of(cuts: &[Cut], path: &[(usize, EntityId)]) -> Vec<CoedgeSpec> {
-        path.iter().map(|&(j, from)| CoedgeSpec { edge: cuts[j].edge, sense: if cuts[j].tail == from { Sense::Forward } else { Sense::Reversed } }).collect()
+        path.iter()
+            .map(|&(j, from)| CoedgeSpec {
+                edge: cuts[j].edge,
+                sense: if cuts[j].tail == from {
+                    Sense::Forward
+                } else {
+                    Sense::Reversed
+                },
+            })
+            .collect()
     }
 
     fn next_step(&self, f: EntityId, cuts: &[Cut]) -> Result<Step, BooleanError> {
@@ -433,7 +564,9 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             incident.entry(c.tail).or_default().push(i);
             incident.entry(c.head).or_default().push(i);
         }
-        let ring_of = |v: EntityId| -> Option<u16> { pos.get(&v).and_then(|ps| ps.iter().map(|p| p.0).min()) };
+        let ring_of = |v: EntityId| -> Option<u16> {
+            pos.get(&v).and_then(|ps| ps.iter().map(|p| p.0).min())
+        };
         let mut order: Vec<usize> = (0..cuts.len()).collect();
         order.sort_by_key(|&i| cuts[i].edge);
         // 1. Chains starting at a loop vertex.
@@ -444,8 +577,13 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 }
                 let mut used = vec![i];
                 let mut path = vec![(i, start)];
-                let cur = if cuts[i].tail == start { cuts[i].head } else { cuts[i].tail };
-                let Some(end) = Self::walk(cuts, &incident, &pos, cur, &mut used, &mut path, 0) else {
+                let cur = if cuts[i].tail == start {
+                    cuts[i].head
+                } else {
+                    cuts[i].tail
+                };
+                let Some(end) = Self::walk(cuts, &incident, &pos, cur, &mut used, &mut path, 0)
+                else {
                     // A dead end from this start; try the other end / next cut.
                     continue;
                 };
@@ -453,27 +591,51 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 if start == end {
                     let n = pos.get(&start).map_or(0, Vec::len);
                     if n != 2 {
-                        return Err(BooleanError::TangentContact { entity: f, detail: "a closed cut touches this face's boundary at one vertex that is not a periodic seam vertex (a surface tangent to the face along a line)" });
+                        return Err(BooleanError::TangentContact {
+                            entity: f,
+                            detail: "a closed cut touches this face's boundary at one vertex that is not a periodic seam vertex (a surface tangent to the face along a line)",
+                        });
                     }
                     let chain = self.orient_seam_loop(f, chain, &pos[&start])?;
-                    return Ok(Step { kind: StepKind::Closed, chain, used, ends: None });
+                    return Ok(Step {
+                        kind: StepKind::Closed,
+                        chain,
+                        used,
+                        ends: None,
+                    });
                 }
                 let (rs, re) = (ring_of(start), ring_of(end));
                 if rs != re {
                     if used.len() == 1 {
-                        return Ok(Step { kind: StepKind::Bridge(cuts[i].edge), chain, used, ends: None });
+                        return Ok(Step {
+                            kind: StepKind::Bridge(cuts[i].edge),
+                            chain,
+                            used,
+                            ends: None,
+                        });
                     }
-                    return Err(BooleanError::Unsupported("a multi-edge cut joins two different loops of a face (bridge_loops takes a single edge)"));
+                    return Err(BooleanError::Unsupported(
+                        "a multi-edge cut joins two different loops of a face (bridge_loops takes a single edge)",
+                    ));
                 }
                 if rs != Some(0) {
-                    return Err(BooleanError::Unsupported("a cut runs from an inner loop back to the same inner loop"));
+                    return Err(BooleanError::Unsupported(
+                        "a cut runs from an inner loop back to the same inner loop",
+                    ));
                 }
                 let end_of = |v: EntityId, first: bool| -> End {
                     if pos.get(&v).map_or(0, Vec::len) <= 1 {
                         return End::One;
                     }
                     // A point of the chain near this end.
-                    let (spec, near_tail) = if first { (chain[0], chain[0].sense == Sense::Forward) } else { (chain[chain.len() - 1], chain[chain.len() - 1].sense != Sense::Forward) };
+                    let (spec, near_tail) = if first {
+                        (chain[0], chain[0].sense == Sense::Forward)
+                    } else {
+                        (
+                            chain[chain.len() - 1],
+                            chain[chain.len() - 1].sense != Sense::Forward,
+                        )
+                    };
                     let eps = 0.02;
                     let frac = if near_tail { eps } else { 1.0 - eps };
                     match geo::edge_sample(&*self.topo, spec.edge, frac) {
@@ -482,8 +644,17 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                     }
                 };
                 let ends = (end_of(start, true), end_of(end, false));
-                let ends = if matches!(ends.0, End::One) && matches!(ends.1, End::One) { None } else { Some(ends) };
-                return Ok(Step { kind: StepKind::Chain, chain, used, ends });
+                let ends = if matches!(ends.0, End::One) && matches!(ends.1, End::One) {
+                    None
+                } else {
+                    Some(ends)
+                };
+                return Ok(Step {
+                    kind: StepKind::Chain,
+                    chain,
+                    used,
+                    ends,
+                });
             }
         }
         // 2. A cycle strictly inside the face.
@@ -498,12 +669,27 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             if guard > cuts.len() + 2 {
                 return Err(BooleanError::Unsupported("interior cut does not close"));
             }
-            let mut nexts: Vec<usize> = incident.get(&cur).into_iter().flatten().copied().filter(|j| !used.contains(j)).collect();
+            let mut nexts: Vec<usize> = incident
+                .get(&cur)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|j| !used.contains(j))
+                .collect();
             nexts.sort_by_key(|&j| cuts[j].edge);
-            let Some(&j) = nexts.first() else { return Err(BooleanError::TangentContact { entity: f, detail: "the cut curve ends inside this face (a surface tangent to the face along a line)" }) };
+            let Some(&j) = nexts.first() else {
+                return Err(BooleanError::TangentContact {
+                    entity: f,
+                    detail: "the cut curve ends inside this face (a surface tangent to the face along a line)",
+                });
+            };
             used.push(j);
             path.push((j, cur));
-            cur = if cuts[j].tail == cur { cuts[j].head } else { cuts[j].tail };
+            cur = if cuts[j].tail == cur {
+                cuts[j].head
+            } else {
+                cuts[j].tail
+            };
         }
         let mut chain = Self::chain_of(cuts, &path);
         // The disk child runs counter-clockwise seen from the face's right side.
@@ -513,7 +699,12 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 c.sense = c.sense.flip();
             }
         }
-        Ok(Step { kind: StepKind::Closed, chain, used, ends: None })
+        Ok(Step {
+            kind: StepKind::Closed,
+            chain,
+            used,
+            ends: None,
+        })
     }
 
     /// The corner of the outer loop of `f` where a chain that leaves vertex `v` towards `toward`
@@ -521,55 +712,119 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
     /// holds the chain's longitude is split there. Other repeated vertices (a periodic seam) pick
     /// the corner whose interior wedge contains the chain's direction.
     fn resolve_corner(&mut self, f: EntityId, end: End) -> Result<CornerKey, BooleanError> {
-        let End::Multi(v, toward) = end else { return Err(BooleanError::Unsupported("internal: a single occurrence needs no corner")) };
-        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let End::Multi(v, toward) = end else {
+            return Err(BooleanError::Unsupported(
+                "internal: a single occurrence needs no corner",
+            ));
+        };
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else {
+            return Err(BooleanError::Unsupported("a face has no surface"));
+        };
         let dom = surf.domain();
-        let entries: Vec<(EntityId, Side)> = self.topo.loops(f).find(|l| l.ring == 0).map(|l| l.entries.iter().map(|e| (e.cell, e.side)).collect()).unwrap_or_default();
+        let entries: Vec<(EntityId, Side)> = self
+            .topo
+            .loops(f)
+            .find(|l| l.ring == 0)
+            .map(|l| l.entries.iter().map(|e| (e.cell, e.side)).collect())
+            .unwrap_or_default();
         let n = entries.len();
         let tail = |t: &E, i: usize| -> Option<EntityId> {
             let (e, side) = entries[i];
-            t.edge_ends(e).map(|(s, h)| if side == Side::Right { h } else { s })
+            t.edge_ends(e)
+                .map(|(s, h)| if side == Side::Right { h } else { s })
         };
-        let key = |i: usize| CoedgeKey { face: f, edge: entries[i].0, side: entries[i].1 };
-        let positions: Vec<usize> = (0..n).filter(|&i| tail(&*self.topo, i) == Some(v)).collect();
+        let key = |i: usize| CoedgeKey {
+            face: f,
+            edge: entries[i].0,
+            side: entries[i].1,
+        };
+        let positions: Vec<usize> = (0..n)
+            .filter(|&i| tail(&*self.topo, i) == Some(v))
+            .collect();
         let prev = |i: usize| (i + n - 1) % n;
         // Pole: a degenerate coedge starts here.
-        let deg: Vec<usize> = positions.iter().copied().filter(|&i| geo::is_degenerate(&*self.topo, entries[i].0)).collect();
+        let deg: Vec<usize> = positions
+            .iter()
+            .copied()
+            .filter(|&i| geo::is_degenerate(&*self.topo, entries[i].0))
+            .collect();
         if !deg.is_empty() {
             let u0 = surf.project(toward, None)?.uv.u;
             let period = dom.u.period.unwrap_or(0.0);
             for i in deg {
                 let (edge, side) = entries[i];
-                let Some(sm_geom_api::PCurve::Line2(l)) = self.topo.pcurve(key(i)).cloned() else { return Err(BooleanError::Unsupported("a pole edge has no Line2 pcurve")) };
-                let (ua, ub) = if side == Side::Left { (l.origin.u + l.range.lo * l.dir.u, l.origin.u + l.range.hi * l.dir.u) } else { (l.origin.u + l.range.hi * l.dir.u, l.origin.u + l.range.lo * l.dir.u) };
+                let Some(sm_geom_api::PCurve::Line2(l)) = self.topo.pcurve(key(i)).cloned() else {
+                    return Err(BooleanError::Unsupported("a pole edge has no Line2 pcurve"));
+                };
+                let (ua, ub) = if side == Side::Left {
+                    (
+                        l.origin.u + l.range.lo * l.dir.u,
+                        l.origin.u + l.range.hi * l.dir.u,
+                    )
+                } else {
+                    (
+                        l.origin.u + l.range.hi * l.dir.u,
+                        l.origin.u + l.range.lo * l.dir.u,
+                    )
+                };
                 let (lo, hi) = (ua.min(ub), ua.max(ub));
                 let mid = 0.5 * (lo + hi);
-                let u = if period > 0.0 { u0 + period * ((mid - u0) / period).round() } else { u0 };
+                let u = if period > 0.0 {
+                    u0 + period * ((mid - u0) / period).round()
+                } else {
+                    u0
+                };
                 let tol_u = 1e-8;
                 if u > lo + tol_u && u < hi - tol_u {
                     if l.dir.u == 0.0 {
-                        return Err(BooleanError::Unsupported("a pole pcurve does not run along u"));
+                        return Err(BooleanError::Unsupported(
+                            "a pole pcurve does not run along u",
+                        ));
                     }
                     let t = (u - l.origin.u) / l.dir.u;
                     let [e1, e2] = self.topo.split_degenerate_edge(edge, t)?;
-                    let incoming = if side == Side::Left { CoedgeKey { face: f, edge: e1, side } } else { CoedgeKey { face: f, edge: e2, side } };
+                    let incoming = if side == Side::Left {
+                        CoedgeKey {
+                            face: f,
+                            edge: e1,
+                            side,
+                        }
+                    } else {
+                        CoedgeKey {
+                            face: f,
+                            edge: e2,
+                            side,
+                        }
+                    };
                     return Ok(CornerKey { face: f, incoming });
                 }
                 if (u - ua).abs() <= tol_u {
-                    return Ok(CornerKey { face: f, incoming: key(prev(i)) });
+                    return Ok(CornerKey {
+                        face: f,
+                        incoming: key(prev(i)),
+                    });
                 }
                 if (u - ub).abs() <= tol_u {
-                    return Ok(CornerKey { face: f, incoming: key(i) });
+                    return Ok(CornerKey {
+                        face: f,
+                        incoming: key(i),
+                    });
                 }
             }
-            return Err(BooleanError::Unsupported("the chain meets a pole at a longitude outside the pole edge"));
+            return Err(BooleanError::Unsupported(
+                "the chain meets a pole at a longitude outside the pole edge",
+            ));
         }
         // Repeated non-pole vertex: wedge test in the parameter plane.
-        let pv = geo::vertex_point(&*self.topo, v).ok_or(BooleanError::Unsupported("vertex without point"))?;
+        let pv = geo::vertex_point(&*self.topo, v)
+            .ok_or(BooleanError::Unsupported("vertex without point"))?;
         let c = surf.project(pv, None)?.uv;
         let near = |p: Point3| -> Result<(f64, f64), BooleanError> {
             let uv = surf.project(p, Some(c))?.uv;
-            Ok((dom.u.nearest_to(uv.u, c.u) - c.u, dom.v.nearest_to(uv.v, c.v) - c.v))
+            Ok((
+                dom.u.nearest_to(uv.u, c.u) - c.u,
+                dom.v.nearest_to(uv.v, c.v) - c.v,
+            ))
         };
         let angle = |d: (f64, f64)| d.1.atan2(d.0);
         let a_chain = angle(near(toward)?);
@@ -581,40 +836,75 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             // A point just after the corner on the outgoing coedge, just before it on the incoming.
             let f_out = if s_out == Side::Right { 1.0 - eps } else { eps };
             let f_in = if s_in == Side::Right { eps } else { 1.0 - eps };
-            let (Some(po), Some(pi)) = (geo::edge_sample(&*self.topo, e_out, f_out), geo::edge_sample(&*self.topo, e_in, f_in)) else { continue };
+            let (Some(po), Some(pi)) = (
+                geo::edge_sample(&*self.topo, e_out, f_out),
+                geo::edge_sample(&*self.topo, e_in, f_in),
+            ) else {
+                continue;
+            };
             let (a_out, a_in) = (angle(near(po)?), angle(near(pi)?));
             let ccw = |from: f64, to: f64, x: f64| {
                 let tau = core::f64::consts::TAU;
                 let d = |a: f64| a.rem_euclid(tau);
                 d(x - from) <= d(to - from)
             };
-            let inside = if sc.sense == Sense::Forward { ccw(a_out, a_in, a_chain) } else { ccw(a_in, a_out, a_chain) };
+            let inside = if sc.sense == Sense::Forward {
+                ccw(a_out, a_in, a_chain)
+            } else {
+                ccw(a_in, a_out, a_chain)
+            };
             if inside {
                 hits.push(i);
             }
         }
         match hits[..] {
-            [i] => Ok(CornerKey { face: f, incoming: key(prev(i)) }),
-            _ => Err(BooleanError::Unsupported("cannot tell which corner of a repeated vertex the cut attaches to")),
+            [i] => Ok(CornerKey {
+                face: f,
+                incoming: key(prev(i)),
+            }),
+            _ => Err(BooleanError::Unsupported(
+                "cannot tell which corner of a repeated vertex the cut attaches to",
+            )),
         }
     }
 
     /// Sample a chain in the parameter space of `f` (continuous in the periodic directions) with
     /// the matching 3D points.
-    fn chain_uv(&self, f: EntityId, chain: &[CoedgeSpec], per_edge: usize) -> Result<Vec<(Uv, Point3)>, BooleanError> {
-        let Some((surf, _)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+    fn chain_uv(
+        &self,
+        f: EntityId,
+        chain: &[CoedgeSpec],
+        per_edge: usize,
+    ) -> Result<Vec<(Uv, Point3)>, BooleanError> {
+        let Some((surf, _)) = geo::face_surface(&*self.topo, f) else {
+            return Err(BooleanError::Unsupported("a face has no surface"));
+        };
         let dom = surf.domain();
         let mut pts: Vec<(Uv, Point3)> = Vec::new();
         let mut prev: Option<Uv> = None;
         for spec in chain {
-            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else { return Err(BooleanError::Unsupported("an edge has no curve")) };
-            let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
+            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else {
+                return Err(BooleanError::Unsupported("an edge has no curve"));
+            };
+            let Some(curve) = self.topo.shapes().curve(cc0.curve) else {
+                return Err(BooleanError::Unsupported("curve not in store"));
+            };
             for k in 0..per_edge {
                 let frac = k as f64 / per_edge as f64;
-                let t = geo::edge_param(cc0, if spec.sense == Sense::Forward { frac } else { 1.0 - frac });
+                let t = geo::edge_param(
+                    cc0,
+                    if spec.sense == Sense::Forward {
+                        frac
+                    } else {
+                        1.0 - frac
+                    },
+                );
                 let p = curve.eval(t);
                 let pr = surf.project(p, prev)?;
-                let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |q| q.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |q| q.v)));
+                let uv = Uv::new(
+                    dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |q| q.u)),
+                    dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |q| q.v)),
+                );
                 pts.push((uv, p));
                 prev = Some(uv);
             }
@@ -624,34 +914,74 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
 
     /// Orient a closed chain through a periodic seam vertex so that the first child
     /// (`outer[a..b]` plus the chain) lies on the interior side of its own boundary.
-    fn orient_seam_loop(&self, f: EntityId, chain: Vec<CoedgeSpec>, at: &[(u16, usize)]) -> Result<Vec<CoedgeSpec>, BooleanError> {
-        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+    fn orient_seam_loop(
+        &self,
+        f: EntityId,
+        chain: Vec<CoedgeSpec>,
+        at: &[(u16, usize)],
+    ) -> Result<Vec<CoedgeSpec>, BooleanError> {
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else {
+            return Err(BooleanError::Unsupported("a face has no surface"));
+        };
         let dom = surf.domain();
         let (a, b) = (at[0].1.min(at[1].1), at[0].1.max(at[1].1));
         let outer: Vec<CoedgeSpec> = self
             .topo
             .loops(f)
             .find(|l| l.ring == 0)
-            .map(|l| l.entries.iter().map(|e| CoedgeSpec { edge: e.cell, sense: if e.side == Side::Right { Sense::Reversed } else { Sense::Forward } }).collect())
+            .map(|l| {
+                l.entries
+                    .iter()
+                    .map(|e| CoedgeSpec {
+                        edge: e.cell,
+                        sense: if e.side == Side::Right {
+                            Sense::Reversed
+                        } else {
+                            Sense::Forward
+                        },
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         if b <= a || b > outer.len() {
             return Ok(chain);
         }
         // A point of the first child's boundary segment (middle coedge, skipping pole edges).
-        let seg: Vec<&CoedgeSpec> = outer[a..b].iter().filter(|c| !geo::is_degenerate(&*self.topo, c.edge)).collect();
-        let Some(mid) = seg.get(seg.len() / 2) else { return Ok(chain) };
-        let Some(q3) = geo::edge_sample(&*self.topo, mid.edge, 0.5) else { return Ok(chain) };
+        let seg: Vec<&CoedgeSpec> = outer[a..b]
+            .iter()
+            .filter(|c| !geo::is_degenerate(&*self.topo, c.edge))
+            .collect();
+        let Some(mid) = seg.get(seg.len() / 2) else {
+            return Ok(chain);
+        };
+        let Some(q3) = geo::edge_sample(&*self.topo, mid.edge, 0.5) else {
+            return Ok(chain);
+        };
         let pts = self.chain_uv(f, &chain, 24)?;
         if pts.len() < 2 {
             return Ok(chain);
         }
-        let (i, _) = pts.iter().enumerate().map(|(i, p)| (i, geo::dist(p.1, q3))).fold((0, f64::INFINITY), |m, x| if x.1 < m.1 { x } else { m });
+        let (i, _) = pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, geo::dist(p.1, q3)))
+            .fold((0, f64::INFINITY), |m, x| if x.1 < m.1 { x } else { m });
         // The tangent runs to the next sample; at the last one the closing step would wrap by a
         // period (the samples are continuous in `u`), so it is taken from the previous sample.
-        let (a, b) = if i + 1 < pts.len() { (i, i + 1) } else { (i - 1, i) };
-        let (c, t) = (pts[i].0, Uv::new(pts[b].0.u - pts[a].0.u, pts[b].0.v - pts[a].0.v));
+        let (a, b) = if i + 1 < pts.len() {
+            (i, i + 1)
+        } else {
+            (i - 1, i)
+        };
+        let (c, t) = (
+            pts[i].0,
+            Uv::new(pts[b].0.u - pts[a].0.u, pts[b].0.v - pts[a].0.v),
+        );
         let qpr = surf.project(q3, Some(c))?;
-        let (qu, qv) = (dom.u.nearest_to(qpr.uv.u, c.u), dom.v.nearest_to(qpr.uv.v, c.v));
+        let (qu, qv) = (
+            dom.u.nearest_to(qpr.uv.u, c.u),
+            dom.v.nearest_to(qpr.uv.v, c.v),
+        );
         let cross = t.u * (qv - c.v) - t.v * (qu - c.u);
         if cross * sc.sense.sign() > 0.0 {
             Ok(chain)
@@ -667,20 +997,29 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
     /// Signed area of a closed chain in the parameter space of `f`, times the carrier sense
     /// (positive: counter-clockwise seen from the face's right side).
     fn loop_orientation(&self, f: EntityId, chain: &[CoedgeSpec]) -> Result<f64, BooleanError> {
-        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else {
+            return Err(BooleanError::Unsupported("a face has no surface"));
+        };
         let dom = surf.domain();
         let mut pts: Vec<Uv> = Vec::new();
         let mut prev: Option<Uv> = None;
         for spec in chain {
-            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else { return Err(BooleanError::Unsupported("an edge has no curve")) };
-            let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
+            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else {
+                return Err(BooleanError::Unsupported("an edge has no curve"));
+            };
+            let Some(curve) = self.topo.shapes().curve(cc0.curve) else {
+                return Err(BooleanError::Unsupported("curve not in store"));
+            };
             const N: usize = 16;
             for k in 0..N {
                 let frac = k as f64 / N as f64;
                 let along = spec.sense == Sense::Forward;
                 let t = geo::edge_param(cc0, if along { frac } else { 1.0 - frac });
                 let pr = surf.project(curve.eval(t), prev)?;
-                let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)));
+                let uv = Uv::new(
+                    dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)),
+                    dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)),
+                );
                 pts.push(uv);
                 prev = Some(uv);
             }
@@ -694,4 +1033,3 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
         Ok(0.5 * a * sc.sense.sign())
     }
 }
-

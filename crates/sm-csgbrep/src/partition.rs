@@ -535,7 +535,8 @@ fn check_piece(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, cell: &PCell
         Some(q) => {
             let mut ids = BTreeSet::new();
             surfaces_in(&cell.expr, &mut ids);
-            let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).collect();
+            // Deck id 0 is an plane the lattice expansion synthesised (an array box face), not a deck surface.
+            let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).filter(|&d| d != 0).collect::<BTreeSet<_>>().into_iter().collect();
             Err(CsgbrepError::Kernel(format!("a piece given to cell {} has a vertex at {q:?} outside its region: a cut by one of its deck surface ids {deck:?} left the piece unsplit (kernel defect, the geometry is refused instead of imported wrong)", cell.origin)))
         }
     }
@@ -639,7 +640,7 @@ fn vertex_outside(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, e: &Expr)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sm_topo_api::{OpId, TopologyEdit};
+    use sm_topo_api::{OpId, TopologyEdit, TopologyView};
 
     /// A unit-radius cylinder piece (z axis) and an array box on its -x side that reaches `depth`
     /// into the circle. The 33 samples of the edge reach x = -0.999989, 1.1e-5 short of the true
@@ -662,5 +663,44 @@ mod tests {
         assert!(meets(2e-3));
         // A box clear of the circle by more than the margin (about 3e-3 here) is not met.
         assert!(!meets(-1e-2));
+    }
+
+    /// A placed surface for the guard test.
+    fn psurf(s: sm_csgio::ir::Surf, deck_id: u32) -> PSurf {
+        PSurf { def: s.def, flag: BoundaryFlag::None, deck_id }
+    }
+
+    /// The piece guard: a whole brick handed to a cell whose region is the inside of a z-cylinder
+    /// has corners outside it, so `check_piece` refuses with the deck surface ids of the cell
+    /// sorted and deduplicated, without the synthesised id 0; a piece inside passes.
+    #[test]
+    fn the_piece_guard_refuses_a_piece_outside_its_region_and_lists_deck_ids() {
+        use sm_csgio::ir::Surf;
+        let mut t = sm_topo::TopoStore::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = brick(&mut t, Point3::new(-2.0, -2.0, -2.0), [4.0, 4.0, 4.0]).unwrap();
+        let vol = t.boundary(b.body).iter().map(|i| i.cell).find(|c| t.dim_of(*c) == Some(Dim::Volume)).unwrap();
+        // Placed ids 0..=4 carry deck ids 9, 7, 0 (synthesised), 7 (a duplicate), 3.
+        let placed = Placed {
+            surfaces: vec![
+                psurf(Surf::axis_plane(2, 10.0), 9),
+                psurf(Surf::cylinder(2, [0.0, 0.0, 0.0], 1.0).unwrap(), 7),
+                psurf(Surf::axis_plane(2, 11.0), 0),
+                psurf(Surf::axis_plane(2, 12.0), 7),
+                psurf(Surf::axis_plane(2, 13.0), 3),
+            ],
+            cells: Vec::new(),
+            lattices: Vec::new(),
+        };
+        let cell = |expr: Expr| PCell { expr, name: "c".into(), origin: Origin { cell: 42, path: Vec::new() } };
+        let region = Expr::And((0..5).map(Expr::neg).collect());
+        let err = check_piece(&t, &placed, vol, &cell(region)).expect_err("corners at r = 2.8 are outside the unit cylinder");
+        let CsgbrepError::Kernel(msg) = err else { panic!("not a kernel error: {err:?}") };
+        assert!(msg.contains("left the piece unsplit"), "{msg}");
+        assert!(msg.contains("cell 42"), "{msg}");
+        assert!(msg.contains("[3, 7, 9]"), "deck ids sorted, deduplicated, without 0: {msg}");
+        // A region that contains the brick accepts it.
+        let wide = Expr::And(vec![Expr::neg(0), Expr::neg(2), Expr::neg(3), Expr::neg(4)]);
+        assert!(check_piece(&t, &placed, vol, &cell(wide)).is_ok());
     }
 }
