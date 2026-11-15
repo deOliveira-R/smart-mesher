@@ -133,12 +133,13 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
         }
     };
     let mut selected = selected;
-    if opts.sheets {
+    let repair_sheets = opts.repair && !opts.sheets;
+    if opts.sheets || repair_sheets {
         selected.extend(sheet_entities(file).into_iter().map(|id| (id, SolidKind::Sheet)));
     }
     let mut notes: Vec<Note> = Vec::new();
     let skipped = scan_skipped(file);
-    if !skipped.sheets.is_empty() && !opts.sheets {
+    if !skipped.sheets.is_empty() && !opts.sheets && !repair_sheets {
         let list: Vec<String> = skipped.sheets.iter().map(|(n, c)| format!("{c} {n}")).collect();
         notes.push(Note::info(NoteCode::SheetsSkipped, format!("sheets not imported: {}", list.join(", ")), Vec::new()));
     }
@@ -327,6 +328,9 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
     }
     for (msg, ids) in unit_groups {
         unit_notes.push(Note::info(NoteCode::Units, msg, ids));
+    }
+    if repair_sheets {
+        solids.retain(|s| s.kind != SolidKind::Sheet);
     }
     notes.splice(0..0, unit_notes);
     if welded_v + welded_e > 0 {
@@ -638,10 +642,29 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     for (fi, f) in faces.iter().enumerate() {
         shells[f.shell].faces.push(fi);
     }
-    if kind != SolidKind::Sheet {
-        check_closed(id, &shells, &faces, &kept, meter)?;
-    }
+    let open = if kind != SolidKind::Sheet { check_closed(id, &shells, &faces, &kept, meter) } else { Ok(()) };
     let mut solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    match open {
+        Ok(()) => {}
+        Err(e @ StepError::OpenShell { .. }) if opts.repair => {
+            notes.extend(crate::repair::close_shells(&mut solid, opts.weld_tol).map_err(|_| e)?);
+            check_closed(id, &solid.shells, &solid.faces, &solid.edges, meter)?;
+        }
+        Err(e) => return Err(e),
+    }
+    if kind == SolidKind::Sheet && opts.repair && !opts.sheets {
+        // An open sheet is a repair candidate: closed, it becomes a solid; else it is skipped.
+        match crate::repair::close_shells(&mut solid, opts.weld_tol) {
+            Ok(n) => {
+                notes.extend(n);
+                solid.kind = SolidKind::Manifold;
+                for (i, sh) in solid.shells.iter_mut().enumerate() {
+                    sh.kind = if i == 0 { ShellKind::Outer } else { ShellKind::Void };
+                }
+            }
+            Err(e) => notes.push(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![id])),
+        }
+    }
     crate::split::split_closed_nurbs(&mut solid, opts.weld_tol, notes, meter);
     Ok((solid, (welded_vertices, welded_edges)))
 }

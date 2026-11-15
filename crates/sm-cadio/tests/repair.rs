@@ -1,0 +1,137 @@
+//! `repair: "tolerant"`: open shells closed by planar caps, analytic checks on the 2x3x4 brick.
+
+mod common;
+
+use std::sync::Arc;
+
+use common::*;
+use sm_cadio::{ImportStep, LengthUnit, MemoryInputStore, NoteCode, ReadOptions, RepairMode, SolidKind, Source, StepError, read_step};
+use sm_topo_api::{Dim, TopologyView};
+
+const BRICK_VOLUME: f64 = 24.0;
+const BRICK_AREA: f64 = 2.0 * (6.0 + 8.0 + 12.0);
+
+fn repair_opts() -> ReadOptions {
+    ReadOptions { repair: true, assume_unit: Some(LengthUnit::Mm), ..ReadOptions::default() }
+}
+
+fn plain_opts() -> ReadOptions {
+    ReadOptions { assume_unit: Some(LengthUnit::Mm), ..ReadOptions::default() }
+}
+
+/// The brick text with the listed `ADVANCED_FACE` ids dropped from its shell.
+fn brick_without(drop: &[&str]) -> Vec<u8> {
+    let text = String::from_utf8(data("brick_2x3x4.stp")).expect("utf8");
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with("#154 = CLOSED_SHELL") {
+            let mut s = line.to_owned();
+            for d in drop {
+                s = s.replace(&format!("{d},"), "").replace(&format!(",{d})"), ")");
+            }
+            out.push_str(&s);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
+fn check_brick(m: &sm_cadio::BrepModel) {
+    let (h, _) = import_into(cell_complex, m);
+    let view: &dyn TopologyView = &*h;
+    assert!(issues(view).is_empty(), "{:?}", issues(view));
+    let vols = view.cells(Dim::Volume);
+    assert_eq!(vols.len(), 1);
+    assert!(rel(volume(view, vols[0]), BRICK_VOLUME) < 1e-12);
+    assert!(rel(total_area(view), BRICK_AREA) < 1e-12);
+    assert_eq!(count(view, Dim::Face), 6);
+    assert_eq!(count(view, Dim::Edge), 12);
+    assert_eq!(count(view, Dim::Vertex), 8);
+}
+
+#[test]
+fn a_missing_face_is_capped_with_a_note() {
+    let b = bad("open_shell.stp");
+    assert!(matches!(read_step(&b, &plain_opts()), Err(StepError::OpenShell { .. })));
+    let m = read_step(&b, &repair_opts()).expect("repaired");
+    let fixes: Vec<_> = m.notes.iter().filter(|n| n.code == NoteCode::Repaired).collect();
+    assert_eq!(fixes.len(), 1);
+    assert_eq!(fixes[0].step_ids.len(), 4);
+    check_brick(&m);
+}
+
+#[test]
+fn two_opposite_faces_missing_give_the_brick_back_and_two_adjacent_do_not() {
+    let ids = ["#93", "#105", "#117", "#129", "#141", "#153"];
+    let (mut repaired, mut refused) = (0, 0);
+    for i in 0..6 {
+        for j in i + 1..6 {
+            let bytes = brick_without(&[ids[i], ids[j]]);
+            match read_step(&bytes, &repair_opts()) {
+                Ok(m) => {
+                    repaired += 1;
+                    assert_eq!(m.notes.iter().filter(|n| n.code == NoteCode::Repaired).count(), 2);
+                    check_brick(&m);
+                }
+                Err(StepError::OpenShell { issues, .. }) => {
+                    refused += 1;
+                    assert!(!issues.is_empty());
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    }
+    assert_eq!((repaired, refused), (3, 12));
+}
+
+#[test]
+fn a_clean_file_is_unchanged_by_repair() {
+    let b = data("brick_2x3x4.stp");
+    let plain = read_step(&b, &plain_opts()).expect("plain");
+    let rep = read_step(&b, &repair_opts()).expect("repair");
+    assert_eq!(plain.solids, rep.solids);
+    assert_eq!(plain.notes, rep.notes);
+}
+
+#[test]
+fn an_open_sheet_becomes_a_solid_only_with_repair() {
+    let b = data("sheet_open_box.stp");
+    let plain = read_step(&b, &plain_opts()).expect("plain");
+    assert!(plain.solids.is_empty());
+    let m = read_step(&b, &repair_opts()).expect("repaired");
+    assert_eq!(m.solids.len(), 1);
+    assert_eq!(m.solids[0].kind, SolidKind::Manifold);
+    assert_eq!(m.notes.iter().filter(|n| n.code == NoteCode::Repaired).count(), 1);
+    check_brick(&m);
+    // With `sheets` the sheet stays a sheet.
+    let s = read_step(&b, &ReadOptions { sheets: true, ..repair_opts() }).expect("sheets");
+    assert_eq!(s.solids[0].kind, SolidKind::Sheet);
+}
+
+#[test]
+fn an_unclosable_sheet_is_reported_not_imported() {
+    let text = String::from_utf8(data("sheet_open_box.stp")).expect("utf8");
+    let bytes = text.replace("OPEN_SHELL('',(#93,#105,#117,#129,#141))", "OPEN_SHELL('',(#93,#105,#117))").into_bytes();
+    let m = read_step(&bytes, &repair_opts()).expect("read");
+    assert!(m.solids.is_empty());
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::RepairFailed));
+}
+
+#[test]
+fn the_op_refuses_without_repair_and_imports_with_it() {
+    let store = Arc::new(MemoryInputStore::new());
+    let mut s = session(cell_complex, store);
+    let mut op = ImportStep { source: Source::inline(&bad("open_shell.stp")), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None, repair: None };
+    let e = format!("{:?}", run(&mut s, &op).expect_err("open shell"));
+    assert!(e.contains("step.open_shell"), "{e}");
+    op.repair = Some(RepairMode::Tolerant);
+    let (_, d) = run(&mut s, &op).expect("repaired import");
+    let view = model(&s).topo();
+    assert!(rel(volume(view, d.outputs["volumes"][0]), BRICK_VOLUME) <= 1e-12);
+    // A shell that cannot be closed still fails typed.
+    let op = ImportStep { source: Source::inline(&brick_without(&["#93", "#117"])), ..op };
+    let e = format!("{:?}", run(&mut s, &op).expect_err("unclosable"));
+    assert!(e.contains("step.open_shell"), "{e}");
+}
