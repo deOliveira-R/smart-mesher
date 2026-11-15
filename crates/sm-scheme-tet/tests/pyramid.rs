@@ -203,3 +203,35 @@ fn a_thin_slab_fails_typed_and_may_fall_back_not_internal() {
         }
     }
 }
+
+#[test]
+fn sandwich_with_nearly_coincident_apexes_is_valid_or_typed_geometry() {
+    // hex | tet slab of thickness t = 2h | hex, h = 0.6 * 0.25: the two apex layers meet.
+    let t = 0.3;
+    let mut topo = CellComplex::new();
+    let (a, b, c) = with_op(&mut topo, OpId(1), |tp| {
+        let a = brick(tp, sm_core::Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])?;
+        let b = brick(tp, sm_core::Point3::new(1.0, 0.0, 0.0), [t, 1.0, 1.0])?;
+        let c = brick(tp, sm_core::Point3::new(1.0 + t, 0.0, 0.0), [1.0, 1.0, 1.0])?;
+        tp.record_coincidence(a.faces[1], b.faces[0], sm_topo_api::Coincidence::CoincidentUnimprinted)?;
+        tp.record_coincidence(b.faces[1], c.faces[0], sm_topo_api::Coincidence::CoincidentUnimprinted)?;
+        merge_touching_bricks(tp, &a, &b)?;
+        merge_touching_bricks(tp, &b, &c)?;
+        Ok((a, b, c))
+    })
+    .unwrap();
+    let mut it = intent(&a, &b, 4, pyramid_params());
+    it.set_scheme(c.volume, SchemeChoice::new("map", Firmness::Hard));
+    for first in [0usize, 4, 8] {
+        it.set_intervals(c.edges[first], Firm::hard(IntervalRequest::Count(4)));
+    }
+    it.set_intervals(b.edges[0], Firm::hard(IntervalRequest::Count(1)));
+    match run(&topo, &[a.volume, b.volume, c.volume], &it, &Sequential) {
+        Ok(out) => {
+            let m = &out.finished.mesh;
+            sm_testkit::check::mesh_valid(m).unwrap();
+            eprintln!("sandwich: hex {}, pyr {}, tet {}", count_shape(m, CellShape::Hex), count_shape(m, CellShape::Pyramid), count_shape(m, CellShape::Tet));
+        }
+        Err(e) => assert!(format!("{e}").contains("(Geometry)"), "{e}"),
+    }
+}

@@ -336,6 +336,13 @@ impl Scheme for TetVolume {
                 let apexes = pyramid_apexes(&plain.points, &quads, base * scale).map_err(|(q, why)| {
                     GenerateFailure::new(target, NAME, FailureKind::Geometry, format!("pyramid transition on {}: {why}", quad_face[q]))
                 })?;
+                // Apexes too close to each other or to foreign shell points make the pyramid
+                // shell degenerate; treat it like a recovery failure so a shallower apex is tried.
+                if let Some(why) = apex_crowding(&plain.points, &quads, &apexes, base * scale) {
+                    last = Some(GenerateFailure::new(target, NAME, FailureKind::Geometry, format!("pyramid transition: {why}")));
+                    retried_out = false;
+                    continue;
+                }
                 for (q, ap) in apexes.iter().enumerate() {
                     let key = NodeKey::new(owner, q as u32);
                     let id = input.points.len() as u32;
@@ -360,6 +367,15 @@ impl Scheme for TetVolume {
                 }
             }
             match tetrahedralize(&input, &opts) {
+                Ok(mesh) if !quads.is_empty() && !tets_positive(&mesh, &quads, &plain.points) => {
+                    last = Some(GenerateFailure::new(
+                        target,
+                        NAME,
+                        FailureKind::Geometry,
+                        "pyramid transition: pyramid apex height too large, the tetrahedralization has a non-positive or degenerate tet (apexes too close to other apexes or faces)".to_owned(),
+                    ));
+                    retried_out = false;
+                }
                 Ok(mesh) => return Ok(build_patch(target, owner, &mesh, &keys, &tri_face, n_ref, &quads)),
                 Err(e) => {
                     let retry = matches!(e, TetError::RecoveryFailed { .. } | TetError::SelfIntersection { .. } | TetError::InvertedShell { .. });
@@ -429,6 +445,49 @@ fn pyramid_apexes(points: &[[f64; 3]], quads: &[[u32; 4]], hfac: f64) -> Result<
         out.push(apex);
     }
     Ok(out)
+}
+
+/// Minimum clearance of an apex, as a fraction of its own height, from every other apex and from
+/// every shell point outside its own base.
+const APEX_CLEARANCE: f64 = 0.5;
+
+/// First apex that sits closer than `APEX_CLEARANCE * h` to another apex or a foreign shell
+/// point, as a message. Sorted-by-x sweep, so near-linear for ordinary shells.
+fn apex_crowding(points: &[[f64; 3]], quads: &[[u32; 4]], apexes: &[[f64; 3]], hfac: f64) -> Option<String> {
+    let dist2 = |a: [f64; 3], b: [f64; 3]| (0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum::<f64>();
+    let mut cand: Vec<([f64; 3], Option<usize>, u32)> = points.iter().enumerate().map(|(i, p)| (*p, None, i as u32)).collect();
+    cand.extend(apexes.iter().enumerate().map(|(q, a)| (*a, Some(q), q as u32)));
+    cand.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+    let xs: Vec<f64> = cand.iter().map(|c| c.0[0]).collect();
+    for (q, a) in apexes.iter().enumerate() {
+        let v = quads[q].map(|i| points[i as usize]);
+        let mean_edge = (0..4).map(|e| dist2(v[(e + 1) % 4], v[e]).sqrt()).sum::<f64>() / 4.0;
+        let r = APEX_CLEARANCE * hfac * mean_edge;
+        let lo = xs.partition_point(|&x| x < a[0] - r);
+        for c in cand[lo..].iter().take_while(|c| c.0[0] <= a[0] + r) {
+            let own = match c.1 {
+                Some(o) => o == q,
+                None => quads[q].contains(&c.2),
+            };
+            if !own && dist2(c.0, *a) < r * r {
+                return Some(format!(
+                    "pyramid apex height exceeds the local thickness: apex of quad {q} lies within {APEX_CLEARANCE} of its height from another apex or shell point; lower pyramid_height or use transition none"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Every output tet has a clearly positive volume relative to the pyramid base scale.
+fn tets_positive(mesh: &TetMesh, quads: &[[u32; 4]], points: &[[f64; 3]]) -> bool {
+    let d = |a: [f64; 3], b: [f64; 3]| norm(sub(a, b));
+    let scale = quads.iter().map(|q| (0..4).map(|e| d(points[q[(e + 1) % 4] as usize], points[q[e] as usize])).sum::<f64>() / 4.0).fold(f64::INFINITY, f64::min);
+    let tol = 1e-9 * scale * scale * scale;
+    mesh.tets.iter().all(|t| {
+        let p = t.map(|i| mesh.points[i as usize]);
+        dot(cross(sub(p[1], p[0]), sub(p[2], p[0])), sub(p[3], p[0])) > tol
+    })
 }
 
 /// Six times the signed volume of the cone from the origin over a triangle.
