@@ -218,3 +218,16 @@ ladder of depths.
 `model.webcut_surface` takes the face of any of these surfaces (the whole surface is the tool; a
 face with a reversed carrier swaps the sides). `model.regularize` lists the cells of refused pairs
 in a `refused` output role.
+
+## W4-BOOL-TIDY: virtual topology and id-keeping edits
+
+`Overlay::rebase` replays the recorded virtual ops on the edited host and does not re-check a
+`partition_face` chord against it. Audit of the edits that keep a cell id (`tests/vtopo_guard.rs`):
+split edits (webcut, imprint, subdivide) retire the split cell, so an overlay built on it is
+refused by the rebase; weld, merge and orientation keep the lowest id and change only the other
+side (refused when the overlay uses it, valid otherwise); a `regularize` join keeps the survivor
+and grows it, which the rebase accepted and silently re-shaped (a chord splitting a bigger face, a
+partition vertex on a longer edge). That one is now refused (`BooleanError::VirtualTopology`,
+`model.remove_virtual` first). `webcut` with a sphere tool refuses (`TangentContact`) a sphere
+that reaches a face of the target but whose surface intersection came back empty (a bite of a few
+1e-3), instead of reporting the target untouched.
