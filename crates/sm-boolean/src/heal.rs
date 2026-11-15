@@ -15,7 +15,8 @@
 //!    `sm-model`'s `DESIGN.md`).
 //! 3. **close**: after the weld, every remaining chain of free edges that forms one simple loop,
 //!    planar within `tol`, is closed by a plane face whose coedges run against the neighbours'.
-//!    A loop that is the whole boundary of a lone face is left alone (it would make a pillow).
+//!    A loop that is the whole boundary of a lone face is left alone (it would make a pillow), and so is a
+//!    loop whose faces all lie in the cap plane (a split planar sheet: the cap would double-cover it).
 //!    The new face is a free face (it joins no body: the topology has no body-member edit).
 //!
 //! Geometry moves only through the merge (within the raised tolerance); `heal` never moves a
@@ -511,6 +512,25 @@ pub fn close_open_loops(
                 "close",
                 edges.clone(),
                 format!("the loop is {flat:e} from a plane, above the tolerance {tol:e}"),
+            );
+            continue;
+        }
+        // A planar sheet of several coplanar faces: the cap would lie on the sheet, a zero-volume
+        // double cover. Skip when every face using a loop edge lies within tol of the cap plane.
+        let coplanar = users.iter().all(|&f| {
+            topo.face_edges(f).iter().all(|&e| {
+                (0..=4).all(|k| {
+                    geo::edge_sample(&*topo, e, k as f64 / 4.0)
+                        .is_some_and(|p| ((p - c).dot(normal)).abs() <= tol)
+                })
+            })
+        });
+        if coplanar {
+            skip(
+                out,
+                "close",
+                edges.clone(),
+                "every face at the loop lies in the cap plane (a planar sheet, not a hole)",
             );
             continue;
         }

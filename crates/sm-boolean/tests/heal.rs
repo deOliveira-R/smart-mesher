@@ -16,7 +16,7 @@ use sm_cadio::{ReadOptions, RealizeOptions, read_step, realize};
 use sm_core::Point3;
 use sm_geom_api::{CurveDef, Line};
 use sm_testkit::strategies::config;
-use sm_topo_api::fixtures::{BrickIds, brick};
+use sm_topo_api::fixtures::{BrickIds, brick, webcut_brick};
 use sm_topo_api::{
     Carrier, CellComplex, Dim, LineageKind, OpId, Side, TopologyEdit, TopologyView,
     TopologyViewExt, canonical_words, validate,
@@ -524,4 +524,46 @@ fn corpus_table_what_heals() {
         assert_eq!((words(&h), codes(&h)), before, "{id}");
         println!("HEAL {id}: unchanged, codes {:?}", before.1);
     }
+}
+
+#[test]
+fn a_coplanar_two_face_sheet_is_not_capped() {
+    let mut h = CellComplex::new();
+    h.begin_op(OpId(1)).unwrap();
+    let b = brick(&mut h, Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
+    h.end_op().unwrap();
+    h.begin_op(OpId(2)).unwrap();
+    let w = webcut_brick(&mut h, &b, 0.5).unwrap();
+    h.end_op().unwrap();
+    // Keep only the two split pieces of the -x side: a planar sheet of two coplanar faces.
+    h.begin_op(OpId(3)).unwrap();
+    for &v in h.cells(Dim::Body).to_vec().iter() {
+        h.kill(v).unwrap();
+    }
+    for &v in h.cells(Dim::Volume).to_vec().iter() {
+        h.kill(v).unwrap();
+    }
+    let keep = w.split_faces[0];
+    for f in h.cells(Dim::Face).to_vec() {
+        if f != keep[0] && f != keep[1] {
+            h.kill(f).unwrap();
+        }
+    }
+    h.end_op().unwrap();
+    let before = words(&h);
+    let out = run_heal(&mut h, 4, HealFixes::default());
+    assert!(out.closed.is_empty(), "{out:?}");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|s| s.reason.contains("planar sheet")),
+        "{out:?}"
+    );
+    assert_eq!(words(&h), before);
+    let area: f64 = h
+        .cells(Dim::Face)
+        .iter()
+        .map(|&f| h.face_moments(f).unwrap().area)
+        .sum();
+    assert!((area - 1.0).abs() <= 1e-12, "area {area}");
 }
