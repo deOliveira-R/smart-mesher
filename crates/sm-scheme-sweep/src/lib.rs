@@ -36,7 +36,7 @@ pub const NAME: &str = "sweep";
 
 #[cfg(feature = "test-hooks")]
 pub use discover::counters;
-pub use discover::{Column, Columns, discover_columns};
+pub use discover::{Column, Columns, discover_column_sets, discover_columns};
 pub use error::SweepError;
 pub use fit::{fit_affine, fit_target_transform};
 pub use params::{Placement, SweepParams, TargetMode};

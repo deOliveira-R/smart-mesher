@@ -17,7 +17,7 @@ its output is bit-identical for 1 and N threads, with canonical node keys. This 
 polygonal source a polyhedral mesh for the in-house Sn/MOC/Monte Carlo code (Cubit cannot) and
 makes twisted and rotational sweeps analytically testable. Gaps against Cubit in W3a: no
 projected (non-copy) target (`target_mode: "project"` is rejected with `BadParams`), no pole
-columns on a rotation axis and no 360 degree revolve, no many-to-one or multisweep, no smoothing.
+columns on a rotation axis and no 360 degree revolve, no many-to-one or multisweep, no smoothing (many-to-many over imprinted faces: see below).
 
 ## Pipeline
 
@@ -127,6 +127,23 @@ and diagnostics can locate the cell. The gate is checked in parallel over elemen
 `find_first`, so the reported cell is the first in element/layer order for any thread count.
 The wedge corner definition is the plain normalized triple product, which differs from
 `sm-quality`'s wedge metric (weighted to an equilateral base); hexes agree with `sm-quality`.
+
+## Many-to-many over imprinted faces (W4)
+
+`source` and `target` are lists (a bare id is a one-item list; one item is the 1-to-1 sweep,
+bit-identical to before). `discover_column_sets` takes the union of the source vertices,
+walks the columns as above (the imprinted lines are edges of source faces, so they are never
+columns), then pairs each source face with the target face whose vertices are exactly the
+ends of its columns (pairs ascending by source id; `Columns::more` holds the pairs after the
+first and is absent from the serialised data of a 1-to-1 sweep). One `CopyConstraint` per pair
+(own transform and vertex map); the driver derives the shared target edges as edge copies.
+In generation, the source nodes are the union of the source patches; the nodes of an edge
+shared by two source faces (no linking face) get a column of new interior nodes that ends at
+the matching node of the target edge (`shared_edge_top`), placed like face-interior nodes.
+Not supported (errors name the face ids): sets of different sizes or without a face-to-face
+correspondence (true many-to-one is W5, ruling D10), a closed imprinted edge, two target edges
+with the same ends. The automatic search (no `source`/`target`) still tries single faces only,
+so no existing choice changes.
 
 ## Determinism and parallelism
 
