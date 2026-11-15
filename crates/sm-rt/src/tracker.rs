@@ -562,19 +562,21 @@ impl MeshTracker {
         })
     }
 
-    /// The trap check of a mesh walk after a carried step of length `dist`: `None` to go on, or the
-    /// distance hopped, or the typed error when the trap cannot be left (`Err`).
-    pub(crate) fn graze_check(&self, g: &mut crate::graze::Guard, dist: f64, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Result<Option<f64>, sm_rt_api::LostInfo> {
+    /// The trap check of a mesh walk after a carried step of length `dist` (see [`crate::graze::Hop`]):
+    /// `None` to go on, the distance hopped (with the region event when the region changed), or the
+    /// walk's end at its limit when less than `tol` of room is left; `Err` when the trap cannot be left.
+    pub(crate) fn graze_check(&self, g: &mut crate::graze::Guard, dist: f64, st: &mut TrackState, room: f64, sc: &mut Scratch) -> Result<crate::graze::Hop, sm_rt_api::LostInfo> {
         if !g.trapped(dist, self.tol()) {
             return Ok(None);
         }
         if crate::graze::room_short(self.tol(), room) {
-            return Ok(None);
+            return Ok(crate::graze::reach_limit(st, room));
         }
+        let before = st.region;
         match g.may_hop().then(|| self.graze_hop(st, room, sc)).flatten() {
             Some(nd) => {
                 g.hopped();
-                Ok(Some(nd))
+                Ok(Some((nd, crate::graze::region_event(before, st))))
             }
             None => Err(sm_rt_api::lost(st, LostCause::RecoveryFailed).with_retries(g.hops())),
         }
@@ -819,7 +821,13 @@ impl sm_rt_api::Tracker for MeshTracker {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
             }
             match self.graze_check(&mut guard, s.dist, st, dist_limit - total, scratch) {
-                Ok(hop) => total += hop.unwrap_or(0.0),
+                Ok(Some((nd, end))) => {
+                    total += nd;
+                    if let Some(end) = end {
+                        return Ok(sm_rt_api::FireResult::new(total, end));
+                    }
+                }
+                Ok(None) => {}
                 Err(l) => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(l))),
             }
         }

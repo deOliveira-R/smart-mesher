@@ -3,7 +3,12 @@
 //! A trap is a run of more than [`ZERO_RUN_MAX`] consecutive carried steps of at most `tol`
 //! (instances or cells handing the ray back and forth). The loop then nudges the ray on along its
 //! direction ([`nudge`]), at most [`GRAZE_HOPS`] times; a trap that cannot be left ends in the typed
-//! `LostCause::RecoveryFailed` error instead of running to `max_steps`.
+//! `LostCause::RecoveryFailed` error instead of running to `max_steps`. A trap with less than `tol`
+//! of room left ends the walk at its limit. A hop that changes region ends a `fire`-like walk with a
+//! `RegionBoundary` event (no surface, no face); `trace` reports regions per segment, so it owes none.
+
+use sm_core::Point3;
+use sm_rt_api::{FaceId, RegionId, StepEnd, SurfaceId, TrackState};
 
 /// Consecutive steps of at most `tol` before a run is treated as a grazing trap.
 pub(crate) const ZERO_RUN_MAX: u32 = 8;
@@ -11,6 +16,24 @@ pub(crate) const ZERO_RUN_MAX: u32 = 8;
 pub(crate) const GRAZE_TRIES: u32 = 6;
 /// Traps one walk may leave this way before it ends in a typed error.
 pub(crate) const GRAZE_HOPS: u32 = 4;
+
+/// What a trap check decided: `None` to go on, else the distance moved and the event that ends the
+/// walk, if any (`None`: the hop stayed in its region, the walk goes on).
+pub(crate) type Hop = Option<(f64, Option<StepEnd>)>;
+
+/// The region change a hop at `st` made, as the event a walk owes for it (`RegionBoundary` with no
+/// surface or face: the hop crossed none).
+pub(crate) fn region_event(before: RegionId, st: &TrackState) -> Option<StepEnd> {
+    (st.region != before).then_some(StepEnd::RegionBoundary { surface: SurfaceId::NONE, face: FaceId::NONE, to_region: st.region, to_cell: st.cell })
+}
+
+/// A trap with `room < tol` left: nothing can hop, so the walk advances by the room and ends at its
+/// limit (`StepEnd::Limit`), not at `max_steps`. The cell is kept (the move is under `tol`).
+pub(crate) fn reach_limit(st: &mut TrackState, room: f64) -> Hop {
+    let r = if room.is_finite() && room > 0.0 { room } else { 0.0 };
+    st.pos = Point3::new(st.pos.x + st.dir.x * r, st.pos.y + st.dir.y * r, st.pos.z + st.dir.z * r);
+    Some((r, Some(StepEnd::Limit)))
+}
 
 /// Per-walk state of the bound: the current run of tiny steps and the hops taken.
 #[derive(Clone, Copy, Debug, Default)]
@@ -48,7 +71,7 @@ impl Guard {
 }
 
 /// Whether the room left is too short for even the first nudge (`tol`). A trap there is not a
-/// failure: the walk keeps going (`max_steps` still bounds it) and ends at its limit as usual.
+/// failure: [`reach_limit`] ends the walk at its limit.
 pub(crate) fn room_short(tol: f64, room: f64) -> bool {
     room.is_nan() || room < tol
 }

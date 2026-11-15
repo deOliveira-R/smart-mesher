@@ -1194,6 +1194,26 @@ impl WorldTracker {
         })
     }
 
+    /// The trap check of a world walk after a carried step of length `dist`, the one place for
+    /// `trace`, `fire` and the delta flight (see `MeshTracker::graze_check`). Only worlds with a hex
+    /// lattice are bounded; others return `None` and run as before.
+    fn graze_check(&self, g: &mut Guard, dist: f64, st: &mut TrackState, room: f64, sc: &mut Scratch) -> core::result::Result<crate::graze::Hop, sm_rt_api::LostInfo> {
+        if !self.has_hex || !g.trapped(dist, self.tol) {
+            return Ok(None);
+        }
+        if crate::graze::room_short(self.tol, room) {
+            return Ok(crate::graze::reach_limit(st, room));
+        }
+        let before = st.region;
+        match g.may_hop().then(|| self.graze_hop(st, room, sc)).flatten() {
+            Some(nd) => {
+                g.hopped();
+                Ok(Some((nd, crate::graze::region_event(before, st))))
+            }
+            None => Err(lost(st, LostCause::RecoveryFailed).with_retries(g.hops())),
+        }
+    }
+
     fn global_located(&self, h: Hit) -> Located {
         let p = &self.protos[h.proto];
         let cell = CellId::new((h.base + u64::from(h.local.cell.0)) as usize);
@@ -1755,18 +1775,23 @@ impl Tracker for WorldTracker {
             }
             t += s.dist;
             let carried = matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) || (matches!(s.end, StepEnd::RegionBoundary { .. }) && !st.cell.is_none());
-            if carried && guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, opts.max_dist - t) {
+            if carried {
                 let (cell, region, from) = (st.cell, st.region, st.entered_via);
-                match guard.may_hop().then(|| self.graze_hop(st, opts.max_dist - t, sc)).flatten() {
-                    Some(nd) => {
-                        guard.hopped();
+                match self.graze_check(&mut guard, s.dist, st, opts.max_dist - t, sc) {
+                    Ok(Some((nd, end))) => {
+                        // The hop is a chord of the cell it left; a region change shows in the next
+                        // segment (a trace has no region events).
                         let seg = Segment::new(cell, region, t, nd).with_faces(from, None);
                         if sink.segment(&seg) == Flow::Stop {
                             return Ok(TraceEnd::Stopped);
                         }
                         t += nd;
+                        if matches!(end, Some(StepEnd::Limit)) {
+                            return Ok(TraceEnd::Limit);
+                        }
                     }
-                    None => return Ok(TraceEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops()))),
+                    Ok(None) => {}
+                    Err(l) => return Ok(TraceEnd::Lost(l)),
                 }
             }
             match s.end {
@@ -1792,14 +1817,15 @@ impl Tracker for WorldTracker {
             if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
                 return Ok(sm_rt_api::FireResult::new(total, s.end));
             }
-            if guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, dist_limit - total) {
-                match guard.may_hop().then(|| self.graze_hop(st, dist_limit - total, sc)).flatten() {
-                    Some(nd) => {
-                        guard.hopped();
-                        total += nd;
+            match self.graze_check(&mut guard, s.dist, st, dist_limit - total, sc) {
+                Ok(Some((nd, end))) => {
+                    total += nd;
+                    if let Some(end) = end {
+                        return Ok(sm_rt_api::FireResult::new(total, end));
                     }
-                    None => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops())))),
                 }
+                Ok(None) => {}
+                Err(l) => return Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(l))),
             }
         }
         Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded))))
@@ -2295,19 +2321,21 @@ impl MajorantTracker for WorldTracker {
                             break;
                         }
                         // The same bound on grazing traps as `trace` and `fire`.
-                        if guard.trapped(s.dist, self.tol) && self.has_hex && !crate::graze::room_short(self.tol, (limit - total).max(0.0)) {
-                            match guard.may_hop().then(|| self.graze_hop(st, (limit - total).max(0.0), sc)).flatten() {
-                                Some(nd) => {
-                                    guard.hopped();
-                                    total += nd;
-                                    if st.levels != start_levels {
-                                        break;
-                                    }
-                                }
-                                None => {
-                                    end = StepEnd::Lost(lost(st, LostCause::RecoveryFailed).with_retries(guard.hops()));
+                        match self.graze_check(&mut guard, s.dist, st, (limit - total).max(0.0), sc) {
+                            Ok(Some((nd, hop_end))) => {
+                                total += nd;
+                                if let Some(e) = hop_end {
+                                    end = e;
                                     break;
                                 }
+                                if st.levels != start_levels {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(l) => {
+                                end = StepEnd::Lost(l);
+                                break;
                             }
                         }
                         iters += 1;
@@ -2408,5 +2436,77 @@ impl MajorantTracker for WorldTracker {
         let mut ls = TrackState::new(p3(fr.g2l.pt(a3(st.pos))), v3(fr.g2l.vec(av3(st.dir))));
         ls.cell = CellId((c - fr.base) as u32);
         mt.safety_distance(&ls, sc)
+    }
+}
+
+#[cfg(test)]
+mod graze_hops {
+    use super::*;
+    use crate::MeshTrackerBuilder;
+    use sm_rt_api::{BoundarySpec, BuildInput, ComplementPolicy, ComponentId, InstancePolicy, Lattice, MeshInput, Placement, RegionRule, WorldSpec};
+    use sm_testkit::meshes::hexagonal_prism;
+
+    const P: f64 = 1.5;
+    const H: f64 = 2.0;
+
+    /// A 3 x 3 x 1 hex lattice of mesh prisms (flat to flat `P`, height `H`), element 0 at the origin.
+    fn hex_world() -> WorldTracker {
+        let prism = hexagonal_prism(P / 3f64.sqrt(), H).expect("prism");
+        let (rules, bnd, comp) = (RegionRule::ByVolumeClassification, BoundarySpec::default(), ComplementPolicy::Outside);
+        let leaves = [LeafInput::Mesh(MeshInput::new(&prism.mesh, &rules, &bnd, &comp))];
+        let lat = Lattice::new(LatticeKind::HexYRows { pitch: P, z_pitch: H }, Point3::new(0.0, 0.0, 0.0), [3, 3, 1], vec![ComponentId(1); 9], None);
+        let spec = WorldSpec::new(
+            vec![
+                ComponentKind::Leaf { input: 0 },
+                ComponentKind::Union { placements: vec![Placement::new(ComponentId(0), Transform::translation(Vector3::new(0.0, 0.0, -0.5 * H)))] },
+                ComponentKind::Lattice(lat),
+            ],
+            ComponentId(2),
+            InstancePolicy::Hierarchical,
+        );
+        let opts = BuildOptions::default();
+        MeshTrackerBuilder.build_world(&BuildInput::Hier(HierInput::new(&spec, &leaves, &bnd)), &opts).expect("world").0
+    }
+
+    fn trapped_state(w: &WorldTracker, sc: &mut Scratch) -> TrackState {
+        w.init_state(Point3::new(0.1, 0.05, 0.2), Vector3::new(1.0, 0.0, 0.0), None, sc).expect("init")
+    }
+
+    fn trap(w: &WorldTracker, g: &mut Guard, st: &mut TrackState, room: f64, sc: &mut Scratch) -> core::result::Result<crate::graze::Hop, sm_rt_api::LostInfo> {
+        // The 8 tiny steps of a run are not yet a trap; the 9th is.
+        for _ in 0..crate::graze::ZERO_RUN_MAX {
+            assert!(matches!(w.graze_check(g, 0.0, st, room, sc), Ok(None)));
+        }
+        w.graze_check(g, 0.0, st, room, sc)
+    }
+
+    #[test]
+    fn the_check_hops_reports_a_region_change_and_ends_a_short_room_at_the_limit() {
+        let w = hex_world();
+        let mut sc = Scratch::new();
+        // Room to hop: the first nudge (tol) along +x, in the same region: no event.
+        let mut st = trapped_state(&w, &mut sc);
+        let (x0, region) = (st.pos.x, st.region);
+        let Ok(Some((nd, None))) = trap(&w, &mut Guard::new(), &mut st, 1.0, &mut sc) else { panic!("a hop without an event") };
+        assert!((nd - w.tol).abs() < 1e-15 && (st.pos.x - (x0 + nd)).abs() < 1e-15 && st.region == region);
+        // The same hop from a state that claims another region: the walk is owed the change.
+        let mut st = trapped_state(&w, &mut sc);
+        st.region = RegionId(region.0 + 7);
+        let Ok(Some((_, Some(StepEnd::RegionBoundary { surface, face, to_region, to_cell })))) = trap(&w, &mut Guard::new(), &mut st, 1.0, &mut sc) else { panic!("a region event") };
+        assert!(surface.is_none() && face.is_none());
+        assert_eq!((to_region, to_cell), (region, st.cell));
+        // Less than tol of room: advance by the room and end at the limit.
+        let mut st = trapped_state(&w, &mut sc);
+        let room = 0.25 * w.tol;
+        let Ok(Some((nd, Some(StepEnd::Limit)))) = trap(&w, &mut Guard::new(), &mut st, room, &mut sc) else { panic!("the limit") };
+        assert!((nd - room).abs() < 1e-18 && (st.pos.x - (x0 + room)).abs() < 1e-15);
+        // A trap that cannot hop (no hops left) is the typed error.
+        let mut st = trapped_state(&w, &mut sc);
+        let mut g = Guard::new();
+        for _ in 0..crate::graze::GRAZE_HOPS {
+            g.hopped();
+        }
+        let Err(l) = trap(&w, &mut g, &mut st, 1.0, &mut sc) else { panic!("an error") };
+        assert_eq!(l.cause, LostCause::RecoveryFailed);
     }
 }

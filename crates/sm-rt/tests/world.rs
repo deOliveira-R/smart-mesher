@@ -126,6 +126,11 @@ fn lines(name: &str, n: usize, center: [f64; 3], rho: f64, boxed: ([f64; 3], [f6
     parts.into_iter().fold((0.0, 0, 0), |a, b| (a.0.max(b.0), a.1 + b.1, a.2 + b.2))
 }
 
+/// The slot changes `(distance, slot)` without those whose slot is left again within `tol`.
+fn drop_slivers(v: &[(f64, [i32; 3])], tol: f64) -> Vec<(f64, [i32; 3])> {
+    (0..v.len()).filter(|&i| v.get(i + 1).is_none_or(|n| n.0 - v[i].0 > tol)).map(|i| v[i]).collect()
+}
+
 fn at(o: [f64; 3], d: [f64; 3], t: f64) -> [f64; 3] {
     [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]]
 }
@@ -180,9 +185,19 @@ fn acc1_lattice_of_hex_pins_matches_the_analytic_stub() {
         let oracle = run_ray(&stub, p0, d, &mut sc2, |_, _, _| {});
         let mut e = (mine.total - (tout - tin)).abs().max((oracle.total - mine.total).abs());
         let mut bad = usize::from(mine.lost || oracle.lost || !mine.boundary);
-        if mine.slots.len() == oracle.slots.len() {
-            for (a, b) in mine.slots.iter().zip(&oracle.slots) {
-                e = e.max((a.0 - b.0).abs());
+        // A ray passing within `tol` (1e-6) of a lattice corner is on both walls for the walker, which
+        // goes slot to slot diagonally; the exact stub visits the sliver slot for under `tol`. Both
+        // lists drop a slot left again within `tol` (release run, 1 ray in 591248: sliver of 1.07e-7).
+        let (ms, os) = (drop_slivers(&mine.slots, 1e-6), drop_slivers(&oracle.slots, 1e-6));
+        if ms.len() == os.len() {
+            for (a, b) in ms.iter().zip(&os) {
+                // Slot distances agree to 1e-12, or to `tol` when a sliver was dropped.
+                let de = (a.0 - b.0).abs();
+                if mine.slots.len() == oracle.slots.len() {
+                    e = e.max(de);
+                } else {
+                    bad += usize::from(de > 1e-6);
+                }
                 bad += usize::from(a.1 != b.1);
             }
         } else {

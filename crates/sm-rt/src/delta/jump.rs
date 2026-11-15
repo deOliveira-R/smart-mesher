@@ -75,7 +75,13 @@ fn walk(t: &MeshTracker, st: &mut TrackState, limit: f64, max_steps: u32, sc: &m
             return Ok(FireResult::new(total, s.end));
         }
         match t.graze_check(&mut guard, s.dist, st, (limit - total).max(0.0), sc) {
-            Ok(hop) => total += hop.unwrap_or(0.0),
+            Ok(Some((nd, end))) => {
+                total += nd;
+                if let Some(end) = end {
+                    return Ok(FireResult::new(total, end));
+                }
+            }
+            Ok(None) => {}
             Err(l) => return Ok(FireResult::new(total, StepEnd::Lost(l))),
         }
     }
@@ -187,5 +193,78 @@ fn try_jump(t: &MeshTracker, st: &mut TrackState, limit: f64, sc: &mut Scratch) 
     match s.end {
         StepEnd::Lost(_) | StepEnd::CellFace { .. } | StepEnd::SlotChange { .. } => Ok(None),
         end => Ok(Some(FireResult::new(t_exit + s.dist, end))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MeshTrackerBuilder;
+    use sm_mesh_api::{CellIx, CellShape, MeshEdit, SerialAlloc, SetMembers};
+    use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, RegionRule};
+    use sm_testkit::meshes::{CellSpec, build_mesh};
+
+    /// A 24-wedge fan (3 layers); wedge 0 is region `s1`, the rest `s0`. A ray along the axis edge
+    /// is a trap of about 12 zero-length steps in `s0`; the hop out of it lands in wedge 0.
+    fn fan_tracker() -> MeshTracker {
+        let (ns, nz) = (24usize, 3usize);
+        let mut pts = vec![];
+        for k in 0..=nz {
+            pts.push([0.0, 0.0, k as f64]);
+            for i in 0..ns {
+                let a = std::f64::consts::TAU * i as f64 / ns as f64;
+                pts.push([a.cos(), a.sin(), k as f64]);
+            }
+        }
+        let ix = |k: usize, i: usize| k * (ns + 1) + 1 + (i % ns);
+        let ax = |k: usize| k * (ns + 1);
+        let mut cells = vec![];
+        for k in 0..nz {
+            for i in 0..ns {
+                cells.push(CellSpec::Template(CellShape::Wedge, vec![ax(k), ix(k, i), ix(k, i + 1), ax(k + 1), ix(k + 1, i), ix(k + 1, i + 1)]));
+            }
+        }
+        let mut mesh = build_mesh(&pts, &cells, &mut SerialAlloc::new()).expect("fan");
+        let mut alloc = SerialAlloc::new();
+        for r in 0..2 {
+            let members: Vec<CellIx> = (0..nz * ns).filter(|c| ((c % ns) == 0) == (r == 1)).map(CellIx::new).collect();
+            mesh.add_set(&format!("s{r}"), SetMembers::Cells(members), &mut alloc).expect("set");
+        }
+        let rule = RegionRule::ByCellSets(vec!["s0".into(), "s1".into()]);
+        let (bnd, comp) = (BoundarySpec::default(), ComplementPolicy::Outside);
+        let input = BuildInput::Mesh(MeshInput::new(&mesh, &rule, &bnd, &comp));
+        MeshTrackerBuilder.build_concrete(&input, &BuildOptions::default()).expect("build").0
+    }
+
+    /// The jump fallback walk hops out of the trap with a region event (no surface, no face), keeps
+    /// going to the boundary, and ends at the limit with less than `tol` of room left.
+    #[test]
+    fn the_walk_hops_with_a_region_event_and_ends_at_a_short_limit() {
+        let t = fan_tracker();
+        let mut sc = Scratch::new();
+        let o = sm_core::Point3::new(-0.5, 0.0, 1.5);
+        let d = sm_core::Vector3::new(1.0, 0.0, 0.0);
+        let (mut total, mut hops) = (0.0, 0);
+        let mut st = t.init_state(o, d, None, &mut sc).expect("init");
+        loop {
+            let r = walk(&t, &mut st, f64::INFINITY, 100_000, &mut sc).expect("walk");
+            total += r.dist;
+            match r.end {
+                StepEnd::Boundary { .. } => break,
+                StepEnd::RegionBoundary { surface, face, to_region, .. } => {
+                    assert_eq!(st.region, to_region);
+                    hops += usize::from(surface.is_none() && face.is_none());
+                }
+                e => panic!("walk ended {e:?}"),
+            }
+        }
+        assert!((total - 1.5).abs() < 1e-8, "length {total}");
+        assert_eq!(hops, 1, "one hop event");
+        // A short limit inside the trap: Limit at the limit, though max_steps (12) is not reached.
+        let lim = 0.5 + 5e-7;
+        let mut st = t.init_state(o, d, None, &mut sc).expect("init");
+        let r = walk(&t, &mut st, lim, 12, &mut sc).expect("walk");
+        assert!(matches!(r.end, StepEnd::Limit), "{:?}", r.end);
+        assert!((r.dist - lim).abs() < 1e-12 && (st.pos.x - (o.x + lim)).abs() < 1e-12);
     }
 }
