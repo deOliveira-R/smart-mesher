@@ -589,6 +589,31 @@ fn cell_zone_overlaps_loose_cells_and_names() {
     assert!(r.blocks.is_empty());
 }
 
+#[test]
+fn sets_named_like_fixed_zone_children_are_renamed_not_merged() {
+    let mut alloc = SerialAlloc::new();
+    let reserved = ["NGON", "NFACE", "ZoneType", "ZoneBC", "GridCoordinates", "Base", "CGNSLibraryVersion"];
+    for layout in [CgnsLayout::Auto, CgnsLayout::Ngon] {
+        let mut m = hex_block([2, 2, 2], [0.5; 3], &mut alloc).unwrap();
+        for (i, n) in reserved.iter().enumerate() {
+            MeshEdit::add_set(&mut m, n, SetMembers::Cells(vec![CellIx::new(i)]), &mut alloc).unwrap();
+        }
+        let (bytes, r) = write(&m, &layout_opts(layout));
+        let model = model(&bytes); // also checks ZoneType, GridCoordinates and ZoneBC stay intact
+        assert_eq!(model.blocks.len(), reserved.len(), "{layout:?}: every sub-region survives");
+        let got: Vec<&str> = model.blocks.iter().map(|b| b.0.as_str()).collect();
+        for n in reserved {
+            assert!(!got.contains(&n), "{layout:?}: {n} must be renamed: {got:?}");
+            assert!(got.contains(&format!("{n}_2").as_str()), "{layout:?}: {got:?}");
+        }
+        assert_eq!(r.loss.items.iter().filter(|i| i.code == "cgns.name_changed").map(|i| i.count).sum::<u64>(), reserved.len() as u64);
+        if layout == CgnsLayout::Ngon {
+            let kinds: Vec<_> = model.secs.iter().map(|s| (s.name.as_str(), s.etype)).collect();
+            assert!(kinds.iter().any(|k| k.0 == "NGON") && kinds.iter().any(|k| k.0 == "NFACE"), "{kinds:?}");
+        }
+    }
+}
+
 fn in_pool<T: Send>(threads: usize, f: impl FnOnce() -> T + Send) -> T {
     rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(f)
 }

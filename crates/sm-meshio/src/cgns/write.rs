@@ -342,7 +342,9 @@ pub fn write_cgns<W: Write>(mesh: &dyn MeshRead, opts: &CgnsOptions, out: &mut W
     }
 
     // ---- names and cell zones ------------------------------------------------------------------
-    let mut names = Names { used: BTreeSet::new() };
+    // The fixed node names of the file and zone are reserved, so a set, BC or section
+    // that collides is renamed (and reported) rather than merged into them.
+    let mut names = Names { used: ["Base", "CGNSLibraryVersion", "ZoneType", "GridCoordinates", "ZoneBC", "NGON", "NFACE"].iter().map(|s| s.to_string()).collect() };
     let zone_name = names.take("Zone", &mut loss);
     let mut zone_of = vec![NONE; nc];
     let mut blocks: Vec<String> = Vec::new();
