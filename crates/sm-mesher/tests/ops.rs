@@ -508,6 +508,44 @@ fn auto_size_and_size_fields_come_from_the_injected_hooks() {
 }
 
 #[test]
+fn geo_size_hook_gets_the_view_and_the_run_targets_and_wins_over_the_plain_one() {
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(usize, Vec<sm_core::EntityId>)>>> = Arc::default();
+    let log = seen.clone();
+    let cfg = sm_mesher::MesherConfig::new(stubs::registry())
+        // The plain hook must not be used once a geometry-aware one is set.
+        .with_size_fields(Arc::new(|_| panic!("plain hook called")))
+        .with_geo_size_fields(Arc::new(move |view, targets, spec| {
+            use sm_topo_api::{Dim, TopologyView};
+            log.lock().expect("log").push((view.cells(Dim::Edge).len(), targets.to_vec()));
+            match spec {
+                sm_scheme_api::SizingSpec::Function { name, .. } if name == "const" => {
+                    Ok(Some(Box::new(sm_scheme_api::ConstantSize(2.5))))
+                }
+                _ => Err(sm_scheme_api::SchemeError::Input("unknown sizing function".into())),
+            }
+        }));
+    let mut s = sm_op_api::Session::new(engine_cfg(cfg, DerivedCache::default()));
+    run(&mut s, &brick_op([10.0; 3])).expect("brick");
+    run_json(&mut s, "mesh.default_size", json!({"function": "const"})).expect("validated with the view");
+    assert!(run_json(&mut s, "mesh.default_size", json!({"function": "bogus"})).is_err());
+    run_json(&mut s, "mesh.default_size", json!({"function": "const"})).expect("again");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoVolume#1"], "scheme": "sweep",
+               "params": {"source": ["TopoFace#5"], "target": ["TopoFace#6"]}}),
+    )
+    .expect("scheme");
+    mesh_run(&mut s).expect("run");
+    assert_eq!(s.state().count_of(EntityKind::MeshCell), 64);
+    let seen = seen.lock().expect("log");
+    // Validation passes no targets (the whole model); the run passes its volume.
+    assert!(seen.iter().any(|(n, t)| *n == 12 && t.is_empty()));
+    assert!(seen.iter().any(|(n, t)| *n == 12 && t == &[vol(1)]));
+}
+
+#[test]
 fn default_size_applies_where_no_request_reaches() {
     let mut s = session();
     run(&mut s, &brick_op([10.0; 3])).expect("brick");

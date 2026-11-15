@@ -606,10 +606,11 @@ impl TypedOp for MeshDefaultSize {
         if matches!(spec, SizingSpec::Function { .. }) {
             // Build it once to validate the name and parameters now, not at `mesh.run`.
             let cfg = ctx.service::<MesherConfig>()?;
-            let build = cfg
-                .size_fields()
-                .ok_or_else(|| OpError::Invalid("no size-field builder is configured".into()))?;
-            if build(&spec).map_err(scheme_err)?.is_none() {
+            if !cfg.has_size_fields() {
+                return Err(OpError::Invalid("no size-field builder is configured".into()));
+            }
+            let topo = ctx.layer::<ModelLayer>()?.topo();
+            if cfg.build_size_field(topo, &[], &spec).map_err(scheme_err)?.is_none() {
                 return Err(OpError::Invalid(
                     "the sizing function builds no field".into(),
                 ));
