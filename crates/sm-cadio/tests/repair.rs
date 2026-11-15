@@ -111,6 +111,26 @@ fn an_open_sheet_becomes_a_solid_only_with_repair() {
 }
 
 #[test]
+fn a_closed_surface_model_promoted_to_a_solid_is_reported() {
+    let text = String::from_utf8(data("sheet_open_box.stp")).expect("utf8");
+    let bytes = text.replace("OPEN_SHELL('',(#93,#105,#117,#129,#141))", "OPEN_SHELL('',(#93,#105,#117,#129,#141,#153))").into_bytes();
+    let plain = read_step(&bytes, &plain_opts()).expect("plain");
+    assert!(plain.solids.is_empty());
+    assert!(plain.notes.iter().any(|n| n.code == NoteCode::SheetsSkipped));
+    let m = read_step(&bytes, &repair_opts()).expect("repaired");
+    assert_eq!(m.solids.len(), 1);
+    assert_eq!(m.solids[0].kind, SolidKind::Manifold);
+    // Promotion with no caps is still a finding.
+    assert_eq!(m.notes.iter().filter(|n| n.code == NoteCode::Repaired).count(), 1);
+    let n = m.notes.iter().find(|n| n.code == NoteCode::Repaired).expect("note");
+    assert!(n.message.contains("closed surface model"), "{}", n.message);
+    // With `sheets` it stays a sheet and nothing is reported.
+    let s = read_step(&bytes, &ReadOptions { sheets: true, ..repair_opts() }).expect("sheets");
+    assert_eq!(s.solids[0].kind, SolidKind::Sheet);
+    assert_eq!(s.notes.iter().filter(|n| n.code == NoteCode::Repaired).count(), 0);
+}
+
+#[test]
 fn an_unclosable_sheet_is_reported_not_imported() {
     let text = String::from_utf8(data("sheet_open_box.stp")).expect("utf8");
     let bytes = text.replace("OPEN_SHELL('',(#93,#105,#117,#129,#141))", "OPEN_SHELL('',(#93,#105,#117))").into_bytes();

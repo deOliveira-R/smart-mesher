@@ -658,6 +658,10 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
         let multi = (solid.shells.len() > 1).then(|| StepError::Unsupported { id, entity: format!("surface model with {} shells", solid.shells.len()) });
         match multi.map_or_else(|| crate::repair::close_shells(&mut solid, opts.weld_tol), Err) {
             Ok(n) => {
+                if n.is_empty() {
+                    // Already closed: nothing was capped, so say that the sheet became a solid.
+                    notes.push(Note::warn(NoteCode::Repaired, format!("closed surface model #{id} imported as a solid"), vec![id]));
+                }
                 notes.extend(n);
                 solid.kind = SolidKind::Manifold;
                 for sh in &mut solid.shells {
