@@ -793,7 +793,6 @@ fn export_format_names_extensions_and_implemented() {
         assert_eq!(serde_json::to_value(f).unwrap(), json!(f.name()));
         assert_eq!(serde_json::from_value::<ExportFormat>(json!(f.name())).unwrap(), f);
     }
-    assert_eq!(all.iter().filter(|f| !f.is_implemented()).count(), 3);
     // `.msh` stays Gmsh in any case; Fluent is never inferred; the new extensions infer.
     assert_eq!(ExportFormat::from_extension("msh"), Some(ExportFormat::Gmsh));
     assert_eq!(ExportFormat::from_extension("MSH"), Some(ExportFormat::Gmsh));

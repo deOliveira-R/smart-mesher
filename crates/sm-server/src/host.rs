@@ -189,7 +189,7 @@ impl<'w> SessionHost<'w> {
             (None, Some(path)) => format_of(path)?,
             (None, None) => return Err(SessionError::bad_request("inline export needs an explicit `format`")),
         };
-        if !format.is_implemented() {
+        if awaiting_exporter(format) {
             return Err(not_implemented(format));
         }
         if p.source == ExportSource::Model {
@@ -515,6 +515,12 @@ fn format_name(f: ExportFormat) -> &'static str {
         ExportFormat::Abaqus => "abaqus",
         _ => "smsh",
     }
+}
+
+/// Whether `format` is named in the protocol (`fluent`, `cgns`, `abaqus`) but this server has no
+/// exporter for it yet. An exporter that adds its arm to `mesh_export::handles` clears this.
+fn awaiting_exporter(f: ExportFormat) -> bool {
+    matches!(f, ExportFormat::Fluent | ExportFormat::Cgns | ExportFormat::Abaqus) && !mesh_export::handles(f)
 }
 
 /// The refusal for a format that is in the protocol but has no exporter yet (`fluent`, `cgns`,

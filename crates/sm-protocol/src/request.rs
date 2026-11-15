@@ -31,15 +31,15 @@ pub enum ExportFormat {
     /// The `.msh` extension belongs to [`Gmsh`](Self::Gmsh): a `.msh` path with no explicit
     /// `format` resolves to Gmsh, and Fluent is never inferred from any extension, so it always
     /// needs an explicit `format: "fluent"` (a `.msh` path is accepted with it, and `.cas` or
-    /// other names are not inferred either). Not implemented yet: the server answers
+    /// other names are not inferred either). A server without the exporter answers
     /// `format-not-implemented`.
     Fluent,
     /// CGNS 4.x HDF5 file (`.cgns`; one unstructured zone, `NGON_n`/`NFACE_n` for polyhedra).
-    /// Wire name `cgns`. A `.cgns` path infers it. Not implemented yet: the server answers
+    /// Wire name `cgns`. A `.cgns` path infers it. A server without the exporter answers
     /// `format-not-implemented`.
     Cgns,
-    /// Abaqus input deck (`.inp`). Wire name `abaqus`. A `.inp` path infers it. Not implemented
-    /// yet: the server answers `format-not-implemented`.
+    /// Abaqus input deck (`.inp`). Wire name `abaqus`. A `.inp` path infers it. A server without the
+    /// exporter answers `format-not-implemented`.
     Abaqus,
 }
 
@@ -58,13 +58,6 @@ impl ExportFormat {
             Self::Cgns => "cgns",
             Self::Abaqus => "abaqus",
         }
-    }
-
-    /// Whether the exporter of this format exists yet. The formats of the W4c exporters
-    /// (`fluent`, `cgns`, `abaqus`) are named in the protocol first and answer
-    /// `format-not-implemented` until their exporter lands.
-    pub fn is_implemented(self) -> bool {
-        !matches!(self, Self::Fluent | Self::Cgns | Self::Abaqus)
     }
 
     /// The format a file extension (no dot, any case) names, if the protocol infers one:

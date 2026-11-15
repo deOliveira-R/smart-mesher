@@ -319,6 +319,48 @@ fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
 }
 
 #[test]
+fn unimplemented_formats_reach_the_cli_user_as_a_typed_error_and_write_nothing() {
+    let dir = TempDir::new("wire-notimpl-cli");
+    let s = Rc::new(RefCell::new(hex_server()));
+    let cgns = dir.path().join("a.cgns");
+    let msh = dir.path().join("a.msh");
+    let inp = dir.path().join("a.inp");
+    let cases: [(&Path, &[&str]); 3] = [(&cgns, &[]), (&msh, &["--format", "fluent"]), (&inp, &[])];
+    for (path, extra) in cases {
+        let p = path.to_string_lossy().into_owned();
+        let mut args = vec!["export", p.as_str()];
+        args.extend_from_slice(extra);
+        let (code, out, err) = cli(&s, &args);
+        assert_ne!(code, 0, "{args:?}: must fail ({out}{err})");
+        assert!(err.contains("format-not-implemented"), "{args:?}: {err}");
+        assert!(!path.exists(), "{args:?}: nothing written");
+    }
+    // `.msh` with no `--format` still exports Gmsh.
+    let (code, _, err) = cli(&s, &["export", &msh.to_string_lossy()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(msh.exists());
+}
+
+#[test]
+fn unimplemented_formats_reach_the_mcp_client_as_a_tool_error() {
+    let dir = TempDir::new("wire-notimpl-mcp");
+    let mut s = hex_server();
+    let msh = dir.path().join("a.msh");
+    let inp = dir.path().join("a.inp");
+    let cases = [
+        json!({"format": "fluent", "path": msh.to_string_lossy()}),
+        json!({"path": inp.to_string_lossy()}),
+        json!({"format": "cgns", "inline": true}),
+    ];
+    for args in cases {
+        let r = mcp(&mut s, "session_export", args.clone());
+        assert_eq!(r["result"]["isError"], true, "{args}: {r}");
+        assert!(r.to_string().contains("format-not-implemented"), "{args}: {r}");
+    }
+    assert!(!msh.exists() && !inp.exists(), "nothing written");
+}
+
+#[test]
 fn exports_are_deterministic_across_runs_and_thread_counts() {
     let dir = TempDir::new("wire-det");
     let mut s = hex_server();
