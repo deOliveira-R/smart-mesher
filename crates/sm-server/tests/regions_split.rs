@@ -364,8 +364,8 @@ fn the_w3c_pin_exports_are_byte_identical_to_the_build_before_the_split() {
     let ((smsh, hs), (smrt, hr)) = (export_hashed(&mut s, ExportFormat::Smsh, None).expect("smsh"), export_hashed(&mut s, ExportFormat::Smrt, None).expect("smrt"));
     eprintln!("w3c pin smsh sha256 {hs}\nw3c pin smrt sha256 {hr}");
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        assert_eq!(hs, "760e9838ee1f860644c6212a8663ff90a100fdc8f38ecb94590415edd7bb4e9a", "pin.smsh");
-        assert_eq!(hr, "64cfff0283a7a3c1e11aa35fd034511e642be5dba89d3c10172c09df2de0bccb", "pin.smrt");
+        assert_eq!(hs, "197c379b22e90adb9ba200c1c7a4bbed70ec367b69c0e91d107ab933682f5a2a", "pin.smsh");
+        assert_eq!(hr, "a828d4d4353fdbaba33b9756eea8d77f85f360e636cbe0adc16dddd3835138a5", "pin.smrt");
     }
     // An empty split is the same bytes.
     let none = Some(json!({"regions": {"split": []}}));

@@ -417,14 +417,12 @@ print "done", 1
 }
 
 #[test]
-fn disks_of_six_to_fourteen_nodes_take_the_ogrid() {
-    // r = 1: 6 at size 1.0, 8 at 0.8, 12 at 0.52.
-    for (size, n) in [("1.0", 6), ("0.8", 8), ("0.52", 12)] {
-        assert!(
-            cap_scheme(size).contains("cap ogrid"),
-            "n = {n}: {}",
-            cap_scheme(size)
-        );
+fn disks_of_eight_to_fourteen_nodes_take_the_ogrid_and_six_and_seven_keep_pave() {
+    // r = 1: 6 at size 1.0, 7 at 0.9, 8 at 0.8, 12 at 0.52. The pave cap at 6 and 7 nodes has
+    // min scaled Jacobian 0.87 against 0.5 for the O-grid (ruling D11).
+    for (size, n, og) in [("1.0", 6, false), ("0.9", 7, false), ("0.8", 8, true), ("0.52", 12, true)] {
+        let s = cap_scheme(size);
+        assert_eq!(s.contains("cap ogrid"), og, "n = {n}: {s}");
     }
 }
 
