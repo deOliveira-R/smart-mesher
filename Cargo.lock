@@ -1750,6 +1750,7 @@ dependencies = [
  "sm-layer-api",
  "sm-mesh",
  "sm-mesh-api",
+ "sm-model-api",
  "sm-op-api",
  "sm-protocol",
  "sm-quality",

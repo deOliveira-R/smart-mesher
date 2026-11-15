@@ -17,6 +17,7 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
+sm-model-api = { path = "../sm-model-api" }
 sm-quality = { path = "../sm-quality" }
 sm-topo-api = { path = "../sm-topo-api" }
 rayon = "1"
