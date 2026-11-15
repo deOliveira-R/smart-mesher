@@ -26,7 +26,9 @@ pub enum Format {
     /// as cell type 7. Never inferred (`.msh` means Gmsh), so `--format fluent` is always needed.
     /// Options: `--option cell_zones=none`, `--option boundary_types={"inlet":"pressure-inlet"}`.
     Fluent,
-    /// CGNS HDF5 `.cgns` (not implemented yet).
+    /// CGNS HDF5 `.cgns`: one unstructured zone, standard sections (or NGON_n/NFACE_n for
+    /// polyhedra), BCs per face set, cell sets as sub-regions and families. Inferred from `.cgns`.
+    /// Options: `--option layout=ngon`, `--option boundary_types={"inlet":"inflow"}`.
     Cgns,
     /// Abaqus `.inp` input deck (not implemented yet).
     Abaqus,

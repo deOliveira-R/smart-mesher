@@ -1,7 +1,7 @@
 //! CGNS 4.x export (HDF5 encoding): one unstructured zone per file.
 //!
 //! [`write_cgns`] builds the face-first [`crate::foam::PolyMesh`] and writes a CGNS/HDF5 tree with
-//! the private [`crate::h5`] writer: `CGNSLibraryVersion`, one `Base`, one unstructured `Zone`,
+//! the crate's private `h5` writer: `CGNSLibraryVersion`, one `Base`, one unstructured `Zone`,
 //! coordinates, element sections, `BC_t` nodes from the face sets (grid location `FaceCenter`, a
 //! `PointList`, a `Family_t` that carries the BC type), and a `ZoneSubRegion_t` plus `Family_t`
 //! per cell set. When every cell is a tetrahedron, pyramid, wedge or hexahedron the zone uses

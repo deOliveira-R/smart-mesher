@@ -70,3 +70,36 @@ fn unsupported_inputs_are_typed_errors() {
     g.put_dataset("a/b", Dataset::u64s(vec![0], &[]));
     assert!(matches!(write_file(g), Err(H5Error::Unsupported(_))));
 }
+
+#[test]
+fn tracked_groups_keep_creation_order_and_untracked_bytes_do_not_change() {
+    // Creation order is not name order.
+    let mut root = Group::tracked();
+    root.put_dataset("z", Dataset::i32s(vec![1], &[1]));
+    root.tracked_group("b").put_attr(Attr::string("name", 33, "b"));
+    root.put_dataset("a", Dataset::f32s(vec![2], &[1.5, -2.0]).with_attr(Attr::i32s("flags", &[1])));
+    root.tracked_group("b").tracked_group("y");
+    root.tracked_group("b").tracked_group("x");
+    let bytes = write_file(root.clone()).unwrap();
+    assert_eq!(bytes, write_file(root.clone()).unwrap());
+    let back = read_file(&bytes).unwrap();
+    assert_eq!(back, root);
+    assert_eq!(back.order, ["z", "b", "a"]);
+    let Some(Obj::Group(b)) = back.children.get("b") else { panic!() };
+    assert_eq!(b.order, ["y", "x"]);
+    assert_eq!(back.dataset("a").unwrap().as_f32(), [1.5, -2.0]);
+    // Children missing from `order` follow in name order.
+    let mut g = Group::tracked();
+    g.children.insert("q".into(), Obj::Dataset(Dataset::i32s(vec![1], &[7])));
+    g.children.insert("p".into(), Obj::Dataset(Dataset::i32s(vec![1], &[8])));
+    g.order.push("q".into());
+    assert_eq!(read_file(&write_file(g).unwrap()).unwrap().order, ["q", "p"]);
+    // An untracked group writes no creation order: its bytes are those of the sorted layout.
+    let a = write_file(sample()).unwrap();
+    assert!(!read_file(&a).unwrap().tracked);
+    assert_eq!(a, write_file(read_file(&a).unwrap()).unwrap());
+    // Fixed strings and f32 round-trip through the datatype codec.
+    for t in [Dtype::Str(33), Dtype::Str(3), Dtype::F32] {
+        assert_eq!(Dtype::decode(&t.encode()).unwrap(), t);
+    }
+}

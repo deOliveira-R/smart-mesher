@@ -704,10 +704,10 @@ fn cgns_library_reads_the_file_and_cgnscheck_passes() {
     std::fs::create_dir_all(&scratch.0).unwrap();
     let dir = scratch.0.canonicalize().unwrap();
     std::fs::write(dir.join("cgns_dump.c"), include_str!("cgns_dump.c")).unwrap();
-    let out = sh(&image, &dir, "/opt/conda/bin/gcc -O1 -o /tmp/cgns_dump cgns_dump.c -I/opt/conda/include -L/opt/conda/lib -lcgns -Wl,-rpath,/opt/conda/lib 2>&1 && echo built");
-    assert!(out.trim_end().ends_with("built"), "{out}");
+    let out = sh(&image, &dir, "/opt/conda/bin/gcc -O1 -o cgns_dump cgns_dump.c -I/opt/conda/include -L/opt/conda/lib -lcgns -Wl,-rpath,/opt/conda/lib 2>&1 && echo built");
+    assert!(out.trim_end().ends_with("built"), "image {image} needs conda-forge `cgns` and a compiler (rebuild tools/conformance/dagmc after ACR-EXPFMT):\n{out}");
     let mut alloc = SerialAlloc::new();
-    let brick = MeshFixture { name: "brick", mesh: hex_block([4, 3, 2], [0.25, 0.5, 0.125], &mut alloc).unwrap(), cell_volumes: vec![0.25 * 0.5 * 0.125; 24], volume: 0.0, area: 2.0 * (4.0 * 3.0 * 0.5 * 0.125 + 4.0 * 2.0 * 0.25 * 0.125 + 3.0 * 2.0 * 0.25 * 0.5), boundary_faces: 2 * (12 + 8 + 6) };
+    let brick = MeshFixture { name: "brick", mesh: hex_block([4, 3, 2], [0.25, 0.5, 0.125], &mut alloc).unwrap(), cell_volumes: vec![0.25 * 0.5 * 0.125; 24], volume: 0.0, area: 2.0 * (1.0 * 1.5 + 1.0 * 0.25 + 1.5 * 0.25), boundary_faces: 2 * (12 + 8 + 6) };
     let mut cases: Vec<(String, MeshFixture, CgnsLayout)> = Vec::new();
     for f in [brick, single_tet().unwrap(), single_wedge().unwrap(), single_pyramid().unwrap(), mixed_transition().unwrap(), dual_patch().unwrap(), truncated_octahedron().unwrap(), hexagonal_prism(1.0, 2.0).unwrap()] {
         cases.push((format!("{}_auto", f.name), f.clone(), CgnsLayout::Auto));
@@ -721,8 +721,14 @@ fn cgns_library_reads_the_file_and_cgnscheck_passes() {
     }
     for ((name, f, _), (_, r)) in cases.iter().zip(&written) {
         let log = sh(&image, &dir, &format!("/opt/conda/bin/cgnscheck {name}.cgns 2>&1; echo \"exit $?\""));
-        assert!(log.contains("exit 0") && !log.contains("ERROR") && !log.to_lowercase().contains("error:"), "{name}: cgnscheck:\n{log}");
-        let dump = sh(&image, &dir, &format!("/tmp/cgns_dump {name}.cgns"));
+        // `cgnscheck` exits 0 whatever it finds: the verdict is its summary, "N errors".
+        let errors = log.lines().find_map(|l| l.strip_suffix(" errors").and_then(|n| n.trim().parse::<u32>().ok())).unwrap_or(0);
+        assert!(log.contains("checking complete") && errors == 0 && !log.contains("ERROR"), "{name}: cgnscheck:\n{log}");
+        // Only the library's own recommendations may remain: a zone family and a data class.
+        for w in log.lines().filter(|l| l.starts_with("WARNING")) {
+            assert!(w.starts_with("WARNING:No family name declared for zone") || w == "WARNING:dataclass not given", "{name}: {w}");
+        }
+        let dump = sh(&image, &dir, &format!("./cgns_dump {name}.cgns"));
         assert!(dump.starts_with("Z "), "{name}: library dump:\n{dump}");
         let lib = parse_dump(&dump);
         // What the library read is what we wrote.
@@ -740,4 +746,21 @@ fn cgns_library_reads_the_file_and_cgnscheck_passes() {
         // Analytic checks on the library's data alone.
         check_model(f, &lib, r);
     }
+    // Negative test: a cell that references a face that does not exist is caught by the same
+    // `cgnscheck` (so a clean verdict above is not vacuous).
+    let mut root = read_file(&std::fs::read(dir.join("brick_ngon.cgns")).unwrap()).unwrap();
+    let Some(Obj::Group(zone)) = root.children.get_mut("Base").and_then(|b| match b {
+        Obj::Group(b) => b.children.get_mut("Zone"),
+        _ => None,
+    }) else {
+        panic!("no zone")
+    };
+    let Some(Obj::Group(nface)) = zone.children.get_mut("NFACE") else { panic!("no NFACE") };
+    let Some(Obj::Group(conn)) = nface.children.get_mut("ElementConnectivity") else { panic!("no connectivity") };
+    let Some(Obj::Dataset(d)) = conn.children.get_mut(" data") else { panic!("no data") };
+    d.data[..4].copy_from_slice(&99_999i32.to_le_bytes());
+    std::fs::write(dir.join("broken.cgns"), sm_meshio::h5::write_file(root).unwrap()).unwrap();
+    let log = sh(&image, &dir, "/opt/conda/bin/cgnscheck broken.cgns 2>&1");
+    let errors = log.lines().find_map(|l| l.strip_suffix(" errors").and_then(|n| n.trim().parse::<u32>().ok())).unwrap_or(0);
+    assert!(errors > 0 && log.contains("ERROR:"), "a dangling face reference must be reported:\n{log}");
 }

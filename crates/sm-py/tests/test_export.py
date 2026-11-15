@@ -309,10 +309,35 @@ def test_fluent_export_takes_polyhedra_is_never_inferred_and_matches_cli(s: sm.S
 
 
 @pytest.mark.parametrize("name", ["a.cgns", "A.CGNS"])
-def test_cgns_export_is_refused_typed_and_writes_no_file(cube: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
-    """A `.cgns` path (any case) infers `cgns`; until an exporter exists it is `format-not-implemented`."""
+def test_cgns_export_is_inferred_takes_polyhedra_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
+    """A `.cgns` path (any case) infers `cgns`: an HDF5 file with the CGNS node labels, NGON_n/NFACE_n for polyhedra."""
+    slice_typed(s)
     path = tmp_path / name
-    with pytest.raises(sm.ApplicationError) as ei:
-        cube.export(path=path)
-    assert ei.value.kind == "format-not-implemented"
-    assert not path.exists()
+    r = s.export(path)
+    assert r.format == "cgns"
+    data = path.read_bytes()
+    assert data.startswith(b"\x89HDF\r\n\x1a\n") and b"CGNSBase_t" in data and b"Elements_t" in data
+    # Polyhedra are exported (Gmsh refuses them): the dual uses NGON_n and NFACE_n.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.cgns"
+    p.export(out, mesh=pm)
+    poly = out.read_bytes()
+    assert b"NGON" in poly and b"NFACE" in poly
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.cgns"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(bad, options={"binary": True})
+    assert ei.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.cgns")],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert data == (tmp_path / "cli.cgns").read_bytes()

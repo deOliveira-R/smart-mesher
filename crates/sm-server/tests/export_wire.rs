@@ -132,7 +132,7 @@ fn mcp(server: &mut Server, tool: &str, args: Value) -> Value {
 fn each_format_is_byte_identical_in_process_cli_and_mcp() {
     let dir = TempDir::new("wire-same");
     let s = Rc::new(RefCell::new(hex_server()));
-    for ext in ["h5m", "msh", "smrt"] {
+    for ext in ["h5m", "msh", "smrt", "cgns"] {
         let p0 = dir.path().join(format!("inproc.{ext}"));
         let r = export(&mut s.borrow_mut(), &p0, None, None).unwrap_or_else(|e| panic!("{ext}: {e} {}", e.data));
         let want = read(&p0);
@@ -288,10 +288,7 @@ fn inline_req(format: ExportFormat) -> Request {
 fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
     let dir = TempDir::new("wire-notimpl");
     let mut s = hex_server();
-    let cases = [
-        (ExportFormat::Cgns, "a.cgns", "cgns"),
-        (ExportFormat::Abaqus, "a.inp", "abaqus"),
-    ];
+    let cases = [(ExportFormat::Abaqus, "a.inp", "abaqus")];
     for (fmt, name, wire) in cases {
         let p = dir.path().join(name);
         let e = export(&mut s, &p, Some(fmt), None).expect_err(name);
@@ -301,11 +298,9 @@ fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
         let e = s.call(inline_req(fmt)).expect_err("inline");
         assert_eq!(e.kind, "format-not-implemented");
     }
-    // `.cgns` and `.inp` infer their formats; `.msh` still means Gmsh and still exports.
-    for name in ["b.cgns", "b.inp"] {
-        let e = export(&mut s, &dir.path().join(name), None, None).expect_err(name);
-        assert_eq!(e.kind, "format-not-implemented", "{name}: {e}");
-    }
+    // `.inp` infers its format; `.msh` still means Gmsh and still exports.
+    let e = export(&mut s, &dir.path().join("b.inp"), None, None).expect_err("b.inp");
+    assert_eq!(e.kind, "format-not-implemented", "{e}");
     let gmsh = export(&mut s, &dir.path().join("b.msh"), None, None).expect("msh is gmsh");
     assert_eq!(gmsh.format, ExportFormat::Gmsh);
     // A real extension mismatch is still a bad request.
@@ -382,13 +377,79 @@ fn fluent_options_are_checked_and_boundary_types_apply() {
 }
 
 #[test]
+fn cgns_is_inferred_and_is_the_same_bytes_in_process_cli_and_mcp() {
+    let dir = TempDir::new("wire-cgns");
+    let s = Rc::new(RefCell::new(hex_server()));
+    let p0 = dir.path().join("inproc.cgns");
+    let r = export(&mut s.borrow_mut(), &p0, None, None).unwrap_or_else(|e| panic!("{e} {}", e.data));
+    assert_eq!(r.format, ExportFormat::Cgns);
+    let want = read(&p0);
+    assert_eq!(r.bytes as usize, want.len());
+    assert_eq!(r.sha256, Hash256::of(&want));
+    // HDF5 signature, the CGNS node labels and one family per block.
+    assert_eq!(&want[..8], b"\x89HDF\r\n\x1a\n");
+    let has = |needle: &str| want.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(has("CGNSBase_t") && has("Zone_t") && has("Elements_t") && has("ZoneBC_t"));
+    assert!(has("fuel") && has("water"), "one block per cell set");
+    assert!(r.notes.iter().all(|n| n.code.starts_with("cgns.")), "{:?}", r.notes);
+    // An explicit format on another extension writes the same bytes.
+    let p1 = dir.path().join("other.dat");
+    export(&mut s.borrow_mut(), &p1, Some(ExportFormat::Cgns), None).expect("any extension");
+    assert_eq!(read(&p1), want);
+    let p2 = dir.path().join("cli.cgns");
+    let (code, _, err) = cli(&s, &["export", p2.to_str().expect("utf8")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read(&p2), want, "cli differs");
+    let p3 = dir.path().join("mcp.cgns");
+    let reply = mcp(&mut s.borrow_mut(), "session_export", json!({"path": p3.to_string_lossy()}));
+    assert!(reply["result"]["isError"] != json!(true), "{reply}");
+    assert_eq!(read(&p3), want, "mcp differs");
+    let v = s.borrow_mut().call(inline_req(ExportFormat::Cgns)).expect("inline");
+    let inline: ExportResult = serde_json::from_value(v).expect("result");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(inline.base64.expect("base64")).expect("decode");
+    assert_eq!(bytes, want);
+    // `layout: ngon` is a different tree (NGON_n and NFACE_n), still deterministic.
+    let p4 = dir.path().join("ngon.cgns");
+    export(&mut s.borrow_mut(), &p4, None, Some(json!({"layout": "ngon"}))).expect("ngon");
+    let ngon = read(&p4);
+    assert_ne!(ngon, want);
+    assert!(ngon.windows(4).any(|w| w == b"NGON") && ngon.windows(5).any(|w| w == b"NFACE"));
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let mut t = hex_server();
+    let single = one.install(|| export(&mut t, &p0, None, None).expect("1 thread").sha256);
+    assert_eq!(single, r.sha256);
+}
+
+#[test]
+fn cgns_options_are_checked_and_boundary_types_apply() {
+    let dir = TempDir::new("wire-cgns-opts");
+    let mut s = hex_server();
+    let bad = [
+        json!({"binary": true}),
+        json!({"layout": "polyhedral"}),
+        json!({"cell_zones": "some"}),
+        json!({"boundary_types": {"x": "porous"}}),
+        json!({"boundary_types": {"no_such_set": "wall"}}),
+    ];
+    for options in bad {
+        let p = dir.path().join("bad.cgns");
+        let e = export(&mut s, &p, None, Some(options.clone())).expect_err(&options.to_string());
+        assert_eq!(e.kind, "bad-request", "{options}: {e}");
+        assert!(!p.exists(), "{options}: nothing written");
+    }
+    let p = dir.path().join("none.cgns");
+    export(&mut s, &p, None, Some(json!({"cell_zones": "none"}))).expect("none");
+    let bytes = read(&p);
+    assert!(!bytes.windows(4).any(|w| w == b"fuel"), "no block families");
+}
+
+#[test]
 fn unimplemented_formats_reach_the_cli_user_as_a_typed_error_and_write_nothing() {
     let dir = TempDir::new("wire-notimpl-cli");
     let s = Rc::new(RefCell::new(hex_server()));
-    let cgns = dir.path().join("a.cgns");
     let msh = dir.path().join("a.msh");
     let inp = dir.path().join("a.inp");
-    let cases: [(&Path, &[&str]); 2] = [(&cgns, &[]), (&inp, &[])];
+    let cases: [(&Path, &[&str]); 1] = [(&inp, &[])];
     for (path, extra) in cases {
         let p = path.to_string_lossy().into_owned();
         let mut args = vec!["export", p.as_str()];
@@ -413,7 +474,7 @@ fn unimplemented_formats_reach_the_mcp_client_as_a_tool_error() {
     let cases = [
         json!({"format": "abaqus", "path": msh.with_extension("dat").to_string_lossy()}),
         json!({"path": inp.to_string_lossy()}),
-        json!({"format": "cgns", "inline": true}),
+        json!({"format": "abaqus", "inline": true}),
     ];
     for args in cases {
         let r = mcp(&mut s, "session_export", args.clone());
@@ -428,7 +489,7 @@ fn exports_are_deterministic_across_runs_and_thread_counts() {
     let dir = TempDir::new("wire-det");
     let mut s = hex_server();
     let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
-    for ext in ["h5m", "msh", "smrt"] {
+    for ext in ["h5m", "msh", "smrt", "cgns"] {
         let p = dir.path().join(format!("x.{ext}"));
         let first = export(&mut s, &p, None, None).expect("first").sha256;
         let again = export(&mut s, &p, None, None).expect("again").sha256;
