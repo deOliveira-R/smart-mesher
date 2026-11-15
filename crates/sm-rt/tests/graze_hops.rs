@@ -150,3 +150,146 @@ fn the_flights_walk_the_axis_edge_with_region_events_for_hops() {
     }
     assert!(delta_hops > 0, "the delta flight never hopped out of a trap into another region");
 }
+
+// ---- the world tracker: a mesh-leaf hex lattice of the same two-region fan ------------------
+
+mod world {
+    use super::*;
+    use sm_core::{Point3, Transform, Vector3};
+    use sm_rt::WorldTracker;
+    use sm_rt_api::{ComponentId, ComponentKind, Flow, HierInput, InstancePolicy, Lattice, LatticeKind, LeafInput, NodeId, Placement, Segment, TraceEnd, TraceOptions, WorldSpec};
+
+    /// A 2 x 2 x 1 hex lattice (flat to flat 2.5, height 3) of the fan prototype (unit radius, so it
+    /// sits inside a hex cell), element 0 centred on the origin. One node holds the whole prototype
+    /// (its outer faces are inside it), so the delta flight walks with `step`.
+    fn hex_fan_world(ns: usize, odd: usize) -> WorldTracker {
+        let mesh = checker_fan(ns, odd);
+        let (rules, bnd, comp) = (RegionRule::ByCellSets(vec!["s0".into(), "s1".into()]), BoundarySpec::default(), ComplementPolicy::Outside);
+        let leaves = [LeafInput::Mesh(MeshInput::new(&mesh, &rules, &bnd, &comp))];
+        let lat = Lattice::new(LatticeKind::HexYRows { pitch: 2.5, z_pitch: 3.0 }, Point3::new(0.0, 0.0, 0.0), [2, 2, 1], vec![ComponentId(1); 4], None);
+        let spec = WorldSpec::new(
+            vec![
+                ComponentKind::Leaf { input: 0 },
+                ComponentKind::Union { placements: vec![Placement::new(ComponentId(0), Transform::translation(Vector3::new(0.0, 0.0, -1.5)))] },
+                ComponentKind::Lattice(lat),
+            ],
+            ComponentId(2),
+            InstancePolicy::Hierarchical,
+        );
+        let mut p = PartitionOptions::default();
+        p.enabled = true;
+        p.leaf_cells = 10_000;
+        MeshTrackerBuilder.build_world(&BuildInput::Hier(HierInput::new(&spec, &leaves, &bnd)), &BuildOptions::default().with_partition(p)).expect("world").0
+    }
+
+    const WO: [f64; 3] = [-0.5, 0.0, 0.0];
+    const CASES: [(usize, usize); 5] = [(24, 0), (24, 1), (24, 11), (24, 12), (48, 23)];
+
+    fn start(w: &WorldTracker, sc: &mut Scratch) -> sm_rt_api::TrackState {
+        w.init_state(common::p3(WO), common::v3([1.0, 0.0, 0.0]), None, sc).expect("init")
+    }
+
+    /// `fire` along +x up to 0.9: the hop events (no surface, no face) are checked against the state.
+    #[test]
+    fn world_fire_ends_a_hop_that_changes_region_with_a_region_event() {
+        let mut hops = 0;
+        for (ns, odd) in CASES {
+            let w = hex_fan_world(ns, odd);
+            let mut sc = Scratch::new();
+            let mut st = start(&w, &mut sc);
+            let mut total = 0.0;
+            for _ in 0..1000 {
+                let r = w.fire(&mut st, 0.9 - total, 100_000, &mut sc).expect("fire");
+                total += r.dist;
+                match r.end {
+                    StepEnd::Limit => break,
+                    StepEnd::RegionBoundary { surface, face, to_region, to_cell } => {
+                        assert_eq!((st.region, st.cell), (to_region, to_cell), "ns {ns} odd {odd}");
+                        hops += usize::from(surface.is_none() && face.is_none());
+                    }
+                    e => panic!("ns {ns} odd {odd}: fire ended {e:?}"),
+                }
+            }
+            assert!((total - 0.9).abs() < 1e-8, "ns {ns} odd {odd}: {total}");
+        }
+        assert!(hops > 0, "no hop changed region");
+    }
+
+    /// `trace`: the hop is a chord of the cell it left (no face out), the next segment shows the new region.
+    #[test]
+    fn world_trace_adds_the_hop_chord_and_then_shows_the_new_region() {
+        let mut shown = 0;
+        for (ns, odd) in CASES {
+            let w = hex_fan_world(ns, odd);
+            let mut sc = Scratch::new();
+            let mut st = start(&w, &mut sc);
+            let mut segs: Vec<Segment> = vec![];
+            let mut sink = |s: &Segment| {
+                segs.push(*s);
+                Flow::Continue
+            };
+            let end = w.trace(&mut st, &TraceOptions::default().with_max_dist(0.9), &mut sink, &mut sc).expect("trace");
+            assert!(matches!(end, TraceEnd::Limit), "ns {ns} odd {odd}: {end:?}");
+            let total: f64 = segs.iter().map(|s| s.length).sum();
+            assert!((total - 0.9).abs() < 1e-8, "ns {ns} odd {odd}: {total}");
+            for p in segs.windows(2) {
+                let (a, b) = (&p[0], &p[1]);
+                assert!((b.t0 - (a.t0 + a.length)).abs() < 1e-12, "contiguous");
+                if a.face_out.is_none() && a.region != b.region {
+                    shown += 1;
+                }
+            }
+        }
+        assert!(shown > 0, "no hop chord followed by a new region");
+    }
+
+    /// Delta flight over the axis edge (zero majorants), the same 0.9 long, region events for hops only.
+    #[test]
+    fn world_delta_flight_ends_a_hop_with_a_region_event() {
+        let mut hops = 0;
+        for (ns, odd) in CASES {
+            let w = hex_fan_world(ns, odd);
+            let view = w.majorant_view().expect("partition");
+            let maj = vec![0.0; view.hierarchy().node_count()];
+            let mut sc = Scratch::new();
+            let mut st = start(&w, &mut sc);
+            let opts = FlightOptions::default().with_policy(ModePolicy::Delta).with_max_dist(0.9);
+            let mut cur = view.begin(&st, &opts).expect("begin");
+            let (mut len, mut n) = (0.0, 0);
+            while let Some(seg) = cur.next_segment(view, FlightInput::new(&maj), &mut st, &mut sc).expect("segment") {
+                len = seg.t1;
+                n += 1;
+                assert!(n < 10_000, "ns {ns} odd {odd}: a flight that does not end");
+                if let StepEnd::RegionBoundary { surface, face, to_region, to_cell } = seg.end
+                    && surface.is_none()
+                    && face.is_none()
+                    && !to_region.is_none()
+                {
+                    assert_eq!((st.region, st.cell), (to_region, to_cell), "ns {ns} odd {odd}");
+                    hops += 1;
+                }
+            }
+            assert!((len - 0.9).abs() < 1e-8, "ns {ns} odd {odd}: {len}");
+        }
+        assert!(hops > 0, "the delta flight never hopped into another region");
+    }
+
+    /// Room under `tol` in a trap ends the walk at its limit, not at `max_steps` (the axis edge costs
+    /// `ns - 1` zero-length steps).
+    #[test]
+    fn world_trap_with_less_than_tol_of_room_ends_at_the_limit() {
+        for ns in [24usize, 48] {
+            let w = hex_fan_world(ns, 0);
+            let lim = 0.5 + 5e-7;
+            let mut sc = Scratch::new();
+            let mut st = start(&w, &mut sc);
+            let r = w.fire(&mut st, lim, 12, &mut sc).expect("fire");
+            assert!(matches!(r.end, StepEnd::Limit), "ns {ns} fire: {:?}", r.end);
+            assert!((r.dist - lim).abs() < 1e-12, "ns {ns}: {}", r.dist);
+            let mut st = start(&w, &mut sc);
+            let end = w.trace(&mut st, &TraceOptions::default().with_max_dist(lim).with_max_steps(12), &mut |_: &Segment| Flow::Continue, &mut sc).expect("trace");
+            assert!(matches!(end, TraceEnd::Limit), "ns {ns} trace: {end:?}");
+            let _ = NodeId::new(0);
+        }
+    }
+}
