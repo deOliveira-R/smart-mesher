@@ -150,7 +150,7 @@ fn coedge_dir(t: &dyn TopologyView, k: CoedgeKey, s: f64) -> Result<Vector3> {
 /// rule). Uses the surface carrier (a composite's shared surface, see
 /// [`TopologyView::composite_surface`]) when present, else the Newell normal of the outline.
 /// A composite without a shared surface keeps the Newell normal only when it is planar (all
-/// members on parallel planes); any other is a typed error, never a guess.
+/// members on one plane); any other is a typed error, never a guess.
 pub fn face_normal(t: &dyn TopologyView, f: EntityId, p: Point3) -> Result<Vector3> {
     if let Some(sc) = t.composite_surface(f)
         && let Some(s) = t.shapes().surface(sc.surface)
@@ -174,22 +174,17 @@ pub fn face_normal(t: &dyn TopologyView, f: EntityId, p: Point3) -> Result<Vecto
         return Err(SchemeError::Input(format!("face {f}: no normal")));
     }
     let n = n * (1.0 / l);
-    // A composite without one shared surface: members on different plane handles with parallel
-    // normals (STEP imports) are still one plane, so the Newell normal is exact. Any other
-    // composite has no single normal. Planarity is the outline's distance to its mean plane.
-    if matches!(t.carrier(f), Carrier::Composite(_)) {
-        let c = pts.iter().fold(Vector3::default(), |s, q| s + Vector3::new(q.x, q.y, q.z))
-            * (1.0 / pts.len() as f64);
-        let dev = pts
-            .iter()
-            .map(|q| (Vector3::new(q.x, q.y, q.z) - c).dot(n).abs())
-            .fold(0.0, f64::max);
-        if dev > t.tolerance().linear {
-            return Err(SchemeError::Input(format!(
-                "face {f}: composite is not planar and has no single non-periodic surface \
-                 (a periodic carrier needs pcurve synthesis, ACR-V2b)"
-            )));
-        }
+    // A composite without one shared non-periodic surface is still one plane when its members
+    // are (STEP imports put coplanar members on different plane handles); the Newell normal is
+    // then exact. Planarity is judged on the member geometry (`face_plane` integrates the
+    // members), never on the outline: a curved composite can have coplanar corners.
+    if matches!(t.carrier(f), Carrier::Composite(_))
+        && !matches!(t.face_plane(f, t.tolerance().linear), Ok(Some(_)))
+    {
+        return Err(SchemeError::Input(format!(
+            "face {f}: composite is not planar and has no single non-periodic surface \
+             (composites on one periodic surface are not supported yet)"
+        )));
     }
     Ok(n)
 }

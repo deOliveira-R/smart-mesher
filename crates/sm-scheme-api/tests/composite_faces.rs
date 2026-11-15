@@ -2,19 +2,19 @@
 //! mapping `PartitionFace` intent to `Target::Surface`.
 
 use sm_core::{EntityId, Point3, Transform, Vector3};
+use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, Interval, Line, Plane, SurfaceDef};
 use sm_mesh_api::reference::ReferenceBuilder;
 use sm_mesh_api::{MeshRead, SerialAlloc};
-use sm_geom_api::{Cylinder, Plane, CurveDef, Frame, Interval, Line, SurfaceDef};
 use sm_scheme_api::stubs::{brick_setup, registry};
 use sm_scheme_api::{
-    BoundaryLoop, Driver, Firm, Firmness, GenCtx, IntervalRequest, MeshInput, MeshIntent,
-    PatchSet, ReferenceCornerPicker, Sequential, ReferenceIntervalSolver, SchemeChoice, SchemeError, Target,
+    BoundaryLoop, Driver, Firm, Firmness, GenCtx, IntervalRequest, MeshInput, MeshIntent, PatchSet,
+    ReferenceCornerPicker, ReferenceIntervalSolver, SchemeChoice, SchemeError, Sequential, Target,
     WholeFaces, geom,
 };
 use sm_topo_api::fixtures::{BrickIds, with_op};
 use sm_topo_api::{
-    CellComplex, Carrier, CoedgeSpec, CurveCarrier, FaceCut, InnerLoopAssign, OpId, Overlay,
-    Sense, SurfaceCarrier, TopologyEdit, TopologyView,
+    Carrier, CellComplex, CoedgeSpec, CurveCarrier, FaceCut, InnerLoopAssign, OpId, Overlay, Sense,
+    SurfaceCarrier, TopologyEdit, TopologyView,
 };
 use std::sync::Arc;
 
@@ -83,7 +83,11 @@ fn planar_composite_meshes_like_the_host_face() {
                 sense: Sense::Forward,
             }),
         )?;
-        Ok(t.split_face(ids2.faces[5], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+        Ok(t.split_face(
+            ids2.faces[5],
+            FaceCut::Chord { edge: chord },
+            InnerLoopAssign::None,
+        )?)
     })
     .unwrap();
     let mut ov = Overlay::new(Arc::new(t));
@@ -105,25 +109,73 @@ fn planar_composite_meshes_like_the_host_face() {
 /// Two quads sharing an edge, each on its own surface (topology only), as a composite.
 /// `bend` lifts the outline into a V so it is not planar.
 fn two_quads(surfs: [SurfaceDef; 2], bend: bool) -> (Overlay, EntityId) {
+    let p = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 1.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ];
+    let z = |q: (f64, f64)| {
+        if bend {
+            0.5 * (q.0 - 1.0) * (q.0 - 1.0)
+        } else {
+            0.0
+        }
+    };
+    composite_of(p.map(|q| (q.0, q.1, z(q))), surfs, false)
+}
+
+/// Two faces over six corner points (`0 1 2 / 5 4 3` rows, shared edge `1-4`), as a composite.
+/// Edges are straight lines, except with `arcs` an edge between two points of equal height on
+/// the unit cylinder is its circular arc (so every member is consistent with a cylinder carrier).
+fn composite_of(
+    p: [(f64, f64, f64); 6],
+    surfs: [SurfaceDef; 2],
+    arcs: bool,
+) -> (Overlay, EntityId) {
     let mut t = CellComplex::new();
     let faces = with_op(&mut t, OpId(1), |t| {
-        let p = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (0.0, 1.0)];
-        let z = |q: (f64, f64)| if bend { 0.5 * (q.0 - 1.0) * (q.0 - 1.0) } else { 0.0 };
         let v: Vec<EntityId> = p
             .iter()
-            .map(|q| t.make_vertex(Point3::new(q.0, q.1, z(*q))).unwrap())
+            .map(|q| t.make_vertex(Point3::new(q.0, q.1, q.2)).unwrap())
             .collect();
         let edge = |t: &mut CellComplex, a: usize, b: usize| {
-            let (pa, pb) = (Point3::new(p[a].0, p[a].1, z(p[a])), Point3::new(p[b].0, p[b].1, z(p[b])));
-            let curve = t
-                .shapes_mut()
-                .unwrap()
-                .add_curve(CurveDef::Line(Line::new(pa, pb - pa).unwrap()))
-                .unwrap();
+            let (pa, pb) = (
+                Point3::new(p[a].0, p[a].1, p[a].2),
+                Point3::new(p[b].0, p[b].1, p[b].2),
+            );
+            let arc = arcs && pa.z == pb.z && (pa.x, pa.y) != (pb.x, pb.y);
+            let (def, range, sense) = if arc {
+                let c = Circle::new(Frame::at(Point3::new(0.0, 0.0, pa.z)), 1.0).unwrap();
+                let sense = if pa.x > pb.x {
+                    Sense::Forward
+                } else {
+                    Sense::Reversed
+                };
+                (
+                    CurveDef::Circle(c),
+                    Interval::new(0.0, std::f64::consts::FRAC_PI_2),
+                    sense,
+                )
+            } else {
+                let line = Line::new(pa, pb - pa).unwrap();
+                (
+                    CurveDef::Line(line),
+                    Interval::new(0.0, 1.0),
+                    Sense::Forward,
+                )
+            };
+            let curve = t.shapes_mut().unwrap().add_curve(def).unwrap();
             t.make_edge(
                 v[a],
                 v[b],
-                Some(CurveCarrier { curve, range: Interval::new(0.0, 1.0), sense: Sense::Forward }),
+                Some(CurveCarrier {
+                    curve,
+                    range,
+                    sense,
+                }),
             )
         };
         let e = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0), (1, 4)]
@@ -131,7 +183,10 @@ fn two_quads(surfs: [SurfaceDef; 2], bend: bool) -> (Overlay, EntityId) {
         let mut sc = [None; 2];
         for (slot, def) in sc.iter_mut().zip(surfs) {
             let surface = t.shapes_mut().unwrap().add_surface(def).unwrap();
-            *slot = Some(SurfaceCarrier { surface, sense: Sense::Forward });
+            *slot = Some(SurfaceCarrier {
+                surface,
+                sense: Sense::Forward,
+            });
         }
         let f = |i: usize, fwd: bool| CoedgeSpec {
             edge: e[i],
@@ -147,13 +202,32 @@ fn two_quads(surfs: [SurfaceDef; 2], bend: bool) -> (Overlay, EntityId) {
     (ov, vf)
 }
 
+/// A quarter cylinder (r = 1, angle 0..pi/2, z 0..2) on ONE cylinder handle, split at z = 1
+/// into two faces and composited. Its six corners lie on the plane x + y = 1, so an outline-only
+/// planarity test would wrongly accept it.
 fn cylinder_composite() -> (Overlay, EntityId) {
-    let cyl = || SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
-    two_quads([cyl(), cyl()], true)
+    let cyl =
+        SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
+    let p = [
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 1.0),
+        (0.0, 1.0, 2.0),
+        (1.0, 0.0, 2.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 0.0, 0.0),
+    ];
+    let (ov, vf) = composite_of(p, [cyl.clone(), cyl], true);
+    // The corners really are coplanar (and on the cylinder).
+    for q in p {
+        assert!((q.0 + q.1 - 1.0).abs() < 1e-15 && (q.0 * q.0 + q.1 * q.1 - 1.0).abs() < 1e-15);
+    }
+    (ov, vf)
 }
 
 fn plane(z: f64) -> SurfaceDef {
-    SurfaceDef::Plane(Plane { frame: Frame::at(Point3::new(0.0, 0.0, z)) })
+    SurfaceDef::Plane(Plane {
+        frame: Frame::at(Point3::new(0.0, 0.0, z)),
+    })
 }
 
 #[test]
@@ -167,12 +241,16 @@ fn coplanar_members_on_different_plane_handles_keep_the_newell_normal() {
 
 #[test]
 fn non_planar_mixed_composite_is_refused() {
-    // Members on parallel but offset planes, outline bent: not one plane.
-    let (ov, vf) = two_quads([plane(0.0), plane(0.5)], true);
-    assert_eq!(ov.composite_surface(vf), None);
-    match geom::face_normal(&ov, vf, Point3::new(1.0, 0.5, 0.0)) {
-        Err(SchemeError::Input(m)) => assert!(m.contains("V2b"), "{m}"),
-        other => panic!("expected a typed refusal, got {other:?}"),
+    // Members on parallel but offset planes, outline flat: not one plane. V2b would not help.
+    for bend in [true, false] {
+        let (ov, vf) = two_quads([plane(0.0), plane(0.5)], bend);
+        assert_eq!(ov.composite_surface(vf), None);
+        match geom::face_normal(&ov, vf, Point3::new(1.0, 0.5, 0.0)) {
+            Err(SchemeError::Input(m)) => {
+                assert!(m.contains("not planar") && !m.contains("V2b"), "{m}")
+            }
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
     }
 }
 
@@ -180,9 +258,11 @@ fn non_planar_mixed_composite_is_refused() {
 fn periodic_composite_is_refused_not_guessed() {
     let (ov, vf) = cylinder_composite();
     assert_eq!(ov.composite_surface(vf), None);
-    // face_normal: typed refusal, not the Newell fallback.
+    // face_normal: typed refusal (curved members, whatever the corners say), not the Newell chord-plane normal (-0.7, -0.7, 0).
     match geom::face_normal(&ov, vf, Point3::new(1.0, 0.0, 0.5)) {
-        Err(SchemeError::Input(m)) => assert!(m.contains("V2b"), "{m}"),
+        Err(SchemeError::Input(m)) => {
+            assert!(m.contains("not planar") && !m.contains("V2b"), "{m}")
+        }
         other => panic!("expected a typed refusal, got {other:?}"),
     }
     // loop_uvs: None (no uv at all), through a GenCtx over the overlay.
@@ -196,7 +276,11 @@ fn periodic_composite_is_refused_not_guessed() {
     let ov_input = MeshInput::new(&ov, &model, &WholeFaces, &sel);
     let patches = PatchSet::default();
     let cx = GenCtx::new(&ov_input, &plan, &patches, None);
-    let lp = BoundaryLoop { ring: 0, nodes: Vec::new(), uses: Vec::new() };
+    let lp = BoundaryLoop {
+        ring: 0,
+        nodes: Vec::new(),
+        uses: Vec::new(),
+    };
     assert_eq!(cx.loop_uvs(vf, &lp), None);
 }
 
@@ -210,7 +294,11 @@ fn copy_class_root(with_intent: bool) -> (Target, EntityId, EntityId) {
     let split = |t: &mut CellComplex, op: u64, f: usize, a: usize, b: usize, z: f64| {
         with_op(t, OpId(op), |t| {
             let line = Line::new(Point3::new(0.0, 0.0, z), Vector3::new(1.0, 1.0, 0.0)).unwrap();
-            let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(line)).unwrap();
+            let curve = t
+                .shapes_mut()
+                .unwrap()
+                .add_curve(CurveDef::Line(line))
+                .unwrap();
             let chord = t.make_edge(
                 ids.vertices[a],
                 ids.vertices[b],
@@ -220,7 +308,11 @@ fn copy_class_root(with_intent: bool) -> (Target, EntityId, EntityId) {
                     sense: Sense::Forward,
                 }),
             )?;
-            Ok(t.split_face(ids.faces[f], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+            Ok(t.split_face(
+                ids.faces[f],
+                FaceCut::Chord { edge: chord },
+                InnerLoopAssign::None,
+            )?)
         })
         .unwrap()
     };
@@ -262,7 +354,10 @@ fn copy_class_root(with_intent: bool) -> (Target, EntityId, EntityId) {
         );
     }
     let plan = driver.plan(&input, &intent).expect("plan");
-    let (class, _) = plan.copy_of(Target::Surface(vb)).or_else(|| plan.copy_of(Target::Surface(vt))).expect("class");
+    let (class, _) = plan
+        .copy_of(Target::Surface(vb))
+        .or_else(|| plan.copy_of(Target::Surface(vt)))
+        .expect("class");
     (class.root, vb, vt)
 }
 
@@ -291,7 +386,11 @@ fn brick_with_composite_top() -> (Overlay, BrickIds, EntityId, sm_model_api::Mod
                 sense: Sense::Forward,
             }),
         )?;
-        Ok(t.split_face(ids.faces[5], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+        Ok(t.split_face(
+            ids.faces[5],
+            FaceCut::Chord { edge: chord },
+            InnerLoopAssign::None,
+        )?)
     })
     .unwrap();
     let mut ov = Overlay::new(Arc::new(t));
@@ -310,10 +409,16 @@ fn volume_with_a_composite_face_plans_it_as_a_surface_target() {
     let sel = [ids.volume];
     let input = MeshInput::new(&ov, &model, &WholeFaces, &sel);
     let plan = driver.plan(&input, &all_counts(&ids, 2)).expect("plan");
-    assert!(plan.target(Target::Surface(vf)).is_some(), "composite not planned");
+    assert!(
+        plan.target(Target::Surface(vf)).is_some(),
+        "composite not planned"
+    );
     assert!(plan.layout(vf).is_some());
     for h in ov.live_cover(vf).into_iter().filter(|h| *h != vf) {
-        assert!(plan.target(Target::Surface(h)).is_none(), "hidden member {h} planned");
+        assert!(
+            plan.target(Target::Surface(h)).is_none(),
+            "hidden member {h} planned"
+        );
     }
 }
 
@@ -333,7 +438,11 @@ fn partition_copy_root(with_intent: bool) -> (Target, EntityId, EntityId) {
     for h in a.iter().chain(&b) {
         intent.set_intervals(*h, Firm::hard(IntervalRequest::Count(2)));
     }
-    let (dst, src, dy) = if with_intent { (a[0], b[0], -1.0) } else { (b[0], a[0], 1.0) };
+    let (dst, src, dy) = if with_intent {
+        (a[0], b[0], -1.0)
+    } else {
+        (b[0], a[0], 1.0)
+    };
     intent.set_scheme(
         dst,
         SchemeChoice::with_params(
