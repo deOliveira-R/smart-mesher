@@ -260,3 +260,108 @@ fn the_ir_and_the_frame_use_one_orientation_map() {
     let c = y.element_center(1, 0, 0);
     assert!((c[0] - 3f64.sqrt() / 2.0).abs() < 1e-15 && (c[1] - 0.5).abs() < 1e-15);
 }
+
+/// A homogeneous hex lattice (z in -1..1) under a slab cell of material 3 (z in 1..2) over the same box:
+/// the slab's bottom meets the tops of the elements.
+fn deck_with_slab(orientation: &str, n: u32) -> String {
+    homogeneous_deck(orientation, n).replace(
+        "  <cell id=\"3\" material=\"2\" universe=\"9\"/>",
+        "  <cell id=\"3\" material=\"2\" universe=\"9\"/>\n  <cell id=\"4\" material=\"3\" universe=\"0\" region=\"1 -2 3 -4 6 -7\"/>",
+    )
+    .replace("  <surface id=\"6\" type=\"z-plane\" coeffs=\"1\" boundary=\"vacuum\"/>", "  <surface id=\"6\" type=\"z-plane\" coeffs=\"1\"/>\n  <surface id=\"7\" type=\"z-plane\" coeffs=\"2\" boundary=\"vacuum\"/>")
+}
+
+/// Every face of the deck volumes is shared by two volumes, or by one and then lies on a vacuum
+/// surface (the sideset): the import is conformal. Returns (shared, exterior) face counts.
+fn assert_conformal(r: &Rig, d: &sm_op_api::Delta, what: &str) -> (usize, usize) {
+    use sm_topo_api::Dim;
+    let m = r.model();
+    let vacuum: std::collections::BTreeSet<EntityId> = m.color_by_name("vacuum").map(|c| m.faces_of_color(c)).unwrap_or_default().into_iter().collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut shared, mut exterior) = (0, 0);
+    for &v in &d.outputs["deck_volumes"] {
+        for &f in r.topo().volume_faces(v) {
+            if !seen.insert(f) {
+                continue;
+            }
+            let n = r.topo().coboundary(f).iter().filter(|i| r.topo().dim_of(i.cell) == Some(Dim::Volume)).count();
+            match n {
+                2 => shared += 1,
+                1 => {
+                    exterior += 1;
+                    assert!(vacuum.contains(&f), "{what}: face {f} has one volume and is not on a vacuum surface (a non-conformal join)");
+                }
+                other => panic!("{what}: face {f} is in {other} volumes"),
+            }
+        }
+    }
+    (shared, exterior)
+}
+
+#[test]
+fn the_hex_imports_are_conformal() {
+    // Layered lattices (different pin radii stacked), the 2-D fixtures, and a slab above a lattice.
+    for name in MODELS {
+        let mut r = Rig::new();
+        let d = r.import(&hex_fixture(name, "geometry.xml"), Some(&hex_fixture(name, "materials.xml"))).unwrap();
+        let (shared, exterior) = assert_conformal(&r, &d, name);
+        assert!(shared > 50 && exterior > 0, "{name}: {shared} shared, {exterior} exterior faces");
+    }
+    // A cell that abuts the layers in a z plane is refused, typed, until the kernel can imprint one
+    // face on many hexagons (never returned non-conformal).
+    for orientation in ["x", "y"] {
+        let mut r = Rig::new();
+        match r.import(&deck_with_slab(orientation, 2), Some(&materials(3))) {
+            Err(e) => {
+                let m = e.to_string();
+                assert!(m.contains("csg.unsupported") && m.contains("hex_lattice"), "slab {orientation}: {m}");
+            }
+            Ok(d) => {
+                // If a later kernel can do it, it must be conformal.
+                assert_conformal(&r, &d, &format!("slab {orientation}"));
+            }
+        }
+    }
+}
+
+/// The pitch and centre sweep that broke the plane partition (about half of these failed): a pin in
+/// every element, a gas `outer`, two ring counts, both orientations. Slow; run with `--ignored`.
+#[test]
+#[ignore = "slow: 48 imports"]
+fn the_import_survives_the_round_off_sweep() {
+    let mut failures = Vec::new();
+    for orientation in ["x", "y"] {
+        for n in [2u32, 3] {
+            for pitch in [1.0, 1.7, 2.0, 1.234] {
+                for center in ["0 0", "0.3 -0.2", "0.5 0.5"] {
+                    let per = 3 * n * (n - 1) + 1;
+                    let ids = vec!["7"; per as usize].join(" ");
+                    let g = format!(
+                        r#"<geometry>
+  <cell id="1" universe="0" fill="5" region="1 -2 3 -4 5 -6"/>
+  <cell id="2" material="1" universe="7" region="-8"/>
+  <cell id="3" material="2" universe="7" region="8"/>
+  <cell id="4" material="3" universe="9"/>
+  <hex_lattice id="5" n_rings="{n}" orientation="{orientation}" outer="9"><pitch>{pitch}</pitch><center>{center}</center><universes>{ids}</universes></hex_lattice>
+  <surface id="1" type="x-plane" coeffs="-20" boundary="vacuum"/>
+  <surface id="2" type="x-plane" coeffs="20" boundary="vacuum"/>
+  <surface id="3" type="y-plane" coeffs="-20" boundary="vacuum"/>
+  <surface id="4" type="y-plane" coeffs="20" boundary="vacuum"/>
+  <surface id="5" type="z-plane" coeffs="-1" boundary="vacuum"/>
+  <surface id="6" type="z-plane" coeffs="1" boundary="vacuum"/>
+  <surface id="8" type="z-cylinder" coeffs="0 0 0.3"/>
+</geometry>"#
+                    );
+                    let mut r = Rig::new();
+                    match r.import(&g, Some(&materials(3))) {
+                        Ok(d) => {
+                            assert_conformal(&r, &d, &format!("{orientation} n={n} p={pitch} c={center}"));
+                        }
+                        Err(e) => failures.push(format!("{orientation} n={n} p={pitch} c={center}: {e}")),
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} of 48 failed: {failures:#?}", failures.len());
+}

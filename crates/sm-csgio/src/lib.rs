@@ -13,6 +13,7 @@
 pub mod cli;
 pub mod dnf;
 mod error;
+mod hexwalls;
 mod instantiate;
 pub mod ir;
 mod names;

@@ -554,13 +554,13 @@ fn build_hex(ctx: &mut ApplyCtx<'_>, placed: &Placed, bopts: &BuildOptions) -> R
     };
 
     let ((elem_built, rest_built, prism_notes, arrays), txn) = topo_txn(ctx, |topo, _model| {
+        let rest_built = if rest.is_empty() { None } else { Some(partition::build_subset(topo, &view, &rest, &[], bopts)?) };
         let mut elem_built: Vec<partition::Built> = Vec::new();
         for (i, g) in groups.iter().enumerate() {
             let (lo, hi) = partition::hex_box(&placed.hex_elements[i].polygon, zs[i]);
             let sub = BuildOptions { overlap: bopts.overlap, bounds: Some((lo, hi)), quiet_gaps: true };
             elem_built.push(if g.is_empty() { partition::Built::default() } else { partition::build_subset(topo, &view, g, &[], &sub)? });
         }
-        let rest_built = if rest.is_empty() { None } else { Some(partition::build_subset(topo, &view, &rest, &[], bopts)?) };
         // The array solid(s): one prism per hexagon footprint (all layers of a column in one), united with its
         // neighbours.
         let key = |e: &deck::HexElement| (e.lattice, e.polygon.iter().flatten().map(|v| v.to_bits()).collect::<Vec<u64>>());
@@ -676,8 +676,61 @@ fn build_hex(ctx: &mut ApplyCtx<'_>, placed: &Placed, bopts: &BuildOptions) -> R
         vols.extend(kept);
         let mut all: Vec<EntityId> = elems.iter().map(|v| v.volume).collect();
         all.extend(vols.iter().map(|v| v.volume));
-        let r = merge(topo, &all, &[], &MergeOptions::default()).map_err(|e| OpError::Failed(format!("csg.merge: merging the hexagonal array and its surroundings: {e}")))?;
-        out.stats.merged = r.merged.len();
+        // Faces that lie in one plane but are cut differently (a pin of another radius one layer up, a slab
+        // or the gas above the layers) are imprinted on each other first; the shared walls match as built.
+        let tol = 10.0 * topo.tolerance().linear;
+        let body_of = |t: &dyn TopoHost, v: EntityId| -> Option<EntityId> { t.coboundary(v).iter().map(|i| i.cell).find(|c| t.dim_of(*c) == Some(Dim::Body)) };
+        let mut pairs: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
+        let mut pairs_rest: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
+        let foot = |e: &deck::HexElement| (e.lattice, e.polygon.iter().flatten().map(|v| v.to_bits()).collect::<Vec<u64>>());
+        for (i, a) in elem_built.iter().enumerate() {
+            let z_tol = 1e-9 * (zs[i].1 - zs[i].0);
+            for (j, b) in elem_built.iter().enumerate() {
+                if foot(&placed.hex_elements[i]) == foot(&placed.hex_elements[j]) && (zs[i].1 - zs[j].0).abs() <= z_tol {
+                    for va in &a.vols {
+                        for vb in &b.vols {
+                            if let (Some(x), Some(y)) = (body_of(topo, va.volume), body_of(topo, vb.volume)) {
+                                pairs.insert((x.min(y), x.max(y)));
+                            }
+                        }
+                    }
+                }
+            }
+            for c in [zs[i].0, zs[i].1] {
+                let es: Vec<&Vol> = a.vols.iter().filter(|v| has_face_on(topo, v.volume, 2, c, tol)).collect();
+                if es.is_empty() {
+                    continue;
+                }
+                for r in vols.iter().filter(|r| has_face_on(topo, r.volume, 2, c, tol)) {
+                    for e in &es {
+                        if let (Some(x), Some(y)) = (body_of(topo, r.volume), body_of(topo, e.volume)) {
+                            pairs_rest.insert((x.min(y), x.max(y)));
+                        }
+                    }
+                }
+            }
+        }
+        let mo = MergeOptions::default();
+        let r = merge(topo, &all, &[], &mo).map_err(|e| OpError::Failed(format!("csg.merge: merging the hexagonal array and its surroundings: {e}")))?;
+        let mut merged = r.merged.len();
+        for (x, y) in pairs {
+            let o = imprint_bodies(topo, &[x, y], &ImprintOptions { merge: true, tol: None }).map_err(|e| OpError::Failed(format!("csg.imprint: imprinting a hexagonal element: {e}")))?;
+            out.stats.imprints += 1;
+            merged += o.merge.map_or(0, |m| m.merged.len());
+        }
+        // A cell that abuts the elements in a z plane (a slab above or below the layers) has one face under
+        // many hexagons. The kernel's imprint stops at the second hexagon that shares an edge with the first
+        // ("a cut runs from an inner loop back to the same inner loop"): the import is refused, typed, rather
+        // than returned with a non-conformal interface.
+        for (x, y) in pairs_rest {
+            let o = imprint_bodies(topo, &[x, y], &ImprintOptions { merge: true, tol: None }).map_err(|e| {
+                CsgbrepError::Unsupported { line: None, what: format!("hex_lattice: a cell that abuts the lattice in a z plane (a slab above or below its layers) needs the kernel to imprint one face on many hexagons, which it does not do yet: {e}") }
+            })?;
+            out.stats.imprints += 1;
+            merged += o.merge.map_or(0, |m| m.merged.len());
+        }
+        let r = merge(topo, &all, &[], &mo).map_err(|e| OpError::Failed(format!("csg.merge: merging the hexagonal array and its surroundings: {e}")))?;
+        out.stats.merged = merged + r.merged.len();
         Ok(vols)
     })?;
     let mut vols = vols;
