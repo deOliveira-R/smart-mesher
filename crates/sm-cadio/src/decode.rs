@@ -273,26 +273,38 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
             group_of.push(g);
         }
     }
-    type BaseResult = Result<(Solid, Vec<Note>, (usize, usize)), StepError>;
+    type Base = Result<(Solid, Vec<Note>, (usize, usize)), Note>;
+    type BaseResult = Result<Base, StepError>;
     let decode_base = |i: &usize| -> BaseResult {
         let (id, kind, report, _) = &preps[*i];
         let mut local = Vec::new();
         meter.solid_decoded();
-        let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local, meter)?;
-        Ok((solid, local, stats))
+        match read_solid(ents, *id, *kind, report.clone(), opts, &mut local, meter) {
+            Ok((solid, stats)) => Ok(Ok((solid, local, stats))),
+            // A sheet read only as a repair candidate must not fail the import: drop it with a note.
+            Err(e) if repair_sheets && *kind == SolidKind::Sheet => {
+                Ok(Err(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![*id])))
+            }
+            Err(e) => Err(e),
+        }
     };
     let bases: Vec<BaseResult> = if firsts.len() >= 8 { firsts.par_iter().map(decode_base).collect() } else { firsts.iter().map(decode_base).collect() };
-    let mut bases: Vec<(Solid, Vec<Note>, (usize, usize))> = bases.into_iter().collect::<Result<_, _>>()?;
+    let mut bases: Vec<Base> = bases.into_iter().collect::<Result<_, _>>()?;
     let mut solids = Vec::with_capacity(preps.len());
     let (mut welded_v, mut welded_e) = (0usize, 0usize);
     let mut instances = 0usize;
-    for (_, base_notes, stats) in bases.iter_mut() {
-        notes.append(base_notes);
-        welded_v += stats.0;
-        welded_e += stats.1;
+    for b in bases.iter_mut() {
+        match b {
+            Ok((_, base_notes, stats)) => {
+                notes.append(base_notes);
+                welded_v += stats.0;
+                welded_e += stats.1;
+            }
+            Err(note) => notes.push(note.clone()),
+        }
     }
     for (i, (id, _, _, placements)) in preps.iter().enumerate() {
-        let base = &bases[group_of[i]].0;
+        let Ok((base, _, _)) = &bases[group_of[i]] else { continue };
         let name = file.entities.get(id).and_then(|e| e.rec("MANIFOLD_SOLID_BREP").or_else(|| e.first())).and_then(|r| match r.params.first() {
             Some(part21::Param::Str(s)) => Some(s.clone()),
             _ => None,

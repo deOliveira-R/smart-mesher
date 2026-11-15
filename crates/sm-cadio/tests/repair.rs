@@ -195,3 +195,23 @@ fn the_op_refuses_without_repair_and_imports_with_it() {
     let e = format!("{:?}", run(&mut s, &op).expect_err("unclosable"));
     assert!(e.contains("step.open_shell"), "{e}");
 }
+
+#[test]
+fn an_undecodable_stray_sheet_does_not_fail_the_import_under_repair() {
+    let text = String::from_utf8(data("brick_2x3x4.stp")).expect("utf8");
+    let stray = "#9011 = OFFSET_SURFACE('',#152,1.,.F.);\n#9000 = ADVANCED_FACE('',(#152),#9011,.T.);\n#9001 = OPEN_SHELL('',(#9000));\n#9002 = SHELL_BASED_SURFACE_MODEL('stray',(#9001));\nENDSEC;";
+    let at = text.rfind("ENDSEC;").expect("endsec");
+    let text = format!("{}{}{}", &text[..at], stray, &text[at + "ENDSEC;".len()..]);
+    let plain = read_step(text.as_bytes(), &plain_opts()).expect("plain read");
+    assert_eq!(plain.solids.len(), 1);
+    let m = read_step(text.as_bytes(), &repair_opts()).expect("repair read");
+    assert_eq!(m.solids.len(), 1);
+    assert_eq!(failed(&m), 1);
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::RepairFailed && n.message.contains("#9002")));
+    check_brick(&m);
+
+    // A face on a missing surface behaves the same.
+    let missing = text.replace("#9011,.T.", "#99999,.T.");
+    let m = read_step(missing.as_bytes(), &repair_opts()).expect("repair read");
+    assert_eq!((m.solids.len(), failed(&m)), (1, 1));
+}
