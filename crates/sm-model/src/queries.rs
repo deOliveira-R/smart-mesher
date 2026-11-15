@@ -16,12 +16,10 @@ fn model_layer(state: &State) -> Result<&ModelLayer, OpError> {
 }
 
 /// Rank of a cell kind the topology view holds: the real kinds and the overlay's virtual
-/// vertices, edges and faces (`PartitionCell` lives in the model tables, not in the view).
+/// vertices, edges, faces and cells (`PartitionCell`: the pieces of a realized split live in
+/// the overlay view as volumes).
 fn view_dim(kind: EntityKind) -> Option<Dim> {
-    match kind {
-        EntityKind::PartitionCell => None,
-        k => Dim::of_kind(k),
-    }
+    Dim::of_kind(kind)
 }
 
 fn topo_dim(kind: EntityKind) -> Result<Dim, OpError> {
@@ -42,7 +40,7 @@ pub struct TopoRelated {
     /// The kind to return (`TopoVertex` .. `TopoBody`).
     pub kind: EntityKind,
     /// Source cells.
-    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace"]))]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace", "PartitionCell"]))]
     pub within: Vec<EntityId>,
 }
 
@@ -176,7 +174,9 @@ pub struct Measurement {
 /// Virtual cells of the overlay (`PartitionVertex`, `PartitionEdge`, `PartitionFace`) measure
 /// like real ones: a composite face is the sum of its members, a half of a partitioned face is
 /// integrated on its own loops, a composite edge by its chain. A half of a partitioned
-/// *composite* is refused (`Unsupported`, naming the id).
+/// *composite* is refused (`Unsupported`, naming the id). A `PartitionCell` (a piece of a
+/// realized split) measures by integrating its own faces; if that fails the error is
+/// `Unsupported` and names the piece.
 ///
 /// Face and volume integrals are `TopologyView::face_moments` / `volume_moments` (Gauss
 /// quadrature, far below the model tolerance); a whole sphere (a single face with two pole edges
@@ -189,7 +189,7 @@ pub struct Measurement {
 #[serde(deny_unknown_fields)]
 pub struct ModelMeasure {
     /// The cell to measure.
-    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace"]))]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace", "PartitionCell"]))]
     pub entity: EntityId,
 }
 
@@ -331,7 +331,14 @@ pub(crate) fn volume_value(topo: &dyn TopologyView, v: EntityId) -> Result<(f64,
     {
         return Ok((4.0 / 3.0 * PI * r * r * r, Some(c)));
     }
-    let m = topo.volume_moments(v).map_err(qerr)?;
+    let m = match topo.volume_moments(v) {
+        Ok(m) => m,
+        // A piece of a realized split (`PartitionCell`): integrate it on the view, over its
+        // own faces (real, virtual halves and the cut).
+        Err(QueryError::Unsupported("moments of a virtual volume")) => sm_topo_api::geometry::volume_moments(topo, v)
+            .map_err(|e| OpError::Unsupported(format!("{v}: its volume moments are not available ({e})")))?,
+        Err(e) => return Err(qerr(e)),
+    };
     Ok((m.volume, m.centroid()))
 }
 

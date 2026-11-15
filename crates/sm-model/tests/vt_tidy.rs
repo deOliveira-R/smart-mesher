@@ -380,3 +380,38 @@ fn timing_of_a_move_over_many_cuts() {
         eprintln!("cuts {n}: move {:?}", t0.elapsed());
     }
 }
+
+// ------------------------------------------------- (1b) pieces of a realized split
+
+#[test]
+fn pieces_of_a_realized_split_measure_and_relate() {
+    for factory in [cell_complex as Factory, topo_store] {
+        let mut s = session_for(factory);
+        go(&mut s, &CreateBrick { x: 4.0, y: Some(2.0), z: Some(2.0), center: Some([2.0, 1.0, 1.0]) });
+        let d = go(&mut s, &SplitRealized { piece: id(EntityKind::TopoVolume, 1), normal: [1.0, 0.0, 0.0], offset: 1.0 });
+        let pieces = list(&s, "PartitionCell");
+        assert_eq!(pieces.len(), 2, "{d:?}");
+        let mut got: Vec<(f64, f64)> = pieces
+            .iter()
+            .map(|&p| {
+                let m = measure(&s, p).unwrap();
+                (m.volume.unwrap(), m.centroid.unwrap()[0])
+            })
+            .collect();
+        got.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!(close(got[0].0, 4.0, 1e-9) && close(got[0].1, 0.5, 1e-9), "{got:?}");
+        assert!(close(got[1].0, 12.0, 1e-9) && close(got[1].1, 2.5, 1e-9), "{got:?}");
+        // Related: each piece has 6 faces; the cut face is shared by both pieces.
+        let faces0 = related(&s, "PartitionFace", &[pieces[0]]).unwrap();
+        let faces1 = related(&s, "PartitionFace", &[pieces[1]]).unwrap();
+        let all_faces = related(&s, "TopoFace", &[pieces[0]]).unwrap();
+        assert_eq!(faces0.len() + all_faces.len(), 6, "{faces0:?} {all_faces:?}");
+        let shared: Vec<EntityId> = faces0.iter().copied().filter(|f| faces1.contains(f)).collect();
+        assert_eq!(shared.len(), 1, "{faces0:?} {faces1:?}");
+        // And back: the cut face's volumes are exactly the two pieces.
+        let back = related(&s, "PartitionCell", &shared).unwrap();
+        assert_eq!(back, pieces);
+        // A piece relates to itself by kind.
+        assert_eq!(related(&s, "PartitionCell", &[pieces[0]]).unwrap(), vec![pieces[0]]);
+    }
+}
