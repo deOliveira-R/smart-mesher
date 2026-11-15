@@ -3,7 +3,8 @@
 //!
 //! This mirrors sm-csgio's flattening (`instantiate.rs`) but keeps the regions as expressions (no
 //! DNF, so no term cap) and keeps the kernel surfaces: only planes and cylinders are cut with
-//! (sphere, cone and torus decks are `Unsupported` until the sm-boolean tools land). A quadric
+//! (sphere, cone and torus decks are `Unsupported` until the sm-boolean tools land). Hexagonal
+//! lattices (both orientations) are placed as hexagonal prisms, six planes each. A quadric
 //! that classifies as a plane or a cylinder is replaced by the exact surface.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::CsgbrepError;
 use crate::quadric::{DeckSurface, classify};
 use sm_core::{Point3, Transform, Vector3};
-use sm_csgio::ir::{BoundaryFlag, CsgIr, Expr, Fill, Lattice, Sign};
+use sm_csgio::ir::{BoundaryFlag, CsgIr, Expr, Fill, HexLattice, HexOrientation, Lattice, Sign};
 use sm_csgio::resolve_region_names;
 use sm_geom_api::{Cylinder, Frame, ImplicitDef, Plane, Sense, ShapeValue, SurfaceDef};
 
@@ -23,7 +24,8 @@ const MAX_DEPTH: usize = 64;
 pub struct Hop {
     /// The deck cell whose fill was entered.
     pub cell: u32,
-    /// The lattice and the element `[i, j, k]` entered, when the fill is a lattice.
+    /// The lattice and the element `[i, j, k]` entered, when the fill is a lattice (`[q, r, k]`,
+    /// centred axial indices and layer, for a hexagonal one).
     pub element: Option<(u32, [i32; 3])>,
 }
 
@@ -82,11 +84,32 @@ pub struct LatticeGeom {
     pub lower_left: [f64; 3],
 }
 
+/// The deck data of a hexagonal lattice that a frame needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HexGeom {
+    /// Orientation (OpenMC `orientation`).
+    pub orientation: HexOrientation,
+    /// Number of rings.
+    pub n_rings: u32,
+    /// Number of axial layers.
+    pub n_axial: u32,
+    /// Flat-to-flat pitch, which is also the centre-to-centre distance.
+    pub pitch: f64,
+    /// Layer pitch (infinite without z extent).
+    pub z_pitch: f64,
+    /// Lattice centre in the lattice frame.
+    pub center: [f64; 3],
+}
+
 /// Where a lattice was first placed.
 #[derive(Clone, Debug)]
 pub struct LatticePlacement {
-    /// Deck data of the lattice.
+    /// Deck data of a rectangular lattice. For a hexagonal one (`hex` is `Some`) only a
+    /// placeholder (`dims = [n_rings, 1, n_axial]`, `pitch = [pitch, pitch, z_pitch]`,
+    /// `lower_left = center`) that no consumer should read.
     pub geometry: LatticeGeom,
+    /// Deck data of a hexagonal lattice; `None` for a rectangular one.
+    pub hex: Option<HexGeom>,
     /// The deck lattice id.
     pub id: u32,
     /// Lattice frame to global frame.
@@ -99,7 +122,8 @@ pub struct LatticePlacement {
     pub parents_differ: bool,
     /// The placement carries a rotation (or other non-translation).
     pub rotated: bool,
-    /// The universe of each element, `[i + nx * (j + ny * k)]` (deck order).
+    /// The universe of each element, `[i + nx * (j + ny * k)]` (deck order); in OpenMC ring order
+    /// for a hexagonal lattice ([`HexLattice::universes`]).
     pub universes: Vec<u32>,
     /// The parent clips (region parts of the enclosing cells) of the first placement.
     pub clips: Vec<Expr>,
@@ -367,8 +391,12 @@ impl Placer<'_> {
                     r?;
                 }
                 Fill::Lattice { id, xf } => {
-                    let lat = &ir.lattices[id];
-                    self.place_lattice(cid, *id, lat, &t.compose(xf), &parts)?;
+                    if let Some(hl) = ir.hex_lattices.get(id) {
+                        self.place_hex_lattice(cid, *id, hl, &t.compose(xf), &parts)?;
+                    } else {
+                        let lat = &ir.lattices[id];
+                        self.place_lattice(cid, *id, lat, &t.compose(xf), &parts)?;
+                    }
                 }
             }
         }
@@ -388,7 +416,7 @@ impl Placer<'_> {
             }
             None => {
                 let geometry = LatticeGeom { dims: lat.dims, pitch: lat.pitch, lower_left: lat.lower_left };
-                self.lattices.insert(id, LatticePlacement { geometry, id, xf: *t, parent, placements: 1, parents_differ: false, rotated, universes: lat.universes.clone(), clips: clips.to_vec() });
+                self.lattices.insert(id, LatticePlacement { geometry, hex: None, id, xf: *t, parent, placements: 1, parents_differ: false, rotated, universes: lat.universes.clone(), clips: clips.to_vec() });
             }
         }
     }
@@ -441,6 +469,108 @@ impl Placer<'_> {
             let r = self.place_universe(outer, t, &parts);
             self.path.pop();
             r?;
+        }
+        self.lattice_stack.pop();
+        Ok(())
+    }
+}
+
+impl Placer<'_> {
+    /// The half-space `normal . (x - centre) >= off` (`upper == false`) or `<= off`, in the frame of `t`.
+    fn hex_half(&mut self, l: &HexLattice, n: [f64; 2], off: f64, upper: bool, t: &Transform) -> Result<Expr, CsgbrepError> {
+        let o = Point3::new(l.center[0] + n[0] * off, l.center[1] + n[1] * off, l.center[2]);
+        let frame = Frame::from_z(o, Vector3::new(n[0], n[1], 0.0)).map_err(invalid)?;
+        let (id, flip) = self.store(0, &SurfaceDef::Plane(Plane { frame }), t, BoundaryFlag::None)?;
+        Ok(Expr::Half(id as u32, if (!upper) != flip { Sign::Positive } else { Sign::Negative }))
+    }
+
+    /// The six walls of the element `(q, r)` in the xy plane.
+    fn hex_prism(&mut self, l: &HexLattice, q: i32, r: i32, t: &Transform) -> Result<Vec<Expr>, CsgbrepError> {
+        let mut parts = Vec::with_capacity(6);
+        for dir in 0..3 {
+            let (n, m) = (HexLattice::wall_normal(l.orientation, dir), HexLattice::wall_m(l.orientation, dir, i64::from(q), i64::from(r)));
+            parts.push(self.hex_half(l, n, l.wall_offset(m - 1), false, t)?);
+            parts.push(self.hex_half(l, n, l.wall_offset(m + 1), true, t)?);
+        }
+        Ok(parts)
+    }
+
+    /// z of the lower wall of layer `k` (`k == n_axial` is the top of the last layer).
+    fn hex_z(l: &HexLattice, k: u32) -> f64 {
+        l.center[2] + l.z_pitch * (f64::from(k) - f64::from(l.n_axial) / 2.0)
+    }
+
+    fn note_hex_lattice(&mut self, id: u32, l: &HexLattice, t: &Transform, clips: &[Expr]) {
+        let parent = self.lattice_stack.last().copied();
+        let rotated = !is_translation(t);
+        match self.lattices.get_mut(&id) {
+            Some(p) => {
+                p.placements += 1;
+                if p.parent != parent {
+                    p.parents_differ = true;
+                }
+            }
+            None => {
+                let geometry = LatticeGeom { dims: [l.n_rings, 1, l.n_axial], pitch: [l.pitch, l.pitch, l.z_pitch], lower_left: l.center };
+                let hex = HexGeom { orientation: l.orientation, n_rings: l.n_rings, n_axial: l.n_axial, pitch: l.pitch, z_pitch: l.z_pitch, center: l.center };
+                self.lattices.insert(id, LatticePlacement { geometry, hex: Some(hex), id, xf: *t, parent, placements: 1, parents_differ: false, rotated, universes: l.universes.clone(), clips: clips.to_vec() });
+            }
+        }
+    }
+
+    /// A hexagonal lattice: one hexagonal prism per element (six planes, plus the layer walls), the
+    /// universe placed at its centre; `outer` fills the space outside the array: the notches of its
+    /// zigzag outline (the elements of the first ring outside, `HexLattice::outside_ring`),
+    /// everything beyond the hull planes and beyond the layers. The hop element is `[q, r, k]`.
+    fn place_hex_lattice(&mut self, cid: u32, lid: u32, l: &HexLattice, t: &Transform, clips: &[Expr]) -> Result<(), CsgbrepError> {
+        if self.lattice_stack.contains(&lid) {
+            return Err(CsgbrepError::Invalid(format!("lattice {lid} contains itself")));
+        }
+        self.note_hex_lattice(lid, l, t, clips);
+        self.lattice_stack.push(lid);
+        let bounded_z = l.z_pitch.is_finite();
+        for k in 0..l.n_axial {
+            for ring in 0..l.n_rings {
+                for pos in 0..HexLattice::ring_len(l.n_rings, ring) as u32 {
+                    let (q, r) = HexLattice::ring_axial(l.orientation, l.n_rings, ring, pos).ok_or_else(|| invalid("hex lattice index out of range"))?;
+                    let uid = l.flat_index(k, ring, pos).and_then(|i| l.universes.get(i)).copied().ok_or_else(|| invalid("hex lattice universes do not match its size"))?;
+                    let mut parts: Vec<Expr> = clips.to_vec();
+                    parts.extend(self.hex_prism(l, q, r, t)?);
+                    if bounded_z {
+                        parts.push(self.axis_half(2, Self::hex_z(l, k), false, t)?);
+                        parts.push(self.axis_half(2, Self::hex_z(l, k + 1), true, t)?);
+                    }
+                    let c = l.element_center(q, r, k);
+                    let el = t.compose(&Transform::translation(Vector3::new(c[0], c[1], c[2])));
+                    self.path.push(Hop { cell: cid, element: Some((lid, [q, r, k as i32])) });
+                    let res = self.place_universe(uid, &el, &parts);
+                    self.path.pop();
+                    res?;
+                }
+            }
+        }
+        if let Some(outer) = l.outer {
+            let mut outside = Vec::new();
+            for (q, r) in l.outside_ring() {
+                outside.push(Expr::And(self.hex_prism(l, q, r, t)?));
+            }
+            let mut hull = Vec::with_capacity(6);
+            for dir in 0..3 {
+                let n = HexLattice::hull_normal(l.orientation, dir);
+                hull.push(self.hex_half(l, n, -l.hull_offset(), false, t)?);
+                hull.push(self.hex_half(l, n, l.hull_offset(), true, t)?);
+            }
+            outside.push(Expr::Not(Box::new(Expr::And(hull))));
+            if bounded_z {
+                let slab = vec![self.axis_half(2, Self::hex_z(l, 0), false, t)?, self.axis_half(2, Self::hex_z(l, l.n_axial), true, t)?];
+                outside.push(Expr::Not(Box::new(Expr::And(slab))));
+            }
+            let mut parts: Vec<Expr> = clips.to_vec();
+            parts.push(Expr::Or(outside));
+            self.path.push(Hop { cell: cid, element: None });
+            let res = self.place_universe(outer, t, &parts);
+            self.path.pop();
+            res?;
         }
         self.lattice_stack.pop();
         Ok(())
@@ -526,7 +656,8 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
         }
         match &c.fill {
             Fill::Universe { id: u, .. } if !by_universe.contains_key(u) => return Err(CsgbrepError::Invalid(format!("cell {id} fills with undefined universe {u}"))),
-            Fill::Lattice { id: l, .. } if !ir.lattices.contains_key(l) => return Err(CsgbrepError::Invalid(format!("cell {id} fills with undefined lattice {l}"))),
+            Fill::Lattice { id: l, .. } if !ir.lattices.contains_key(l) && !ir.hex_lattices.contains_key(l) => return Err(CsgbrepError::Invalid(format!("cell {id} fills with undefined lattice {l}"))),
+            Fill::Lattice { id: l, .. } if ir.lattices.contains_key(l) && ir.hex_lattices.contains_key(l) => return Err(CsgbrepError::Invalid(format!("id {l} is both a rectangular and a hexagonal lattice"))),
             _ => {}
         }
     }
@@ -543,6 +674,15 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
         }
         if let Some(u) = l.universes.iter().chain(l.outer.iter()).find(|u| !by_universe.contains_key(u)) {
             return Err(CsgbrepError::Invalid(format!("lattice {id} uses undefined universe {u}")));
+        }
+    }
+    for (id, l) in &ir.hex_lattices {
+        l.check().map_err(|e| CsgbrepError::Invalid(format!("hex lattice {id}: {e}")))?;
+        if let Some(u) = l.universes.iter().chain(l.outer.iter()).find(|u| !by_universe.contains_key(u)) {
+            return Err(CsgbrepError::Invalid(format!("hex lattice {id} uses undefined universe {u}")));
+        }
+        if l.universes.len() > max_cells.saturating_mul(1024) {
+            return Err(CsgbrepError::Invalid(format!("the flat model has more than {max_cells} cells")));
         }
     }
     let mut p = Placer {

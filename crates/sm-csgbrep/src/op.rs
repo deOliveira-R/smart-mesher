@@ -15,7 +15,8 @@ use sm_boolean::{ImprintOptions, MergeOptions, imprint_bodies, merge};
 use sm_layer_api::{ModelLayer, TopoHost, commit_topology, model_txn, topo_txn};
 use sm_model::{CopyXform, ModelCopy};
 use sm_topo_api::{Carrier, Dim, TopologyView};
-use sm_model_api::{LatticeFrame, Layout, RegionTag, SlotIx};
+use sm_csgio::ir::HexOrientation;
+use sm_model_api::{HexOrient, LatticeFrame, Layout, RegionTag, SlotIx};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 
 use crate::deck::{self, Placed};
@@ -77,7 +78,7 @@ pub struct OpenmcOptions {
 ///
 /// `geometry` and `materials` are `{sha256}` or `{inline}` sources like `model.import_step`
 /// (never a path). The deck is flattened as the tracker import does (universes, rectangular
-/// lattices with their `outer`, transforms), the model box is cut by the plane and cylinder
+/// lattices and hexagonal lattices, both orientations, with their `outer`, transforms), the model box is cut by the plane and cylinder
 /// surfaces (a quadric that is a plane or a cylinder included), each piece is classified by the
 /// cell regions, and the pieces of one cell that touch are united. Every cut is conformal.
 ///
@@ -96,12 +97,15 @@ pub struct OpenmcOptions {
 /// the intermediate lattice copies (the nested `model.copy` records them; a later merge changes
 /// their faces): read `deck_volumes`, never `volumes`. One block per region name (numbered from 1 in name order), one sideset per boundary
 /// kind in use (`vacuum` 1, `reflective` 2, `white` 3 when present). Each deck lattice becomes a
-/// lattice frame `lat<id>` and each volume inside lattice elements gets a region tag with the
-/// deck indices.
+/// lattice frame `lat<id>` (a hexagonal lattice a `Hex` layout of the matching orientation, slots
+/// the centred axial `(q, r)` and the layer) and each volume inside lattice elements gets a region
+/// tag with the deck indices. A hexagonal element is a hexagonal prism of six planes (a lattice
+/// of `n` rings gives `3 n (n - 1) + 1` prisms per layer, each of area `sqrt(3)/2 p^2` for the
+/// flat-to-flat pitch `p`); hexagonal lattices keep the flat partition (no prototype copies).
 ///
 /// Refused with `csg.unsupported`, naming the deck surface: spheres, cones, tori, elliptic and
-/// non-classifiable quadrics (until the sm-boolean tools exist), hex lattices and a structured
-/// lattice `outer` (the reader refuses those). Gaps inside the bounds are dropped with an
+/// non-classifiable quadrics (until the sm-boolean tools exist) and a structured lattice
+/// `outer` (the reader refuses that). Gaps inside the bounds are dropped with an
 /// `import.gap` warning; overlaps fail (`csg.overlap`) unless `options.overlap` says otherwise.
 /// Diagnostics: `import.partition` (info: kernel cuts, calls, pieces, unions),
 /// `import.reflective_curved`, `import.lattice_rotated`, `import.lattice_multi_placement`.
@@ -162,6 +166,23 @@ fn write_frames_and_tags(ctx: &mut ApplyCtx<'_>, placed: &Placed, built: &partit
     let mut frames: Vec<(String, LatticeFrame)> = Vec::new();
     let (lo, hi) = bounds;
     for l in &placed.lattices {
+        if let Some(h) = &l.hex {
+            // Slot (0, 0, 0) is the centre of the first layer. Without z extent one slab of the
+            // model height keeps every point in layer 0 (as for the rectangular frame).
+            let finite = h.z_pitch.is_finite();
+            let (dz, z) = if finite { (h.z_pitch, h.center[2] + h.z_pitch * (0.5 - f64::from(h.n_axial) / 2.0)) } else { (hi[2] - lo[2], 0.0) };
+            let mut origin = l.xf.apply_point(Point3::new(h.center[0], h.center[1], z));
+            if !finite {
+                origin.z = 0.5 * (lo[2] + hi[2]);
+            }
+            let orient = match h.orientation {
+                HexOrientation::X => HexOrient::XRows,
+                HexOrientation::Y => HexOrient::YRows,
+            };
+            let layout = Layout::Hex { rings: h.n_rings, pitch: h.pitch, orient, nz: h.n_axial, dz };
+            frames.push((format!("lat{}", l.id), LatticeFrame::new(layout, origin, l.parent.map(|p| format!("lat{p}")))));
+            continue;
+        }
         let g = &l.geometry;
         let mut pitch = [0.0; 3];
         let mut centre = [0.0; 3];

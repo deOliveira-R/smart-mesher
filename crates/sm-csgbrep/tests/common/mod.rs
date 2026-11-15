@@ -98,6 +98,12 @@ pub fn materials(n: u32) -> String {
     s
 }
 
+/// A file of the hexagonal-lattice fixtures of sm-csgio (`openmc_hex/<name>/<file>`).
+pub fn hex_fixture(name: &str, file: &str) -> String {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sm-csgio/tests/fixtures/openmc_hex").join(name).join(file);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
 pub fn fixture(name: &str, file: &str) -> String {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sm-csgio/tests/fixtures/openmc").join(name).join(file);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
