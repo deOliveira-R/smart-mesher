@@ -10,6 +10,7 @@
 # note: golden-reviewed row refreshed at the W4b virtual-topology combine (4b51af3): sm-mcp tools.standard.txt (+model__collapse_edge, +model__composite_edges, +model__composite_faces, +model__partition_edge, +model__partition_face, +model__remove_virtual, +model__split_realized, +model__unsplit_realized, +model__virtual_info W4-VTOPO-OPS; OR-e) 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9 -> c28beb867295a810edb23d71a09b0b90a44cbe7a49d9d9ed0e4fcf0d13ed7d6f
 # note: golden-reviewed row refreshed at the W4b-b1 combine: sm-mcp tools.standard.txt (+mesh__agglomerate W4-POLY-AGG, +mesh__interval_relation W4-SIZE-IIA-OP, +mesh__refine W4-MOD-REFINE-U, +model__heal_check, +model__regularize W4-BOOL-HEAL-A; OR-e) 7c38f938b515290358328e9dabdfa127f87a57d460bd0902e1c28ac0d89c83b9 -> b38ba131bfb15325cbead66e70c0ee8205b6ec3c857f34e7e1ac75ec60f23bbb
 # note: golden-reviewed row refreshed at the W4b virtual-topology combine after merging main (W4b b1, PR #12) and W4-VTOPO-FIX2: sm-mcp tools.standard.txt (main b1 tools + model__collapse_edge, model__composite_edges, model__composite_faces, model__partition_edge, model__partition_face, model__remove_virtual, model__split_realized, model__unsplit_realized, model__virtual_info W4-VTOPO-OPS; OR-e) b38ba131bfb15325cbead66e70c0ee8205b6ec3c857f34e7e1ac75ec60f23bbb -> 34aa5403be93d2c19cd63036065386f60842e1fff25368b983ad203f87b7b458
+# note: D11 (user ruling 2026-11-14) re-blessed at the W4b D11 combine (W4-MESH-CORNER 78e5b8a): ogrid meshes the 8-node fuel disk of the through pin (432 -> 648 hexes; leftout pin 48 -> 72); rows old -> new: platform expected.txt.sha256 e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247 -> be988e421250d4e7bbc16a6786f14df99f86c2c68dcf22377e6286be5624dba3; platform w3c_pin.branch.main 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4; platform w3c_pin.layer.intent 931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd -> caa6b4cdbb199526753d895d62acd3241bbbc19aaa86491d0ba5c649c3c7ce33; platform w3c_pin.layer.meshes 469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683 -> 6b3e12f502409eeb4b6b1da1f8cf7293a28305aeada1fc28f4b23b17166d634e; platform w3c_pin.mem.state 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4; platform w3c_pin.print.cells 432 -> 648; platform w3c_pin.print.h_auto 1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1 -> 619e56654ce1c84b00913042cedd99efa6a895826b7e3d1c65c63db61b56454a; platform w3c_pin.print.h_mesh 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4; platform w3c_pin.state 6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6 -> b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4; w3c_pin leftout.print.h_mesh 87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256 -> 7c35281130588d85a02f14b8a29ff3d052f1c7b0c38435b134b8c70c08eb8cb0; w3c_pin leftout.state 87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256 -> 7c35281130588d85a02f14b8a29ff3d052f1c7b0c38435b134b8c70c08eb8cb0; w3c_pin pin.hexes 432 -> 648. Unchanged: w3c_pin.h_model, w3c_pin.layer.model, W2, W3a, W3b, the enclosed pin and the 6/7-node meshes
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
@@ -339,7 +340,7 @@ platform_linux|test.each_format_is_byte_identical_in_process_cli_and_mcp|linux-x
 platform_linux|test.flat_inputs_keep_their_w3a_hashes|linux-x86_64|ok
 platform_linux|test.identity_hashes_match_expected_on_every_platform|linux-x86_64|ok
 platform_linux|test.milestone_w3c_pin|linux-x86_64|ok
-platform|expected.txt.sha256|any|e6bebc85755dd331cf73c54fd36245398d7f9170b8a79f2c1ad17a992d99a247
+platform|expected.txt.sha256|any|be988e421250d4e7bbc16a6786f14df99f86c2c68dcf22377e6286be5624dba3
 platform|w2_fork.branch.alt|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
 platform|w2_fork.branch.coarse|any|f5f2866af4e7f14369b8f9367c06d1dc52ce9b20e764bf81c690073452050164
 platform|w2_fork.branch.main|any|1fc1366df0c3c526f2780a247c5c69e1a99b058eadadd693d2076b871a718657
@@ -392,16 +393,16 @@ platform|w3b_submap_graded.print.cells|any|36
 platform|w3b_submap_graded.print.geometry_hash|any|43ecc0a4b59b3715
 platform|w3b_submap_graded.print.topology_hash|any|c99bcaa8d93e9a5e
 platform|w3b_submap_graded.state|any|7b71fd6dd5c3dd7136a6a1b78a40c8fa3f851877e9f069a73f164f731b0c0b1f
-platform|w3c_pin.branch.main|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
-platform|w3c_pin.layer.intent|any|931ece3163ca9c41f8919772b0254fc77ae4bf65100b413afb05ab336f6b39bd
-platform|w3c_pin.layer.meshes|any|469435173d563bff0cfcc0d0fd525aaf7cccced9bedd64b7e4e36958bfdc2683
+platform|w3c_pin.branch.main|any|b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4
+platform|w3c_pin.layer.intent|any|caa6b4cdbb199526753d895d62acd3241bbbc19aaa86491d0ba5c649c3c7ce33
+platform|w3c_pin.layer.meshes|any|6b3e12f502409eeb4b6b1da1f8cf7293a28305aeada1fc28f4b23b17166d634e
 platform|w3c_pin.layer.model|any|a2c1c6aa45de6bf4c96c3ae21a4aaca9ba2b58b6134e1f5dd2fe905b569971ba
-platform|w3c_pin.mem.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
-platform|w3c_pin.print.cells|any|432
-platform|w3c_pin.print.h_auto|any|1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1
-platform|w3c_pin.print.h_mesh|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.mem.state|any|b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4
+platform|w3c_pin.print.cells|any|648
+platform|w3c_pin.print.h_auto|any|619e56654ce1c84b00913042cedd99efa6a895826b7e3d1c65c63db61b56454a
+platform|w3c_pin.print.h_mesh|any|b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4
 platform|w3c_pin.print.h_model|any|f238f0340fc123ef799f241e7f9ff99e3d5d7ef848113f9a6c20f768d47b4e9d
-platform|w3c_pin.state|any|6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6
+platform|w3c_pin.state|any|b493073ccabab4c525abbabcdbc4a2af6944083ebf8ff4eae6efecdadd9915a4
 poly|acc7.tet_block.keep.geometry_hash|macos-aarch64|dd13302baaae7a87
 poly|acc7.tet_block.keep.topology_hash|any|66fe41de52386ec9
 poly|acc7.tet_block.planar.geometry_hash|macos-aarch64|ad8dcab2f3fe1e87
@@ -504,10 +505,10 @@ w3c_pin|enclosed.print.h_model|any|8cdcb65bfef688ff4804606968a1be43f8261b7b5bd9a
 w3c_pin|enclosed.print.head|any|main
 w3c_pin|enclosed.print.mesh_volume|macos-aarch64|1.5875999999999972
 w3c_pin|enclosed.state|any|0804bbbffc493a1a399145c657edbb7554381df129af432830f312a4a72204b2
-w3c_pin|leftout.print.h_mesh|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
+w3c_pin|leftout.print.h_mesh|any|7c35281130588d85a02f14b8a29ff3d052f1c7b0c38435b134b8c70c08eb8cb0
 w3c_pin|leftout.print.mesh|any|Mesh#1
-w3c_pin|leftout.state|any|87055d625319ddbce42e6a913115c380151972a7294f215a7144b17eb6340256
-w3c_pin|pin.hexes|any|432
+w3c_pin|leftout.state|any|7c35281130588d85a02f14b8a29ff3d052f1c7b0c38435b134b8c70c08eb8cb0
+w3c_pin|pin.hexes|any|648
 w3c_pin|warped.print.h_mesh|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8
 w3c_pin|warped.print.mesh|any|Mesh#1
 w3c_pin|warped.state|any|45de87c0fddd5b56bdc26eddf66e416fd69db68987a4e26b9cc2c9aa9d3880b8

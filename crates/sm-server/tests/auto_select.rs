@@ -622,20 +622,21 @@ fn assert_pin(text: &str, volumes: f64, shapes: Value, tet_warnings: usize) -> S
     state_hash(&mut s)
 }
 
-/// Through pin (H = 1.0): all-hex, both creation orders. The cylinder sweeps a pave disk, the moderator an
-/// annulus; the shared cylinder face is quads on both sides, so `validate` is empty.
+/// Through pin (H = 1.0): all-hex, both creation orders. The cylinder sweeps an O-grid disk (ruling D11: pave
+/// would close the 8-node disk with corner cells), the moderator a pave annulus;
+/// the shared cylinder face is quads on both sides, so `validate` is empty.
 #[test]
 fn pin_through_is_all_hex_in_both_creation_orders() {
-    let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 48}), 0);
-    let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 48}), 0);
+    let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 72}), 0);
+    let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 72}), 0);
     assert_ne!(a, b, "different entity ids are different states");
 
-    // Per-volume check against the polygon formula. The size-0.3 pave disk of the r = 0.4 cylinder is an
+    // Per-volume check against the polygon formula. The size-0.3 disk of the r = 0.4 cylinder is an
     // n = 8 polygon, so the curved interface is the inscribed octagon: fuel = H (n/2) r^2 sin(2 pi/n).
     // The draft's "2.2 percent of pi r^2" bound was written for n = 12 and does not hold at n = 8.
     let (n, r, h) = (8.0_f64, 0.4_f64, 1.0_f64);
     let fuel = h * (n / 2.0) * r * r * (2.0 * std::f64::consts::PI / n).sin();
-    for (target, want, hex) in [("fu.volume", fuel, 12), ("mo.volumes", PIN_VOLUME - fuel, 36)] {
+    for (target, want, hex) in [("fu.volume", fuel, 36), ("mo.volumes", PIN_VOLUME - fuel, 36)] {
         let tail = format!("mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: {target})\n");
         let (mut s, _, i) = run_info(&format!("{}{tail}", pin_fixture(1.0, true)));
         let got = i["volume"].as_f64().expect("volume");
@@ -698,8 +699,11 @@ fn pin_through_plan_rows_are_sweeps_of_pave_sources_with_copy_targets() {
         assert_eq!((r.kind.as_str(), r.scheme.as_str(), r.how.as_str()), ("volume", "sweep", "intent#0"), "{v}: {rows:?}");
     }
     assert_eq!(rows.iter().filter(|r| r.kind == "volume").count(), 2, "{rows:?}");
+    // Ruling D11: the fuel disk (8 nodes) is an O-grid, the moderator annulus is pave.
     let pave = faces_by_scheme(&rows, "pave");
-    assert_eq!(pave.len(), 2, "one pave source per volume: {rows:?}");
+    let ogrid = faces_by_scheme(&rows, "ogrid");
+    assert_eq!((pave.len(), ogrid.len()), (1, 1), "one pave and one ogrid source: {rows:?}");
+    let pave: Vec<&Row> = pave.into_iter().chain(ogrid).collect();
     assert!(pave.iter().all(|r| r.how == "intent#0"), "{pave:?}");
     let copies: Vec<&Row> = rows.iter().filter(|r| r.kind == "surface" && r.scheme == "copy").collect();
     assert_eq!(copies.len(), 2, "one copy target per volume: {rows:?}");
@@ -725,7 +729,7 @@ fn pin_through_plan_rows_are_sweeps_of_pave_sources_with_copy_targets() {
 /// 3x3 lattices by `model.copy`: 18 volumes each, through all-hex, enclosed all-tet.
 #[test]
 fn pin_lattices_through_and_enclosed() {
-    assert_pin(&format!("{}{RUN_ALL}", lattice_fixture(1.0)), 9.0 * PIN_VOLUME, json!({"Hex": 432}), 0);
+    assert_pin(&format!("{}{RUN_ALL}", lattice_fixture(1.0)), 9.0 * PIN_VOLUME, json!({"Hex": 648}), 0);
     let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", lattice_fixture(0.8)));
     assert_eq!(i["selection"].as_array().map(Vec::len), Some(18));
     assert_eq!(i["cell_shapes"], json!({"Tet": 6647}), "{i}");

@@ -190,6 +190,28 @@ let au = mesh.auto(strategy: "default")
 let m = mesh.run(targets: all volumes)
 "#;
 
+/// The pin with `pave` forced on the fuel disk's caps. Ruling D11: the default strategy meshes that
+/// 8-node disk with the O-grid; pave closes it with corner cells (two circle edges per quad).
+const PIN_FUEL_PAVE: &str = r#"
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "pin cell: fuel and moderator"
+mesh.size(targets: all volumes, size: 0.3)
+let forced = 0
+for f in faces in fu.volume {
+  if forced == 0 and model.measure(entity: f).area < 1.0 {
+    mesh.scheme(targets: f, scheme: "pave")
+    set forced = 1
+  }
+}
+let au = mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+"#;
+
 fn volumes_by_class(m: &dyn MeshRead) -> BTreeMap<String, f64> {
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
     for c in 0..m.cell_count() {
@@ -443,14 +465,15 @@ fn diag_codes(run: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The pin's worst cell is the corner cell with two boundary arcs: its minimum scaled Jacobian is
-/// `sin(2 pi / n)` for `n` circle intervals (0.7071, 0.3827, 0.1951, 0.0980 at n = 8, 16, 32, 64),
-/// independent of node placement; every level below 0.6 of its parent warns. Without projection
-/// the minimum stays 0.7071 and nothing warns.
+/// The pin with pave forced on the fuel disk: the worst cell is the corner cell with two boundary
+/// arcs; its minimum scaled Jacobian is `sin(2 pi / n)` for `n` circle intervals (0.7071, 0.3827,
+/// 0.1951, 0.0980 at n = 8, 16, 32, 64), independent of node placement; every level below 0.6 of its
+/// parent warns. Without projection the minimum stays 0.7071 and nothing warns. This keeps the
+/// `refine.quality` warning covered now that the default pin takes the O-grid (ruling D11).
 #[test]
 fn quality_drop_per_level_is_the_boundary_corner_angle_and_warns() {
     let mut s = server();
-    script(&mut s, PIN);
+    script(&mut s, PIN_FUEL_PAVE);
     let run = script(&mut s, "mesh.refine(mesh: Mesh#1, levels: 3)");
     let reps = reports(&run);
     assert_eq!(reps.len(), 3);
@@ -468,10 +491,27 @@ fn quality_drop_per_level_is_the_boundary_corner_angle_and_warns() {
     let n_warn = diag_codes(&run).iter().filter(|c| *c == "refine.quality").count();
     assert_eq!(n_warn, 3, "every level halves the minimum");
     let mut s2 = server();
-    script(&mut s2, PIN);
+    script(&mut s2, PIN_FUEL_PAVE);
     let run2 = script(&mut s2, "mesh.refine(mesh: Mesh#1, levels: 3, project: false)");
     for rep in reports(&run2) {
         assert!((rep["min_scaled_jacobian"].as_f64().expect("sj") - 0.5f64.sqrt()).abs() < 1e-6);
     }
     assert!(!diag_codes(&run2).iter().any(|c| c == "refine.quality"));
+}
+
+/// The default pin (O-grid fuel disk, ruling D11) keeps its minimum scaled Jacobian of 0.7071 at
+/// every level 1..3 and raises no `refine.quality` warning.
+#[test]
+fn default_pin_refines_without_halving_or_quality_warning() {
+    let mut s = server();
+    script(&mut s, PIN);
+    let run = script(&mut s, "mesh.refine(mesh: Mesh#1, levels: 3)");
+    let reps = reports(&run);
+    assert_eq!(reps.len(), 3);
+    for (k, rep) in reps.iter().enumerate() {
+        let sj = rep["min_scaled_jacobian"].as_f64().expect("sj");
+        assert!((sj - 0.5f64.sqrt()).abs() < 1e-6, "level {} min SJ {sj}", k + 1);
+        eprintln!("default pin level {}: cells {} min SJ {sj:.6}", k + 1, rep["cells"]);
+    }
+    assert!(!diag_codes(&run).iter().any(|c| c == "refine.quality"), "{:?}", diag_codes(&run));
 }

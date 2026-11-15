@@ -365,9 +365,11 @@ for x in q.metrics {
 }
 
 #[test]
-fn the_pin_at_the_pin_size_stays_with_the_unstructured_schemes() {
-    // At size 0.3 a disk of r = 0.4 gets 8 circle nodes; the best five-block O-grid there has a
-    // predicted edge ratio of 1.9, above the limit, and the moderator's is 2.4.
+fn the_pin_fuel_disk_takes_the_ogrid_and_the_moderator_stays_with_pave() {
+    // At size 0.3 a disk of r = 0.4 gets 8 circle nodes. `pave` can only close 8 nodes with four
+    // quads of two circle edges each (corner angle 135 degrees, which halves the minimum scaled
+    // Jacobian at every refinement), so the O-grid wins there although its predicted edge ratio
+    // of 1.9 is above the usual limit. The moderator's annulus predicts 2.4 and stays with pave.
     let out = run(
         "pin-default",
         r#"
@@ -390,7 +392,38 @@ print "done", 1
 "#,
     )
     .unwrap();
-    assert!(!out.contains("ogrid TopoFace"), "{out}");
+    assert!(out.contains("ogrid TopoFace#7"), "fuel cap: {out}");
+    assert!(!out.contains("ogrid TopoFace#13"), "moderator cap: {out}");
+}
+
+/// Schemes the default strategy gives the caps of a z cylinder of r = 1 at `size`: the plan's
+/// `scheme` of each surface that is not a map (the caps; the side is a map).
+fn cap_scheme(size: &str) -> String {
+    let script = r#"
+let cy = model.create_cylinder(height: 2.0, radius: 1.0)
+mesh.size(targets: all volumes, size: {SIZE})
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+let pl = mesh.plan(mesh: m.mesh[0])
+for e in pl.entities {
+  if e.kind == "surface" and e.scheme != "map" {
+    print "cap", e.scheme
+  }
+}
+print "done", 1
+"#
+    .replace("{SIZE}", size);
+    run(&format!("cap-{size}"), &script).unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn disks_of_eight_to_fourteen_nodes_take_the_ogrid_and_six_and_seven_keep_pave() {
+    // r = 1: 6 at size 1.0, 7 at 0.9, 8 at 0.8, 12 at 0.52. The pave cap at 6 and 7 nodes has
+    // min scaled Jacobian 0.87 against 0.5 for the O-grid (ruling D11).
+    for (size, n, og) in [("1.0", 6, false), ("0.9", 7, false), ("0.8", 8, true), ("0.52", 12, true)] {
+        let s = cap_scheme(size);
+        assert_eq!(s.contains("cap ogrid"), og, "n = {n}: {s}");
+    }
 }
 
 #[test]

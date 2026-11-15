@@ -92,14 +92,16 @@ fn size_n(length: f64, size: Option<f64>, step: usize, min: usize) -> Option<usi
 fn predict(
     n: Option<usize>,
     size: Option<f64>,
+    flat_counts: bool,
     build: impl Fn(usize, Option<f64>) -> Option<select::Quality>,
 ) -> Result<(), String> {
     let Some(n) = n else {
         return Ok(());
     };
+    let er_limit = if flat_counts && select::PAVE_FLAT_COUNTS.contains(&n) { select::ER_FLAT_LIMIT } else { select::ER_LIMIT };
     let (n, h) = select::predict_scale(n, size);
     match build(n, h) {
-        Some(q) => select::acceptable(&q, h),
+        Some(q) => select::acceptable(&q, h, er_limit),
         None => Err("no valid O-grid at the size's circle count".into()),
     }
 }
@@ -192,6 +194,7 @@ impl Scheme for Ogrid {
                 predict(
                     size_n(2.0 * PI * radius, size, 2, 4),
                     size,
+                    true,
                     |n, h| select::disk(n, radius, h, fx).map(|b| b.2),
                 ),
             ),
@@ -200,6 +203,7 @@ impl Scheme for Ogrid {
                 predict(
                     size_n((2.0 * PI * radius * 8.0 * half).sqrt(), size, 4, 4),
                     size,
+                    false,
                     |n, h| select::annulus([n / 4; 4], radius, half, 45.0, h, fx).map(|b| b.2),
                 ),
             ),
@@ -208,6 +212,7 @@ impl Scheme for Ogrid {
                 predict(
                     size_n(PI * (r_in + r_out), size, 1, 3),
                     size,
+                    false,
                     |n, h| select::ring_of(n, r_in, r_out, 0.0, h, fx).map(|b| b.2),
                 ),
             ),
