@@ -43,7 +43,7 @@ use crate::grade::Graded;
 
 /// Build the size field of a sizing spec with the model geometry in reach: `curvature`, `point`
 /// and `grade` here (see the [module docs](self)), every other spec through
-/// [`size_field`](crate::size_field). `targets` are the region's volumes, faces or edges (empty:
+/// [`size_field`]. `targets` are the region's volumes, faces or edges (empty:
 /// the whole model). Bad parameters are [`SchemeError::BadParams`] naming the key.
 pub fn size_field_geo(
     view: &dyn TopologyView,
