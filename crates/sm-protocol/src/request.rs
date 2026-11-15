@@ -26,6 +26,63 @@ pub enum ExportFormat {
     Gmsh,
     /// The self-contained `.smrt` tracking image for the transport handover; no options.
     Smrt,
+    /// Ansys Fluent ASCII `.msh` (polyhedra supported). Wire name `fluent`.
+    ///
+    /// The `.msh` extension belongs to [`Gmsh`](Self::Gmsh): a `.msh` path with no explicit
+    /// `format` resolves to Gmsh, and Fluent is never inferred from any extension, so it always
+    /// needs an explicit `format: "fluent"` (a `.msh` path is accepted with it, and `.cas` or
+    /// other names are not inferred either). Not implemented yet: the server answers
+    /// `format-not-implemented`.
+    Fluent,
+    /// CGNS 4.x HDF5 file (`.cgns`; one unstructured zone, `NGON_n`/`NFACE_n` for polyhedra).
+    /// Wire name `cgns`. A `.cgns` path infers it. Not implemented yet: the server answers
+    /// `format-not-implemented`.
+    Cgns,
+    /// Abaqus input deck (`.inp`). Wire name `abaqus`. A `.inp` path infers it. Not implemented
+    /// yet: the server answers `format-not-implemented`.
+    Abaqus,
+}
+
+impl ExportFormat {
+    /// The wire name (the serde spelling), for example `"fluent"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Smsh => "smsh",
+            Self::Vtu => "vtu",
+            Self::Exodus => "exodus",
+            Self::Openfoam => "openfoam",
+            Self::Dagmc => "dagmc",
+            Self::Gmsh => "gmsh",
+            Self::Smrt => "smrt",
+            Self::Fluent => "fluent",
+            Self::Cgns => "cgns",
+            Self::Abaqus => "abaqus",
+        }
+    }
+
+    /// Whether the exporter of this format exists yet. The formats of the W4c exporters
+    /// (`fluent`, `cgns`, `abaqus`) are named in the protocol first and answer
+    /// `format-not-implemented` until their exporter lands.
+    pub fn is_implemented(self) -> bool {
+        !matches!(self, Self::Fluent | Self::Cgns | Self::Abaqus)
+    }
+
+    /// The format a file extension (no dot, any case) names, if the protocol infers one:
+    /// `smsh`, `vtu`, `exo`/`e`/`g`/`exodus`, `h5m`, `msh` (Gmsh, never Fluent), `smrt`,
+    /// `cgns`, `inp`. OpenFOAM and Fluent are never inferred.
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "smsh" => Some(Self::Smsh),
+            "vtu" => Some(Self::Vtu),
+            "exo" | "e" | "g" | "exodus" => Some(Self::Exodus),
+            "h5m" => Some(Self::Dagmc),
+            "msh" => Some(Self::Gmsh),
+            "smrt" => Some(Self::Smrt),
+            "cgns" => Some(Self::Cgns),
+            "inp" => Some(Self::Abaqus),
+            _ => None,
+        }
+    }
 }
 
 /// Source of a `session.export`.

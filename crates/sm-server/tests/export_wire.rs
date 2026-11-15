@@ -268,6 +268,56 @@ fn unknown_option_keys_are_rejected_per_format() {
     assert_eq!(e.kind, "bad-request");
 }
 
+fn inline_req(format: ExportFormat) -> Request {
+    Request::Export {
+        path: None,
+        format: Some(format),
+        mesh: None,
+        provenance: false,
+        inline: true,
+        options: None,
+        split_small_determinant: None,
+        empty_patches: vec![],
+        wedge_patches: vec![],
+        split_warped_faces: false,
+        source: Default::default(),
+    }
+}
+
+#[test]
+fn unimplemented_formats_are_refused_with_a_typed_error_and_write_nothing() {
+    let dir = TempDir::new("wire-notimpl");
+    let mut s = hex_server();
+    // `.msh` is accepted with an explicit `fluent`; nothing is written in any case.
+    let cases = [
+        (ExportFormat::Fluent, "a.msh", "fluent"),
+        (ExportFormat::Fluent, "a.dat", "fluent"),
+        (ExportFormat::Cgns, "a.cgns", "cgns"),
+        (ExportFormat::Abaqus, "a.inp", "abaqus"),
+    ];
+    for (fmt, name, wire) in cases {
+        let p = dir.path().join(name);
+        let e = export(&mut s, &p, Some(fmt), None).expect_err(name);
+        assert_eq!(e.kind, "format-not-implemented", "{name}: {e}");
+        assert!(e.message.contains(wire) && e.message.contains("not implemented yet"), "{e}");
+        assert!(!p.exists(), "{name}: nothing written");
+        let e = s.call(inline_req(fmt)).expect_err("inline");
+        assert_eq!(e.kind, "format-not-implemented");
+    }
+    // `.cgns` and `.inp` infer their formats; `.msh` still means Gmsh and still exports.
+    for name in ["b.cgns", "b.inp"] {
+        let e = export(&mut s, &dir.path().join(name), None, None).expect_err(name);
+        assert_eq!(e.kind, "format-not-implemented", "{name}: {e}");
+    }
+    let gmsh = export(&mut s, &dir.path().join("b.msh"), None, None).expect("msh is gmsh");
+    assert_eq!(gmsh.format, ExportFormat::Gmsh);
+    // A real extension mismatch is still a bad request.
+    let e = export(&mut s, &dir.path().join("c.vtu"), Some(ExportFormat::Cgns), None).expect_err("mismatch");
+    assert_eq!(e.kind, "bad-request");
+    let e = export(&mut s, &dir.path().join("c.cgns"), Some(ExportFormat::Fluent), None).expect_err("mismatch");
+    assert_eq!(e.kind, "bad-request");
+}
+
 #[test]
 fn exports_are_deterministic_across_runs_and_thread_counts() {
     let dir = TempDir::new("wire-det");

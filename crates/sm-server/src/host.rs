@@ -171,8 +171,11 @@ impl<'w> SessionHost<'w> {
             (Some(f), Some(path)) => {
                 // An OpenFOAM path is a case directory: its name says nothing about the format, but a
                 // single-file extension (`.vtu`, `.exo`, ...) is almost surely a mistake.
+                // Fluent's `.msh` is the one extension shared with another format (Gmsh); an explicit
+                // `fluent` on a `.msh` path is the only way to write it.
                 if let Some(by_ext) = known_format_of(path)
                     && by_ext != f
+                    && !(f == ExportFormat::Fluent && by_ext == ExportFormat::Gmsh)
                 {
                     return Err(SessionError::bad_request(format!(
                         "format `{}` disagrees with the extension of {}",
@@ -186,6 +189,9 @@ impl<'w> SessionHost<'w> {
             (None, Some(path)) => format_of(path)?,
             (None, None) => return Err(SessionError::bad_request("inline export needs an explicit `format`")),
         };
+        if !format.is_implemented() {
+            return Err(not_implemented(format));
+        }
         if p.source == ExportSource::Model {
             if format != ExportFormat::Dagmc {
                 return Err(SessionError::new(
@@ -455,7 +461,7 @@ pub(crate) fn resolve_path(root: Option<&Path>, path: &str) -> Result<PathBuf, S
 fn format_of(path: &Path) -> Result<ExportFormat, SessionError> {
     known_format_of(path).ok_or_else(|| {
         SessionError::bad_request(format!(
-            "cannot infer the export format from {}: use `.smsh`, `.vtu`, `.exo`, `.e`, `.g`, `.exodus`, `.h5m`, `.msh` or `.smrt`, or pass `format` (`openfoam` always needs it)",
+            "cannot infer the export format from {}: use `.smsh`, `.vtu`, `.exo`, `.e`, `.g`, `.exodus`, `.h5m`, `.msh` (Gmsh), `.smrt`, `.cgns` or `.inp`, or pass `format` (`openfoam` and `fluent` always need it)",
             path.display()
         ))
     })
@@ -470,15 +476,18 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
         "dagmc" => Ok(ExportFormat::Dagmc),
         "gmsh" => Ok(ExportFormat::Gmsh),
         "smrt" => Ok(ExportFormat::Smrt),
+        "fluent" => Ok(ExportFormat::Fluent),
+        "cgns" => Ok(ExportFormat::Cgns),
+        "abaqus" => Ok(ExportFormat::Abaqus),
         other => Err(SessionError::bad_request(format!(
-            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus`, `openfoam`, `dagmc`, `gmsh` or `smrt`)"
+            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus`, `openfoam`, `dagmc`, `gmsh`, `smrt`, `fluent`, `cgns` or `abaqus`)"
         ))),
     }
 }
 
 /// The format a known extension names (`.smsh`, `.vtu`, `.exo` `.e` `.g` `.exodus`, `.h5m`, `.msh`,
-/// `.smrt`); none for any
-/// other extension. OpenFOAM is never inferred: its path is a directory.
+/// `.smrt`, `.cgns`, `.inp`); none for any
+/// other extension. `.msh` is Gmsh. OpenFOAM (a directory) and Fluent are never inferred.
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("smsh") => Some(ExportFormat::Smsh),
@@ -487,6 +496,8 @@ fn known_format_of(path: &Path) -> Option<ExportFormat> {
         Some("h5m") => Some(ExportFormat::Dagmc),
         Some("msh") => Some(ExportFormat::Gmsh),
         Some("smrt") => Some(ExportFormat::Smrt),
+        Some("cgns") => Some(ExportFormat::Cgns),
+        Some("inp") => Some(ExportFormat::Abaqus),
         _ => None,
     }
 }
@@ -499,8 +510,20 @@ fn format_name(f: ExportFormat) -> &'static str {
         ExportFormat::Dagmc => "dagmc",
         ExportFormat::Gmsh => "gmsh",
         ExportFormat::Smrt => "smrt",
+        ExportFormat::Fluent => "fluent",
+        ExportFormat::Cgns => "cgns",
+        ExportFormat::Abaqus => "abaqus",
         _ => "smsh",
     }
+}
+
+/// The refusal for a format that is in the protocol but has no exporter yet (`fluent`, `cgns`,
+/// `abaqus`): code `format-not-implemented`, never a fallback to another format.
+fn not_implemented(f: ExportFormat) -> SessionError {
+    SessionError::new(
+        "format-not-implemented",
+        format!("export format `{}` is not implemented yet", format_name(f)),
+    )
 }
 
 /// The provenance string of an export: the current node hash, none in the empty state.
