@@ -5,7 +5,7 @@ use crate::error::QueryError;
 use crate::geometry::{self, FaceCentral, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
 use crate::overlay::EdgeSampler;
-use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind};
+use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind, SurfaceCarrier};
 use sm_core::{EntityId, EntityKind, Vector3};
 use sm_geom_api::{GeomStore, ModelTolerance, PCurve, ShapeValue, Uv};
 
@@ -69,6 +69,21 @@ pub trait TopologyView: Send + Sync {
 
     /// Geometry carrier of `id` ([`Carrier::None`] if none).
     fn carrier(&self, id: EntityId) -> &Carrier;
+
+    /// The single surface that parametrizes `face`, if there is one.
+    ///
+    /// For a face with its own surface carrier this is that carrier (the default). For a
+    /// virtual composite face (overlay) it is the shared carrier when every member resolves
+    /// to the same surface handle with the same sense and that surface is not periodic
+    /// (neither `u` nor `v`), so the composite can be meshed as one face through the
+    /// surface's own parametrization. `None` otherwise: members on different surfaces or
+    /// senses, a periodic carrier (pcurve synthesis and seams, ACR-V2b), or no surface.
+    fn composite_surface(&self, face: EntityId) -> Option<SurfaceCarrier> {
+        match self.carrier(face) {
+            Carrier::Surface(sc) => Some(*sc),
+            _ => None,
+        }
+    }
 
     /// Flag bits of `id`.
     fn flags(&self, id: EntityId) -> CellFlags;

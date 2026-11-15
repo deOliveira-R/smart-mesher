@@ -491,10 +491,9 @@ impl<'a> GenCtx<'a> {
     /// across the collapsed edge is the caller's to bridge.
     pub fn loop_uvs(&self, face: EntityId, lp: &BoundaryLoop) -> Option<Vec<[f64; 2]>> {
         let t = self.input.topo;
-        let surf = match t.carrier(face) {
-            sm_topo_api::Carrier::Surface(sc) => t.shapes().surface(sc.surface)?,
-            _ => return None,
-        };
+        // A composite face is parametrized by its members' shared surface (single handle,
+        // not periodic); a periodic or mixed composite is `None` (ACR-V2b).
+        let surf = t.shapes().surface(t.composite_surface(face)?.surface)?;
         let dom = surf.domain();
         let periodic = dom.u.is_periodic() || dom.v.is_periodic();
         let full: Vec<CoedgeKey> = t.loops(face).find(|l| l.ring == lp.ring)?.keys().collect();

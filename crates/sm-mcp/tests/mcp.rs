@@ -758,6 +758,9 @@ fn export_schema_lists_every_protocol_format() {
         ExportFormat::Dagmc,
         ExportFormat::Gmsh,
         ExportFormat::Smrt,
+        ExportFormat::Fluent,
+        ExportFormat::Cgns,
+        ExportFormat::Abaqus,
     ];
     // The tool enum equals the protocol type's own schema enum (a new variant breaks this), in
     // the same order as the hand list.
