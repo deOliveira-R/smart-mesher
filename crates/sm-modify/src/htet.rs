@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use sm_core::Point3;
 use sm_mesh_api::{
-    CellIx, CellShape, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityRef, MeshError, MeshRead,
+    CellIx, CellShape, Classification, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityRef, MeshError, MeshRead,
     NO_CELL, SerialAlloc, Side, VertexIx,
 };
 use smallvec::SmallVec;
@@ -319,6 +319,18 @@ pub fn htet<B: MeshBuild>(
             parent_face.insert(k, f as u32);
         }
     }
+    // Edges that are not source edges (cut diagonals and cell-interior edges): classified on the
+    // parent face (diagonals) or the parent cell, so an edge table stays valid.
+    let mut new_edge: BTreeMap<[u32; 2], Classification> = BTreeMap::new();
+    let have_edges = src.edges().is_some();
+    if have_edges {
+        for f in (0..nf).filter(|&f| split[f]) {
+            let l: SmallVec<[u32; 4]> = src.face_vertices(FaceIx::new(f)).iter().map(|v| v.0).collect();
+            let k = lowest(&l, &rank);
+            let (a, c) = (l[k], l[(k + 2) % 4]);
+            new_edge.insert([a.min(c), a.max(c)], src.face_class(FaceIx::new(f)));
+        }
+    }
     let mut stats = HtetStats { parents: nc, cut_quads: split.iter().filter(|&&s| s).count(), ..HtetStats::default() };
     let mut child_start: Vec<u32> = Vec::with_capacity(nc + 1);
     let mut c_parent: Vec<u32> = Vec::with_capacity(nc * 5);
@@ -376,6 +388,13 @@ pub fn htet<B: MeshBuild>(
                 if d <= 0.0 || !d.is_finite() {
                     return Err(HtetError::InvertedTet { cell: c as u32, volume: d / 6.0 });
                 }
+                if have_edges {
+                    let cc = src.cell_class(ci);
+                    for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                        let k = [t[i].min(t[j]), t[i].max(t[j])];
+                        new_edge.entry(k).or_insert(cc);
+                    }
+                }
                 let verts = [VertexIx(t[0]), VertexIx(t[1]), VertexIx(t[2]), VertexIx(t[3])];
                 let added = b.add_cell_from_vertices(CellShape::Tet, &verts)?;
                 place(&mut b, added, c, &mut on_parent, &parent_face)?;
@@ -421,6 +440,12 @@ pub fn htet<B: MeshBuild>(
     if let Some(t) = src.edges() {
         for (i, [a, bb]) in t.vertices.iter().enumerate() {
             b.set_class(MeshEntityRef::Edge(*a, *bb), t.class[i])?;
+        }
+        let known: std::collections::BTreeSet<[u32; 2]> = t.vertices.iter().map(|[a, bb]| [a.0.min(bb.0), a.0.max(bb.0)]).collect();
+        for ([a, c], class) in new_edge {
+            if !known.contains(&[a, c]) {
+                b.set_class(MeshEntityRef::Edge(VertexIx(a), VertexIx(c)), class)?;
+            }
         }
     }
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));

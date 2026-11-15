@@ -98,14 +98,24 @@ fn a1_all_40320_orderings_of_a_unit_cube_give_five_or_six_positive_tets() {
     assert_eq!(five + six, 40320);
     assert!(five > 0 && six > 0);
     let fx = single_hex().expect("hex");
+    let (mut sj5, mut sj6) = (f64::INFINITY, f64::INFINITY);
     for p in perms.iter().step_by(97) {
         let r = run(&fx.mesh, &HtetOptions { root: Some(p), ..HtetOptions::default() }).expect("htet");
         let m = &r.finished.mesh;
+        let sj = sm_quality::compute(m, sm_quality::Metric::ScaledJacobian, &sm_quality::Options::default()).expect("sj");
+        let min = sj.iter().copied().fold(f64::INFINITY, f64::min);
+        if m.cell_count() == 5 {
+            sj5 = sj5.min(min);
+        } else {
+            sj6 = sj6.min(min);
+        }
         assert!(m.cell_count() == 5 || m.cell_count() == 6);
         assert!((volume(m) - 1.0).abs() < 1e-14);
         assert_valid(m);
         assert_eq!(m.vertex_count(), 8, "no Steiner point");
     }
+    eprintln!("a1 quality: minimum scaled Jacobian of the tets of a unit cube: {sj6:.4} (6-tet cuts), {sj5:.4} (5-tet cuts); the hex had 1");
+    assert!((sj6 - (1.0f64 / 6.0).sqrt()).abs() < 1e-9 && (sj5 - 0.5f64.sqrt()).abs() < 1e-9, "{sj6} {sj5}");
 }
 
 /// A 2x1x1 block with vertices relabeled by `rank`.
