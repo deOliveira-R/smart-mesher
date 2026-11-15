@@ -83,6 +83,52 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
 ];
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
+/// The host cells the model's overlay (virtual topology) is built on: composite members,
+/// partitioned faces, edges and chord end vertices, split volumes. `None` without an overlay.
+///
+/// An op that edits a cell while keeping its id (a regularize join) must not touch these: the
+/// overlay replays on the new host without re-checking its chords, so it would silently describe
+/// a different cell. A future kind of virtual op that this list does not know is refused
+/// (`Unsupported`) rather than guessed at.
+pub(crate) fn overlay_cells(ctx: &ApplyCtx<'_>) -> Result<Option<BTreeSet<EntityId>>, OpError> {
+    use sm_topo_api::VirtualOp as V;
+    let Some(ov) = ctx.layer::<ModelLayer>()?.overlay() else {
+        return Ok(None);
+    };
+    let mut out: BTreeSet<EntityId> = BTreeSet::new();
+    for op in ov.ops() {
+        match op {
+            V::Composite { faces, .. } => out.extend(faces),
+            V::PartitionEdge { edge, .. } => {
+                out.insert(*edge);
+            }
+            V::PartitionFace { face, cut, .. } => out.extend([*face, cut.from, cut.to]),
+            V::PartitionVolume { volume, cut, .. } => {
+                out.insert(*volume);
+                out.extend(&cut.edges);
+                out.insert(cut.seed);
+            }
+            V::CompositeEdges { edges, .. } => out.extend(edges),
+            V::CollapseEdge {
+                edge,
+                into_vertex,
+                repointed,
+                ..
+            } => {
+                out.extend([*edge, *into_vertex]);
+                out.extend(repointed.iter().map(|&(orig, _)| orig));
+            }
+            _ => {
+                return Err(OpError::Unsupported(
+                    "the model has a kind of virtual topology this op cannot check: model.remove_virtual first"
+                        .into(),
+                ));
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
 pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
     let topo = model_layer.host();
@@ -598,9 +644,26 @@ impl TypedOp for Regularize {
         }
         resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         guard_volumes(ctx, &self.volumes)?;
+        let virtual_cells = overlay_cells(ctx)?;
         let ((rep, live), txn) = topo_txn(ctx, |topo, _model| {
             let rep = crate::regularize::regularize_volumes(topo, &self.volumes)
                 .map_err(OpError::from)?;
+            // A join keeps the survivor's id but grows it (a face absorbs its neighbour, an edge
+            // its continuation): refuse when the overlay is built on a survivor. (A retired
+            // cell is already refused by the rebase.)
+            if let Some(vc) = &virtual_cells
+                && let Some(p) = rep
+                    .joined_faces
+                    .iter()
+                    .chain(&rep.joined_edges)
+                    .find(|p| vc.contains(&p.keep))
+            {
+                return Err(BooleanError::VirtualTopology {
+                    entity: p.keep,
+                    edit: "model.regularize",
+                }
+                .into());
+            }
             // A refused cell can die later in the same pass (a neighbouring join absorbs it).
             let live: BTreeSet<EntityId> = rep
                 .refused
