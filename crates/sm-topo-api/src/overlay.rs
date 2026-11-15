@@ -696,6 +696,18 @@ impl Overlay {
         }
     }
 
+    /// Surface of a composite member: hidden host faces included, nested composites resolved.
+    fn member_surface(&self, id: EntityId) -> Option<SurfaceCarrier> {
+        match self.carrier_of(id) {
+            Carrier::Surface(sc) => Some(*sc),
+            Carrier::Composite(ms) => {
+                let first = self.member_surface(*ms.first()?)?;
+                ms.iter().all(|m| self.member_surface(*m) == Some(first)).then_some(first)
+            }
+            _ => None,
+        }
+    }
+
     fn carrier_of(&self, id: EntityId) -> &Carrier {
         match self.layer.cells.get(&id) {
             Some(c) => &c.carrier,
@@ -2004,6 +2016,25 @@ impl TopologyView for Overlay {
 
     fn edge_sampler(&self, edge: EntityId) -> Option<EdgeSampler<'_>> {
         Overlay::edge_sampler(self, edge)
+    }
+
+    fn composite_surface(&self, face: EntityId) -> Option<SurfaceCarrier> {
+        // `carrier` answers `None` for a hidden cell, so a hidden member is not a face of the view.
+        match self.carrier(face) {
+            Carrier::Surface(sc) => Some(*sc),
+            Carrier::Composite(members) => {
+                let mut it = members.iter().map(|m| self.member_surface(*m));
+                let first = it.next()??;
+                for r in it {
+                    if r? != first {
+                        return None;
+                    }
+                }
+                let d = self.shapes().surface(first.surface)?.domain();
+                (!d.u.is_periodic() && !d.v.is_periodic()).then_some(first)
+            }
+            _ => None,
+        }
     }
 
     fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve> {
