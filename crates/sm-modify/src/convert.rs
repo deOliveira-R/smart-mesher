@@ -72,7 +72,7 @@ pub struct Htet {
 }
 
 /// `mesh.qtri`: split the quads of a surface mesh into triangles, either 2 per quad along the
-/// diagonal through the lowest-ranked corner (`mode: "two"`, default; deck partners rank alike) or
+/// diagonal through the lowest-indexed corner (`mode: "two"`, default; deck pairs are not considered on surface meshes) or
 /// 4 per quad around a new centroid vertex (`mode: "four"`, each triangle has A/4 of a
 /// parallelogram). Triangles pass through. `cell_set` names the quads to split (default all).
 ///
@@ -147,7 +147,8 @@ fn drive(ctx: &mut ApplyCtx<'_>, p: Plan<'_>) -> Result<(), OpError> {
         return Err(OpError::Invalid(e.into()));
     }
     let mask = select(src, p.cell_set)?;
-    let decks = deck::decks(&model, src);
+    // Decks are read on volume meshes only (the deck pass is tested in 3D).
+    let decks = if p.htet.is_some() { deck::decks(&model, src) } else { deck::none(src) };
     let alloc0 = ctx.layer::<MeshLayer>()?.alloc().clone();
     let mut alloc: SerialAlloc = alloc0.clone();
     let builder = if src.dim() == MeshDim::Two { MeshBuilder::surface() } else { MeshBuilder::new() };

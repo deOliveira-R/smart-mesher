@@ -296,7 +296,29 @@ fn a7_qtri_two_split_and_four_split_areas() {
         }
         assert!(validate(m).is_empty());
         check_map(&src, &four);
+        let sj = |r: &Out| {
+            sm_quality::compute(&r.finished.mesh, sm_quality::Metric::ScaledJacobian, &sm_quality::Options::default())
+                .expect("sj")
+                .into_iter()
+                .fold(f64::INFINITY, f64::min)
+        };
+        eprintln!("a7 quality: area {area}: min scaled Jacobian {:.4} (2-split), {:.4} (4-split); the quad had {:.4}", sj(&two), sj(&four), {
+            sm_quality::compute(&src, sm_quality::Metric::ScaledJacobian, &sm_quality::Options::default()).expect("sj")[0]
+        });
     }
+}
+
+/// A short deck-root or selection array is a typed error, not a panic.
+#[test]
+fn short_root_and_selection_arrays_are_typed_errors() {
+    let src = two_cubes();
+    let Err(e) = run(&src, &HtetOptions { root: Some(&[0, 1, 2]), ..HtetOptions::default() }) else { panic!("refused") };
+    assert!(matches!(e, HtetError::BadRoot { got: 3, want: 12 }), "{e}");
+    let Err(e) = run(&src, &HtetOptions { select: Some(&[true]), ..HtetOptions::default() }) else { panic!("refused") };
+    assert!(matches!(e, HtetError::BadSelection { got: 1, want: 2 }), "{e}");
+    let q = quad_mesh(&[[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]]);
+    let Err(e) = qtri(&q, QtriMode::Two, None, Some(&[0]), MeshBuilder::surface(), &mut SerialAlloc::new()) else { panic!("refused") };
+    assert!(matches!(e, HtetError::BadRoot { got: 1, want: 4 }), "{e}");
 }
 
 /// Acceptance 8 (pure pass): a 2x2x2 block with a translation pairing x = 0 and x = 2, vertex

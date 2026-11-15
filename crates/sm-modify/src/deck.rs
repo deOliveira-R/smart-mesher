@@ -83,6 +83,11 @@ impl Grid {
     }
 }
 
+/// No decks: every vertex is its own root.
+pub(crate) fn none(m: &dyn MeshRead) -> Decks {
+    Decks { root: (0..m.vertex_count() as u32).collect(), pairs: Vec::new() }
+}
+
 /// Deck roots and pairs of `m` under the decks of `model`.
 pub(crate) fn decks(model: &ModelLayer, m: &dyn MeshRead) -> Decks {
     let nv = m.vertex_count();

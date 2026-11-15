@@ -14,8 +14,9 @@ use sm_quality::{Metric, Options, compute_many};
 use crate::refine::{RefineError, Rule, pass};
 
 /// A level warns (`refine.quality`) when its minimum scaled Jacobian is below this factor times the
-/// parent's. Measured on the default-mesher pin (boundary-hugging corner cells): 0.54, 0.51, 0.50
-/// per level, so 0.6 catches that and stays quiet for the 0.7 of a tet octahedron cut.
+/// parent's. Measured on the forced-pave pin (boundary-hugging corner cells, ruling D11: the default
+/// pin takes the O-grid and keeps 0.7071): 0.54, 0.51, 0.50 per level, so 0.6 catches that and stays
+/// quiet for the 0.7 of a tet octahedron cut.
 pub const QUALITY_DROP_FACTOR: f64 = 0.6;
 
 /// Most levels one `mesh.refine` call may add (each is 8 times the cells).

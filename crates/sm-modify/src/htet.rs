@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use sm_core::Point3;
 use sm_mesh_api::{
-    CellIx, CellShape, Classification, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityRef, MeshError, MeshRead,
+    CellIx, CellShape, FaceIx, FaceKind, Finished, MeshBuild, MeshDim, MeshEntityRef, MeshError, MeshRead,
     NO_CELL, SerialAlloc, Side, VertexIx,
 };
 use smallvec::SmallVec;
@@ -72,6 +72,14 @@ pub enum HtetError {
         cell: u32,
         /// The signed volume of the tet.
         volume: f64,
+    },
+    /// A deck-root array of the wrong length.
+    #[error("root array has {got} entries for {want} vertices")]
+    BadRoot {
+        /// Entries given.
+        got: usize,
+        /// Vertices of the mesh.
+        want: usize,
     },
     /// A selection mask of the wrong length.
     #[error("selection has {got} entries for {want} cells")]
@@ -166,12 +174,12 @@ fn key3(t: [u32; 3]) -> SmallVec<[u32; 4]> {
 
 /// The tets of one convertible cell with corners `c` (template order): `(tets, five)`. Tets are
 /// `[apex, a, b, c]` with `(a, b, c)` outward, so a valid cell gives positive determinants.
-fn cell_tets(shape: CellShape, c: &[u32], rank: &impl Fn(u32) -> (u32, u32)) -> (Vec<[u32; 4]>, bool) {
+fn cell_tets(shape: CellShape, c: &[u32], rank: &impl Fn(u32) -> (u32, u32)) -> (SmallVec<[[u32; 4]; 6]>, bool) {
     let faces = shape.local_faces();
-    let loops: Vec<SmallVec<[u32; 4]>> = faces.iter().map(|f| f.iter().map(|&i| c[i as usize]).collect()).collect();
+    let loops: SmallVec<[SmallVec<[u32; 4]>; 6]> = faces.iter().map(|f| f.iter().map(|&i| c[i as usize]).collect()).collect();
     let v0 = (0..c.len()).min_by_key(|&i| rank(c[i])).map_or(c[0], |i| c[i]);
-    let far: Vec<&SmallVec<[u32; 4]>> = loops.iter().filter(|l| !l.contains(&v0)).collect();
-    let mut tets: Vec<[u32; 4]> = Vec::new();
+    let far: SmallVec<[&SmallVec<[u32; 4]>; 3]> = loops.iter().filter(|l| !l.contains(&v0)).collect();
+    let mut tets: SmallVec<[[u32; 4]; 6]> = SmallVec::new();
     if shape == CellShape::Hex {
         // The corner common to all three far faces is opposite to v0.
         let v7 = far[0].iter().copied().find(|v| far.iter().all(|l| l.contains(v)));
@@ -220,7 +228,8 @@ fn cell_tets(shape: CellShape, c: &[u32], rank: &impl Fn(u32) -> (u32, u32)) -> 
 /// 8! test; [`htet`] applies the same rule per cell.
 pub fn hex_tets(rank: &[u32; 8]) -> (Vec<[u32; 4]>, bool) {
     let c: [u32; 8] = core::array::from_fn(|i| i as u32);
-    cell_tets(CellShape::Hex, &c, &|v| (rank[v as usize], v))
+    let (t, five) = cell_tets(CellShape::Hex, &c, &|v| (rank[v as usize], v));
+    (t.to_vec(), five)
 }
 
 /// Convert the selected hexes, wedges and pyramids of `src` to tetrahedra.
@@ -268,6 +277,11 @@ pub fn htet<B: MeshBuild>(
         if src.face_kind(fi) == FaceKind::NonConformal {
             return Err(HtetError::NonConformal(f as u32));
         }
+    }
+    if let Some(r) = opts.root
+        && r.len() != nv
+    {
+        return Err(HtetError::BadRoot { got: r.len(), want: nv });
     }
     let root = |v: u32| opts.root.map_or(v, |r| r[v as usize]);
     let rank = |v: u32| (root(v), v);
@@ -317,18 +331,6 @@ pub fn htet<B: MeshBuild>(
             let mut k = l;
             k.sort_unstable();
             parent_face.insert(k, f as u32);
-        }
-    }
-    // Edges that are not source edges (cut diagonals and cell-interior edges): classified on the
-    // parent face (diagonals) or the parent cell, so an edge table stays valid.
-    let mut new_edge: BTreeMap<[u32; 2], Classification> = BTreeMap::new();
-    let have_edges = src.edges().is_some();
-    if have_edges {
-        for f in (0..nf).filter(|&f| split[f]) {
-            let l: SmallVec<[u32; 4]> = src.face_vertices(FaceIx::new(f)).iter().map(|v| v.0).collect();
-            let k = lowest(&l, &rank);
-            let (a, c) = (l[k], l[(k + 2) % 4]);
-            new_edge.insert([a.min(c), a.max(c)], src.face_class(FaceIx::new(f)));
         }
     }
     let mut stats = HtetStats { parents: nc, cut_quads: split.iter().filter(|&&s| s).count(), ..HtetStats::default() };
@@ -388,13 +390,6 @@ pub fn htet<B: MeshBuild>(
                 if d <= 0.0 || !d.is_finite() {
                     return Err(HtetError::InvertedTet { cell: c as u32, volume: d / 6.0 });
                 }
-                if have_edges {
-                    let cc = src.cell_class(ci);
-                    for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                        let k = [t[i].min(t[j]), t[i].max(t[j])];
-                        new_edge.entry(k).or_insert(cc);
-                    }
-                }
                 let verts = [VertexIx(t[0]), VertexIx(t[1]), VertexIx(t[2]), VertexIx(t[3])];
                 let added = b.add_cell_from_vertices(CellShape::Tet, &verts)?;
                 place(&mut b, added, c, &mut on_parent, &parent_face)?;
@@ -440,12 +435,6 @@ pub fn htet<B: MeshBuild>(
     if let Some(t) = src.edges() {
         for (i, [a, bb]) in t.vertices.iter().enumerate() {
             b.set_class(MeshEntityRef::Edge(*a, *bb), t.class[i])?;
-        }
-        let known: std::collections::BTreeSet<[u32; 2]> = t.vertices.iter().map(|[a, bb]| [a.0.min(bb.0), a.0.max(bb.0)]).collect();
-        for ([a, c], class) in new_edge {
-            if !known.contains(&[a, c]) {
-                b.set_class(MeshEntityRef::Edge(VertexIx(a), VertexIx(c)), class)?;
-            }
         }
     }
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));
@@ -526,6 +515,11 @@ pub fn qtri<B: MeshBuild>(
             return Err(HtetError::HighOrder);
         }
     }
+    if let Some(r) = root
+        && r.len() != nv
+    {
+        return Err(HtetError::BadRoot { got: r.len(), want: nv });
+    }
     let rank = |v: u32| (root.map_or(v, |r| r[v as usize]), v);
     let co = src.coords();
     let pt = |v: u32| -> V { [co.x[v as usize], co.y[v as usize], co.z[v as usize]] };
@@ -558,6 +552,7 @@ pub fn qtri<B: MeshBuild>(
     let mut c_parent: Vec<u32> = Vec::new();
     let mut on_parent: Vec<(u32, FaceIx)> = Vec::new();
     let mut ncells = 0u32;
+    let mut next_centre = nv as u32;
     for c in 0..nc {
         child_start.push(ncells);
         let ci = CellIx::new(c);
@@ -606,7 +601,8 @@ pub fn qtri<B: MeshBuild>(
                 }
             }
             QtriMode::Four => {
-                let centre = (nv + centres.iter().position(|&x| x as usize == c).unwrap_or(0)) as u32;
+                let centre = next_centre;
+                next_centre += 1;
                 for i in 0..4 {
                     add(&mut b, CellShape::Tri, &[cs[i], cs[(i + 1) % 4], centre])?;
                 }

@@ -307,6 +307,31 @@ fn closure_gives_a_polyhedron_and_whole_refuses_with_the_cell() {
     // orchestrator, see the task notes), so only the all-tet route is pinned (the brick test above).
 }
 
+/// KNOWN LIMIT (reported to the orchestrator): a closure result on a meshed brick (the left half cut to
+/// tets, the right half kept as hexes that became polyhedra with the cut faces) is not accepted by
+/// `mesh.to_poly` (mixed meshes since W4-POLY-MIXED): the stitched output fails its own validation with
+/// two `class.dim_order` violations per cut diagonal (2 on the 2x1x1 block, 8 on the brick, which has 4
+/// transition quads), so the cut diagonal inside a planar transition quad is the suspect. The all-tet
+/// result goes through (`htet_of_a_meshed_brick_is_all_tets_conformal_linked_and_dualizes`). This test
+/// pins today's refusal: when sm-poly handles it, it fails here and should assert volume 8 instead.
+#[test]
+fn known_limit_to_poly_of_a_closure_result_fails_its_own_validation() {
+    let mut s = server();
+    script(&mut s, BRICK);
+    let x0 = {
+        let m = mesh(&s, 1);
+        (0..m.vertex_count()).map(|v| m.point(v).x).fold(f64::INFINITY, f64::min)
+    };
+    apply(&mut s, "test.cell_set", json!({"mesh": "Mesh#1", "name": "half", "max_x": x0 + 1.0})).expect("set");
+    apply(&mut s, "mesh.htet", json!({"mesh": "Mesh#1", "cell_set": "half"})).expect("closure");
+    let m = mesh(&s, 2);
+    assert!(validate(m).is_empty(), "the closure result itself validates");
+    let h = hash(&s);
+    let e = apply(&mut s, "mesh.to_poly", json!({"mesh": "Mesh#2"})).expect_err("known limit");
+    assert!(e.contains("8 violation(s)") && e.contains("class.dim_order"), "{e}");
+    assert_eq!(hash(&s), h, "atomic");
+}
+
 #[test]
 fn replay_and_fork_give_equal_hashes_and_keep_the_link() {
     let mut s = server();
