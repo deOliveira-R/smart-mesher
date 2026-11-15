@@ -22,6 +22,12 @@ pub enum Format {
     Gmsh,
     /// Self-contained `.smrt` tracking image for the transport handover.
     Smrt,
+    /// Fluent ASCII `.msh` (not implemented yet). Never inferred: `.msh` means Gmsh.
+    Fluent,
+    /// CGNS HDF5 `.cgns` (not implemented yet).
+    Cgns,
+    /// Abaqus `.inp` input deck (not implemented yet).
+    Abaqus,
 }
 
 /// What `export` writes (`--source`).

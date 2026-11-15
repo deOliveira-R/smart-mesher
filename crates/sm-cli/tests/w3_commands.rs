@@ -59,6 +59,24 @@ fn export_exodus_and_openfoam_formats() {
 }
 
 #[test]
+fn export_new_formats_are_named_and_msh_stays_gmsh() {
+    for (arg, want) in [
+        ("fluent", ExportFormat::Fluent),
+        ("cgns", ExportFormat::Cgns),
+        ("abaqus", ExportFormat::Abaqus),
+    ] {
+        let o = go(&["export", "out.msh", "--format", arg, "--memory"]);
+        assert_eq!(o.code, 0, "{}", o.err);
+        assert!(matches!(&o.requests[0], Request::Export { format: Some(f), .. } if *f == want));
+    }
+    for (file, want) in [("a.cgns", ExportFormat::Cgns), ("a.inp", ExportFormat::Abaqus), ("a.msh", ExportFormat::Gmsh)] {
+        let o = go(&["export", file, "--memory"]);
+        assert_eq!(o.code, 0, "{}", o.err);
+        assert!(matches!(&o.requests[0], Request::Export { format: Some(f), .. } if *f == want), "{file}");
+    }
+}
+
+#[test]
 fn export_lists_the_files_of_a_multi_file_result() {
     let reply: common::Reply = Box::new(|req| match req {
         Request::Export { .. } => Ok(json!({

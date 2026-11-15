@@ -773,3 +773,31 @@ fn export_formats_and_file_listing_are_additive() {
     let n = sm_protocol::ExportNote::parse("foam.x: a x2 b x4");
     assert_eq!((n.count, n.detail.as_str()), (4, "a x2 b"));
 }
+
+#[test]
+fn export_format_names_extensions_and_implemented() {
+    let all = [
+        ExportFormat::Smsh,
+        ExportFormat::Vtu,
+        ExportFormat::Exodus,
+        ExportFormat::Openfoam,
+        ExportFormat::Dagmc,
+        ExportFormat::Gmsh,
+        ExportFormat::Smrt,
+        ExportFormat::Fluent,
+        ExportFormat::Cgns,
+        ExportFormat::Abaqus,
+    ];
+    for f in all {
+        // `name` is the serde spelling, and it parses back.
+        assert_eq!(serde_json::to_value(f).unwrap(), json!(f.name()));
+        assert_eq!(serde_json::from_value::<ExportFormat>(json!(f.name())).unwrap(), f);
+    }
+    // `.msh` stays Gmsh in any case; Fluent is never inferred; the new extensions infer.
+    assert_eq!(ExportFormat::from_extension("msh"), Some(ExportFormat::Gmsh));
+    assert_eq!(ExportFormat::from_extension("MSH"), Some(ExportFormat::Gmsh));
+    assert_eq!(ExportFormat::from_extension("cgns"), Some(ExportFormat::Cgns));
+    assert_eq!(ExportFormat::from_extension("inp"), Some(ExportFormat::Abaqus));
+    assert_eq!(ExportFormat::from_extension("cas"), None);
+    assert!(all.iter().all(|f| ExportFormat::from_extension(f.name()).is_none_or(|g| g != ExportFormat::Fluent)));
+}

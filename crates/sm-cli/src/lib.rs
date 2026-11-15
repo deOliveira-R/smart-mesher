@@ -642,6 +642,9 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 Some(Format::Dagmc) => ExportFormat::Dagmc,
                 Some(Format::Gmsh) => ExportFormat::Gmsh,
                 Some(Format::Smrt) => ExportFormat::Smrt,
+                Some(Format::Fluent) => ExportFormat::Fluent,
+                Some(Format::Cgns) => ExportFormat::Cgns,
+                Some(Format::Abaqus) => ExportFormat::Abaqus,
                 None => match file.extension().and_then(|e| e.to_str()) {
                     Some("smsh") => ExportFormat::Smsh,
                     Some("vtu") => ExportFormat::Vtu,
@@ -649,9 +652,11 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                     Some("h5m") => ExportFormat::Dagmc,
                     Some("msh") => ExportFormat::Gmsh,
                     Some("smrt") => ExportFormat::Smrt,
+                    Some("cgns") => ExportFormat::Cgns,
+                    Some("inp") => ExportFormat::Abaqus,
                     _ => {
                         return Err(Failure::usage(format!(
-                            "cannot infer the export format of {}; use a .smsh, .vtu, .exo, .h5m, .msh or .smrt name or pass --format (openfoam always needs it)",
+                            "cannot infer the export format of {}; use a .smsh, .vtu, .exo, .h5m, .msh (Gmsh), .smrt, .cgns or .inp name or pass --format (openfoam and fluent always need it)",
                             file.display()
                         )));
                     }
