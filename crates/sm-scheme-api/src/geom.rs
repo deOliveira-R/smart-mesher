@@ -147,14 +147,21 @@ fn coedge_dir(t: &dyn TopologyView, k: CoedgeKey, s: f64) -> Result<Vector3> {
 }
 
 /// Unit normal of a face at (near) `p`, oriented left to right (the topology orientation
-/// rule). Uses the surface carrier when present, else the Newell normal of the outline.
+/// rule). Uses the surface carrier (a composite's shared surface, see
+/// [`TopologyView::composite_surface`]) when present, else the Newell normal of the outline;
+/// a composite with no single non-periodic surface is a typed error, never a guess.
 pub fn face_normal(t: &dyn TopologyView, f: EntityId, p: Point3) -> Result<Vector3> {
-    if let Carrier::Surface(sc) = t.carrier(f)
+    if let Some(sc) = t.composite_surface(f)
         && let Some(s) = t.shapes().surface(sc.surface)
     {
         let uv: Uv = s.project(p, None)?.uv;
         let n = s.normal(uv)?;
         return Ok(if sc.sense == Sense::Reversed { -n } else { n });
+    }
+    if matches!(t.carrier(f), Carrier::Composite(_)) {
+        return Err(SchemeError::Input(format!(
+            "face {f}: composite without a single non-periodic surface (periodic pcurve synthesis, ACR-V2b)"
+        )));
     }
     let pts = t.face_outline(f);
     let mut n = Vector3::default();

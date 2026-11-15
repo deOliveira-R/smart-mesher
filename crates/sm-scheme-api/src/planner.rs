@@ -288,7 +288,7 @@ impl<'a, 'r> Planner<'a, 'r> {
         for (id, ei) in &intent.entities {
             let t = match id.kind() {
                 EntityKind::TopoEdge => Target::Curve(*id),
-                EntityKind::TopoFace => Target::Surface(*id),
+                EntityKind::TopoFace | EntityKind::PartitionFace => Target::Surface(*id),
                 EntityKind::TopoVolume | EntityKind::PartitionCell => Target::Volume(*id),
                 _ => continue,
             };
