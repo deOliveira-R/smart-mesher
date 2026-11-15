@@ -6,11 +6,11 @@ use serde_json::json;
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
 use sm_mesh::MeshBuilder;
-use sm_mesh_api::{CatalogEdit, LevelMap, MeshDim, MeshEntityKind, MeshRead, SerialAlloc, SetMembers, TagValues};
+use sm_mesh_api::{CatalogEdit, CellIx, CellShape, LevelMap, MeshDim, MeshEntityKind, MeshRead, SerialAlloc, SetMembers, TagValues};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_quality::{Metric, Options, compute_many};
 
-use crate::local::{LocalError, MAX_LOCAL_LEVELS, refine_local};
+use crate::local::{LocalError, LocalOptions, MAX_LOCAL_LEVELS, refine_local};
 use crate::ops::quality;
 
 /// `mesh.refine_local`: split the selected hexes of a volume mesh into 8 (or 64, 512 with
@@ -35,7 +35,8 @@ use crate::ops::quality;
 /// or face are projected unless that would invert a hex (`project: false` keeps them straight; then
 /// every face stays planar and the volume is exact). The `refine_local.report` diagnostic carries
 /// counts (hexes, polyhedra, balance-raised cells), volumes, the minimum scaled Jacobian and the
-/// maximum edge ratio of source and result.
+/// maximum edge ratio over the hexes (and, separately, over the polyhedra, whose hanging half
+/// edges count) of source and result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RefineLocal {
@@ -106,11 +107,18 @@ fn select(src: &dyn MeshRead, op: &RefineLocal) -> Result<Vec<bool>, OpError> {
     Ok(mask)
 }
 
-/// Largest finite edge ratio over the cells of a mesh, `None` where the metric fails.
-fn max_edge_ratio(m: &dyn MeshRead) -> Option<f64> {
-    let t = compute_many(m, &[Metric::EdgeRatio], &Options::default()).ok()?;
-    let x = t.columns[0].iter().copied().filter(|x| x.is_finite()).fold(f64::NEG_INFINITY, f64::max);
-    x.is_finite().then_some(x)
+/// Largest finite edge ratio over the hexes and over the polyhedra of a mesh (a polyhedron's
+/// hanging half edges count as edges, so its ratio is larger by design), `None` where it fails.
+fn max_edge_ratio(m: &dyn MeshRead) -> (Option<f64>, Option<f64>) {
+    let Ok(t) = compute_many(m, &[Metric::EdgeRatio], &Options::default()) else { return (None, None) };
+    let mut out = [f64::NEG_INFINITY; 2];
+    for (c, x) in t.columns[0].iter().copied().enumerate() {
+        if x.is_finite() {
+            let k = usize::from(m.cell_shape(CellIx::new(c)) == CellShape::Polyhedron);
+            out[k] = out[k].max(x);
+        }
+    }
+    (out[0].is_finite().then_some(out[0]), out[1].is_finite().then_some(out[1]))
 }
 
 impl TypedOp for RefineLocal {
@@ -137,12 +145,12 @@ impl TypedOp for RefineLocal {
         let mask = select(src, self)?;
         let alloc0 = ctx.layer::<MeshLayer>()?.alloc().clone();
         let mut alloc: SerialAlloc = alloc0.clone();
-        let r = refine_local(src, Some(model.topo()), &mask, levels, self.balance != Some(false), self.project != Some(false), MeshBuilder::new(), &mut alloc)
-            .map_err(refuse)?;
+        let opts = LocalOptions { selected: &mask, levels, balance: self.balance != Some(false), project: self.project != Some(false) };
+        let r = refine_local(src, Some(model.topo()), &opts, MeshBuilder::new(), &mut alloc).map_err(refuse)?;
         let map = LevelMap::new(&r.finished.mesh, src, r.coarse_of.clone(), Some(r.face_map.clone())).map_err(|e| OpError::Failed(e.to_string()))?;
         let (sj0, vol0) = quality(src);
         let (sj1, vol1) = quality(&r.finished.mesh);
-        let (er0, er1) = (max_edge_ratio(src), max_edge_ratio(&r.finished.mesh));
+        let ((er0, _), (er1, er1p)) = (max_edge_ratio(src), max_edge_ratio(&r.finished.mesh));
         let new = r.finished.mesh.mesh_id();
         let s = r.stats;
         let notes = r.notes.clone();
@@ -161,7 +169,7 @@ impl TypedOp for RefineLocal {
             "projected": s.projected, "projection_failed": s.projection_failed, "projection_rejected": s.projection_rejected,
             "volume_parent": vol0, "volume": vol1,
             "min_scaled_jacobian_parent": sj0, "min_scaled_jacobian": sj1,
-            "max_edge_ratio_parent": er0, "max_edge_ratio": er1,
+            "max_edge_ratio_parent": er0, "max_edge_ratio": er1, "max_edge_ratio_polyhedra": er1p,
         });
         ctx.info("refine_local.report", report.to_string(), &[new]);
         if s.projection_failed + s.projection_rejected > 0 {

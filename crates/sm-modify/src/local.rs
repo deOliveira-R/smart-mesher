@@ -460,6 +460,19 @@ fn sub(a: V, b: V) -> V {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+/// What [`refine_local`] refines and how.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalOptions<'a> {
+    /// One flag per source cell: refine it (hexes only).
+    pub selected: &'a [bool],
+    /// Times a selected cell is split, `1..=MAX_LOCAL_LEVELS`.
+    pub levels: u32,
+    /// Raise neighbours so no face has a level jump above 1; else such a jump is refused.
+    pub balance: bool,
+    /// Project new boundary nodes onto the model (needs the topology view).
+    pub project: bool,
+}
+
 /// Refine the cells flagged in `selected` (hexes) `levels` times, balance across faces when
 /// `balance`, and return the new mesh with the parent map and face map of a `LevelMap`. `topo`
 /// resolves edge classes and, with `project`, moves new boundary nodes onto the model unless a
@@ -471,13 +484,11 @@ fn sub(a: V, b: V) -> V {
 pub fn refine_local<B: MeshBuild>(
     src: &dyn MeshRead,
     topo: Option<&dyn TopologyView>,
-    selected: &[bool],
-    levels: u32,
-    balance: bool,
-    project: bool,
+    opts: &LocalOptions<'_>,
     mut b: B,
     alloc: &mut SerialAlloc,
 ) -> Result<LocalRefined<B::Output>, LocalError> {
+    let LocalOptions { selected, levels, balance, project } = *opts;
     if !(1..=MAX_LOCAL_LEVELS).contains(&levels) {
         return Err(LocalError::Levels(levels));
     }

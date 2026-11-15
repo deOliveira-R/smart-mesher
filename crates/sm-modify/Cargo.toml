@@ -32,6 +32,10 @@ sm-testkit = { path = "../sm-testkit" }
 sm-server = { path = "../sm-server" }
 sm-protocol = { path = "../sm-protocol" }
 sm-engine = { path = "../sm-engine" }
+sm-rt = { path = "../sm-rt" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-meshio = { path = "../sm-meshio" }
+sm-exodus = { path = "../sm-exodus" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

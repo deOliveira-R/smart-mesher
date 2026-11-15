@@ -10,7 +10,7 @@ use sm_mesh_api::reference::hex_block_with_edges;
 use sm_mesh_api::{
     CellIx, CellShape, FaceIx, FaceKind, LevelMap, MeshEdit, MeshRead, SerialAlloc, SetMembers, TagValues, VertexIx, cell_volume, validate,
 };
-use sm_modify::{LocalError, LocalRefined, refine_local};
+use sm_modify::{LocalError, LocalOptions, LocalRefined, refine_local};
 use sm_quality::{Metric, Options, compute};
 use sm_testkit::strategies::config;
 
@@ -19,7 +19,7 @@ fn block(n: [u32; 3]) -> sm_mesh_api::reference::ReferenceMesh {
 }
 
 fn run(src: &dyn MeshRead, sel: &[bool], levels: u32, balance: bool) -> Result<LocalRefined<sm_mesh::Mesh>, LocalError> {
-    refine_local(src, None, sel, levels, balance, false, MeshBuilder::new(), &mut SerialAlloc::new())
+    refine_local(src, None, &LocalOptions { selected: sel, levels, balance, project: false }, MeshBuilder::new(), &mut SerialAlloc::new())
 }
 
 fn volume(m: &dyn MeshRead) -> f64 {
@@ -78,14 +78,10 @@ fn centre_of_a_3x3x3_block_has_the_hand_counts() {
     let src = block([3, 3, 3]);
     let r = run(&src, &centre(3), 1, true).expect("refine");
     let m = &r.finished.mesh;
-    assert_eq!(r.stats, {
-        let mut s = r.stats;
-        s.parents = 27;
-        s
-    });
+    assert_eq!((r.stats.parents, r.stats.refined, r.stats.balanced), (27, 1, 0));
     assert_eq!(m.vertex_count(), 64 + 19, "64 + 12 edge midpoints + 6 face centres + the cell centre");
     assert_eq!(m.cell_count(), 26 + 8);
-    assert_eq!((r.stats.hexes, r.stats.polyhedra), (8 + 8, 6 + 12 + 0 + 0), "8 children + 8 corners; 6 face + 12 edge neighbours");
+    assert_eq!((r.stats.hexes, r.stats.polyhedra), (8 + 8, 6 + 12), "8 children + 8 corners; 6 face + 12 edge neighbours");
     // Per source cell: shapes and face-loop sizes.
     let mut face_nb = 0;
     let mut edge_nb = 0;
@@ -181,7 +177,7 @@ fn refining_a_corner_block_keeps_boundary_area_and_validates() {
     let r = run(&src, &sel, 1, true).expect("refine");
     let m = &r.finished.mesh;
     let area: f64 = (0..m.face_count())
-        .map(|f| FaceIx::new(f))
+        .map(FaceIx::new)
         .filter(|&f| m.face_kind(f) == FaceKind::Boundary)
         .map(|f| sm_mesh_api::face_area_vector(m, f).norm())
         .sum();
@@ -228,6 +224,36 @@ fn non_hex_cells_that_would_be_refined_are_refused() {
     let src = sm_testkit::meshes::tet_block([1, 1, 1], [1.0; 3]).expect("tets").mesh;
     let err = run(&src, &[true, false, false, false, false, false], 1, true).err().expect("tet");
     assert!(matches!(err, LocalError::Unrefinable { .. }), "{err}");
+}
+
+#[test]
+fn unrefined_wedge_pyramid_and_tet_neighbours_gain_the_hanging_faces() {
+    let mut src = sm_testkit::meshes::mixed_transition().expect("mixed").mesh;
+    // Every vertex of the fixture is a model vertex: give each unclassified edge its own TopoEdge.
+    let mut explicit = Vec::new();
+    loop {
+        match src.clone().ensure_edges(&mut SerialAlloc::new(), &explicit) {
+            Ok(()) => break,
+            Err(sm_mesh_api::MeshError::UnclassifiedEdge(a, b)) => {
+                let e = sm_core::EntityId::new(sm_core::EntityKind::TopoEdge, explicit.len() as u64 + 1).expect("id");
+                explicit.push((a, b, sm_mesh_api::Classification::on(e)));
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    src.ensure_edges(&mut SerialAlloc::new(), &explicit).expect("edges");
+    let hex = (0..src.cell_count()).find(|&c| src.cell_shape(CellIx::new(c)) == CellShape::Hex).expect("a hex");
+    let mut sel = vec![false; src.cell_count()];
+    sel[hex] = true;
+    let r = run(&src, &sel, 1, true).expect("refine");
+    let m = &r.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert!((volume(m) - volume(&src)).abs() < 1e-12);
+    assert_eq!(m.cell_count(), src.cell_count() - 1 + 8);
+    // The wedge and the pyramid share a quad with the hex (their quad splits in 4); each becomes a polyhedron.
+    let polys = (0..m.cell_count()).filter(|&c| m.cell_shape(CellIx::new(c)) == CellShape::Polyhedron).count();
+    assert!(polys >= 1, "{polys}");
+    LevelMap::new(m, &src, r.coarse_of.clone(), Some(r.face_map.clone())).expect("level map");
 }
 
 #[test]

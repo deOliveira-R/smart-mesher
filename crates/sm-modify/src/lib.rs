@@ -22,7 +22,7 @@ mod template;
 
 pub use convert::{ClosureMode, Htet, Qtri, QtriSplit};
 pub use htet::{Closure, Converted, HtetError, HtetOptions, HtetStats, QtriMode, hex_tets, htet, qtri};
-pub use local::{LocalError, LocalRefined, LocalStats, MAX_LOCAL_LEVELS, refine_local};
+pub use local::{LocalError, LocalOptions, LocalRefined, LocalStats, MAX_LOCAL_LEVELS, refine_local};
 pub use local_op::RefineLocal;
 pub use ops::{MAX_LEVELS, Refine, Thex, Tquad};
 pub use refine::{RefineError, RefineStats, Refined, Rule, pass, refine};
