@@ -42,7 +42,7 @@ impl<'a> Cur<'a> {
 impl Dtype {
     /// Decode a datatype message body of the subset; the whole slice must be consumed.
     pub fn decode(b: &[u8]) -> Result<Dtype, H5Error> {
-        let t = [Dtype::U8, Dtype::I32, Dtype::I64, Dtype::U64, Dtype::F64];
+        let t = [Dtype::U8, Dtype::I32, Dtype::I64, Dtype::U64, Dtype::F64, Dtype::F32];
         for c in &t {
             if c.encode() == b {
                 return Ok(c.clone());
@@ -54,6 +54,7 @@ impl Dtype {
         let size = c.u32()?;
         match head {
             0x15 if flags == [0, 0, 0] && c.p == b.len() => Ok(Dtype::Opaque(size)),
+            0x13 if flags == [0, 0, 0] && c.p == b.len() => Ok(Dtype::Str(size)),
             0x3a if flags == [0, 0, 0] => {
                 if c.u8()? != 1 {
                     return bad("array rank");
@@ -157,6 +158,7 @@ impl Reader<'_> {
         let mut m = Cur { b: msgs, p: 0 };
         let (mut dims, mut dtype, mut layout) = (None, None, None);
         let (mut links, mut is_group, mut attrs) = (Vec::new(), false, Vec::new());
+        let mut tracked = false;
         while m.p < msgs.len() {
             let ty = m.u8()?;
             let n = m.u16()? as usize;
@@ -168,15 +170,21 @@ impl Reader<'_> {
                 0x01 => dims = Some(dims_of(body)?),
                 0x03 => dtype = Some(Dtype::decode(body)?),
                 0x08 => layout = Some(body),
-                0x02 | 0x0a => is_group = true,
+                0x02 => {
+                    is_group = true;
+                    tracked = body.get(1).is_some_and(|f| f & 1 != 0);
+                }
+                0x0a => is_group = true,
                 0x06 => {
                     let mut l = Cur { b: body, p: 0 };
-                    if l.u8()? != 1 || l.u8()? != 0 {
+                    let (ver, lf) = (l.u8()?, l.u8()?);
+                    if ver != 1 || lf & !4 != 0 {
                         return bad("link version");
                     }
+                    let corder = if lf & 4 != 0 { l.u64()? } else { 0 };
                     let nl = l.u8()? as usize;
                     let name = std::str::from_utf8(l.take(nl)?).map_err(|_| H5Error::Malformed("link name utf8".into()))?.to_string();
-                    links.push((name, l.u64()?));
+                    links.push((corder, name, l.u64()?));
                     is_group = true;
                 }
                 0x0c => attrs.push(attr_of(body)?),
@@ -184,8 +192,14 @@ impl Reader<'_> {
             }
         }
         if is_group {
-            let mut g = Group { attrs, ..Group::default() };
-            for (name, a) in links {
+            let mut g = Group { attrs, tracked, ..Group::default() };
+            if tracked {
+                links.sort();
+            }
+            for (_, name, a) in links {
+                if tracked {
+                    g.order.push(name.clone());
+                }
                 g.children.insert(name, self.object(a, depth + 1)?);
             }
             return Ok(Obj::Group(g));
@@ -279,6 +293,10 @@ impl Dataset {
     /// Values as `i32`.
     pub fn as_i32(&self) -> Vec<i32> {
         self.data.as_chunks::<4>().0.iter().map(|c| i32::from_le_bytes(*c)).collect()
+    }
+    /// Values as `f32`.
+    pub fn as_f32(&self) -> Vec<f32> {
+        self.data.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()
     }
     /// Values as `f64`.
     pub fn as_f64(&self) -> Vec<f64> {
