@@ -464,6 +464,7 @@ fn vertex_sets_take_boundary_nodes_only_never_cell_centres() {
     let r = run(&src);
     let m = &r.finished.mesh;
     assert_valid(m);
+    assert!(r.notes.is_empty(), "walls with interior vertices give no ambiguity note: {:?}", r.notes);
     let set = |n: &str| match &m.set_by_name(n).expect("set").members {
         SetMembers::Vertices(v) => v.clone(),
         _ => panic!("vertices"),
@@ -498,6 +499,7 @@ fn vertex_set_on_two_walls_of_a_wedge_block_stays_on_the_walls() {
     src.add_set("wall", SetMembers::Vertices(set), &mut alloc).expect("set");
     let r = run(&src);
     let m = &r.finished.mesh;
+    assert!(r.notes.is_empty(), "walls with interior vertices give no ambiguity note: {:?}", r.notes);
     let SetMembers::Vertices(vs) = &m.set_by_name("wall").expect("set").members else { panic!("vertices") };
     for v in vs {
         let p = m.point(v.get());
@@ -521,6 +523,7 @@ fn vertex_set_on_part_of_a_wall_carries_the_whole_patch() {
     src.add_set("patch", SetMembers::Vertices(set), &mut alloc).expect("set");
     let r = run(&src);
     let m = &r.finished.mesh;
+    assert!(r.notes.is_empty(), "a wall with interior vertices gives no ambiguity note: {:?}", r.notes);
     let SetMembers::Vertices(vs) = &m.set_by_name("patch").expect("set").members else { panic!("vertices") };
     let on_patch = (0..m.vertex_count()).filter(|&i| m.point(i).x == 0.0 && m.point(i).y <= 1.0).count();
     assert_eq!((vs.len(), on_patch), (15, 15));
@@ -549,6 +552,34 @@ fn vertex_set_on_a_one_interval_thick_wall_keeps_edge_midpoints_and_centres() {
     let amb: Vec<_> = r.notes.iter().filter(|(c, _)| *c == "refine.set_ambiguous").collect();
     assert_eq!(amb.len(), 1, "{:?}", r.notes);
     assert!(amb[0].1.contains("`patch`") && amb[0].1.contains("TopoFace#"), "{}", amb[0].1);
+}
+
+/// A one-interval model edge has no interior mesh vertex: two member corner nodes alone make its midpoint
+/// join (reported as `refine.set_ambiguous` naming the set and the model edge). The same two nodes on an
+/// edge with an interior vertex (2 intervals) give no note, and an edge covered by a member wall face none.
+#[test]
+fn vertex_set_on_the_corners_of_a_one_interval_model_edge_is_reported() {
+    let mut alloc = SerialAlloc::new();
+    let mut src = hex_block_with_edges([1, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let ends: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).y == 0.0 && src.point(v.get()).z == 0.0).collect();
+    assert_eq!(ends.len(), 2, "the two corners of the x edge at y = z = 0");
+    src.add_set("ends", SetMembers::Vertices(ends), &mut alloc).expect("set");
+    let r = run(&src);
+    let m = &r.finished.mesh;
+    let SetMembers::Vertices(vs) = &m.set_by_name("ends").expect("set").members else { panic!("vertices") };
+    assert_eq!(vs.len(), 3, "the two corners and the midpoint of the edge");
+    let amb: Vec<_> = r.notes.iter().filter(|(c, _)| *c == "refine.set_ambiguous").collect();
+    assert_eq!(amb.len(), 1, "{:?}", r.notes);
+    assert!(amb[0].1.contains("`ends`") && amb[0].1.contains("TopoEdge#") && amb[0].1.contains("one interval"), "{}", amb[0].1);
+    // Two intervals along x: the midpoint of each mesh edge joins only with both of its ends in the set.
+    let mut src = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).expect("block");
+    let first: Vec<sm_mesh_api::VertexIx> =
+        (0..src.vertex_count()).map(sm_mesh_api::VertexIx::new).filter(|v| src.point(v.get()).y == 0.0 && src.point(v.get()).z == 0.0 && src.point(v.get()).x <= 1.0).collect();
+    assert_eq!(first.len(), 2);
+    src.add_set("first", SetMembers::Vertices(first), &mut alloc).expect("set");
+    let r = run(&src);
+    assert!(r.notes.is_empty(), "the model edge has an interior vertex: {:?}", r.notes);
 }
 
 /// An empty vertex set carries over empty and reports nothing.

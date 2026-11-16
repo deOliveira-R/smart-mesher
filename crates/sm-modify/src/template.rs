@@ -226,6 +226,45 @@ fn pyramid() -> Template {
     finish(CellShape::Pyramid, ns, vec![ch])
 }
 
+/// The THex template: a tet to 4 hexes, one per corner (node order: the corner, its three edge
+/// midpoints and face centres, the cell centre). Even corner permutations keep the handedness of a
+/// right-handed tet.
+pub(crate) fn tet_to_hex() -> &'static Template {
+    static T: OnceLock<Template> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut ns = NodeSet::corners(4);
+        let mut ch = Vec::new();
+        for [a, b, c, d] in [[0u8, 1, 2, 3], [1, 0, 3, 2], [2, 3, 0, 1], [3, 2, 1, 0]] {
+            let n = [
+                a,
+                ns.intern(vec![a, b]),
+                ns.intern(vec![a, b, c]),
+                ns.intern(vec![a, c]),
+                ns.intern(vec![a, d]),
+                ns.intern(vec![a, b, d]),
+                ns.intern(vec![0, 1, 2, 3]),
+                ns.intern(vec![a, c, d]),
+            ];
+            ch.push((CellShape::Hex, n.to_vec()));
+        }
+        finish(CellShape::Tet, ns, vec![ch])
+    })
+}
+
+/// The TQuad template: a triangle to 3 quads, one per corner (the corner, two edge midpoints, the centre).
+pub(crate) fn tri_to_quad() -> &'static Template {
+    static T: OnceLock<Template> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut ns = NodeSet::corners(3);
+        let mut ch = Vec::new();
+        for [a, b, c] in [[0u8, 1, 2], [1, 2, 0], [2, 0, 1]] {
+            let n = [a, ns.intern(vec![a, b]), ns.intern(vec![0, 1, 2]), ns.intern(vec![c, a])];
+            ch.push((CellShape::Quad, n.to_vec()));
+        }
+        finish(CellShape::Tri, ns, vec![ch])
+    })
+}
+
 /// The template of `shape` (panics for shapes without one; callers check first).
 pub(crate) fn template(shape: CellShape) -> &'static Template {
     static T: OnceLock<[Template; 6]> = OnceLock::new();

@@ -23,11 +23,35 @@ use smallvec::SmallVec;
 
 use crate::carry::{Lineage, carry_sets_and_tags};
 use crate::project::Projector;
-use crate::template::{supported, template, tet_diagonals};
+use crate::template::{supported, template, tet_diagonals, tet_to_hex, tri_to_quad};
 
 const NONE: u32 = u32::MAX;
 /// A scaled Jacobian at or below this counts as an inverted or collapsed cell.
 const SJ_FLOOR: f64 = 1e-12;
+
+/// The rule a pass applies to every cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Rule {
+    /// Uniform refinement of the same shape (tet 1 to 8, hex 1 to 8, ...).
+    #[default]
+    Uniform,
+    /// Tets to hexes, 1 to 4 (`mesh.thex`): corner, edge midpoints, face centres, cell centre.
+    TetToHex,
+    /// Triangles to quads, 1 to 3 (`mesh.tquad`): corner, edge midpoints, cell centre.
+    TriToQuad,
+}
+
+impl Rule {
+    /// The only cell shape the conversion rules accept.
+    fn input(self) -> Option<CellShape> {
+        match self {
+            Rule::Uniform => None,
+            Rule::TetToHex => Some(CellShape::Tet),
+            Rule::TriToQuad => Some(CellShape::Tri),
+        }
+    }
+}
 
 /// Why a mesh cannot be refined.
 #[derive(Debug, thiserror::Error)]
@@ -135,6 +159,22 @@ pub fn refine<B: MeshBuild>(
     src: &dyn MeshRead,
     topo: Option<&dyn TopologyView>,
     project: bool,
+    b: B,
+    alloc: &mut SerialAlloc,
+) -> Result<Refined<B::Output>, RefineError> {
+    pass(src, topo, project, Rule::Uniform, b, alloc)
+}
+
+/// Apply `rule` to every cell of `src` (see [`refine`], which is `Rule::Uniform`). The conversion
+/// rules refuse any cell of another shape with `UnsupportedCell`.
+///
+/// # Errors
+/// As [`refine`].
+pub fn pass<B: MeshBuild>(
+    src: &dyn MeshRead,
+    topo: Option<&dyn TopologyView>,
+    project: bool,
+    rule: Rule,
     mut b: B,
     alloc: &mut SerialAlloc,
 ) -> Result<Refined<B::Output>, RefineError> {
@@ -149,7 +189,8 @@ pub fn refine<B: MeshBuild>(
     for c in 0..nc {
         let ci = CellIx::new(c);
         let shape = src.cell_shape(ci);
-        if !supported(shape) || src.cell_corners(ci).is_none() {
+        let want = rule.input().is_none_or(|w| w == shape);
+        if !want || !supported(shape) || src.cell_corners(ci).is_none() {
             return Err(RefineError::UnsupportedCell { cell: c as u32, shape });
         }
         if !src.cell_active(ci) {
@@ -202,7 +243,7 @@ pub fn refine<B: MeshBuild>(
     let mut qrank = vec![NONE; nf];
     if !dim2 {
         for f in 0..nf {
-            if src.face_vertices(FaceIx::new(f)).len() == 4 {
+            if src.face_vertices(FaceIx::new(f)).len() == if rule == Rule::TetToHex { 3 } else { 4 } {
                 qrank[f] = qfaces.len() as u32;
                 qfaces.push(f as u32);
             }
@@ -212,7 +253,7 @@ pub fn refine<B: MeshBuild>(
     let mut crank = vec![NONE; nc];
     for c in 0..nc {
         let s = src.cell_shape(CellIx::new(c));
-        if s == CellShape::Hex || (dim2 && s == CellShape::Quad) {
+        if s == CellShape::Hex || (dim2 && s == CellShape::Quad) || rule != Rule::Uniform {
             crank[c] = cen_cells.len() as u32;
             cen_cells.push(c as u32);
         }
@@ -249,6 +290,11 @@ pub fn refine<B: MeshBuild>(
 
     // ---- children --------------------------------------------------------------------------------
     let diag = tet_diagonals();
+    let rule_tmpl = |shape: CellShape| match rule {
+        Rule::Uniform => template(shape),
+        Rule::TetToHex => tet_to_hex(),
+        Rule::TriToQuad => tri_to_quad(),
+    };
     let mut c_shape: Vec<CellShape> = Vec::with_capacity(nc * 8);
     let mut c_off: Vec<u32> = vec![0];
     let mut c_nodes: Vec<u32> = Vec::with_capacity(nc * 40);
@@ -260,7 +306,7 @@ pub fn refine<B: MeshBuild>(
         child_start.push(c_shape.len() as u32);
         let ci = CellIx::new(c);
         let shape = src.cell_shape(ci);
-        let t = template(shape);
+        let t = rule_tmpl(shape);
         let corners: SmallVec<[u32; 8]> = src.cell_corners(ci).unwrap_or(&[]).iter().map(|v| v.0).collect();
         // Source face of every local face of the parent, by vertex set.
         let cf = src.cell_faces(ci);
@@ -286,7 +332,7 @@ pub fn refine<B: MeshBuild>(
                     let e = edge_id(corners[set[0] as usize], corners[set[1] as usize]).ok_or_else(|| bad(c, "an edge of the cell is not an edge of any face"))?;
                     base_e as u32 + e
                 }
-                n if n == 8 || (dim2 && n == 4) => (base_c + crank[c] as usize) as u32,
+                n if n == corners.len() && n > 2 && (n == 8 || dim2 || rule != Rule::Uniform) => (base_c + crank[c] as usize) as u32,
                 _ => {
                     let j = shape
                         .local_faces()
@@ -305,7 +351,7 @@ pub fn refine<B: MeshBuild>(
         if lf2f.contains(&NONE) {
             return Err(bad(c, "a face of the cell is missing from its face list"));
         }
-        let variant = if shape == CellShape::Tet {
+        let variant = if shape == CellShape::Tet && rule == Rule::Uniform {
             // Octahedron diagonal: the shortest one (ties to the first), independent of vertex order.
             let len = |d: usize| dist2(pos[gid[diag[d].0 as usize] as usize], pos[gid[diag[d].1 as usize] as usize]);
             let l = [len(0), len(1), len(2)];
@@ -316,6 +362,17 @@ pub fn refine<B: MeshBuild>(
         };
         for ch in &t.variants[variant] {
             let mut nodes: SmallVec<[u8; 8]> = ch.nodes.iter().copied().collect();
+            if ch.shape == CellShape::Hex && rule == Rule::TetToHex {
+                // Right-handed corner frame: node 1, 3, 4 from node 0.
+                let p = |i: usize| pos[gid[nodes[i] as usize] as usize];
+                let (a, bb, cc) = (sub(p(1), p(0)), sub(p(3), p(0)), sub(p(4), p(0)));
+                let det = a[0] * (bb[1] * cc[2] - bb[2] * cc[1]) - a[1] * (bb[0] * cc[2] - bb[2] * cc[0])
+                    + a[2] * (bb[0] * cc[1] - bb[1] * cc[0]);
+                if det < 0.0 {
+                    let perm = CellShape::Hex.reflect_permutation();
+                    nodes = perm.iter().map(|&i| nodes[i as usize]).collect();
+                }
+            }
             if ch.shape == CellShape::Tet {
                 let p: SmallVec<[V; 4]> = nodes.iter().map(|&n| pos[gid[n as usize] as usize]).collect();
                 let (a, bb, cc) = (sub(p[1], p[0]), sub(p[2], p[0]), sub(p[3], p[0]));
@@ -452,7 +509,7 @@ pub fn refine<B: MeshBuild>(
     }
 
     on_parent.sort_by_key(|(pf, fh)| (*pf, fh.get()));
-    let edge_on_curve: Vec<bool> = eclass.iter().map(|c| c.entity.kind() == sm_core::EntityKind::TopoEdge).collect();
+    let edge_ent: Vec<sm_core::EntityId> = eclass.iter().map(|c| c.entity).collect();
     let notes = carry_sets_and_tags(
         src,
         &mut b,
@@ -460,7 +517,7 @@ pub fn refine<B: MeshBuild>(
             nv,
             nn,
             pairs: &pairs,
-            edge_on_curve: &edge_on_curve,
+            edge_ent: &edge_ent,
             qfaces: &qfaces,
             cen_cells: &cen_cells,
             base_e,
@@ -469,6 +526,8 @@ pub fn refine<B: MeshBuild>(
             child_start: &child_start,
             c_parent: &c_parent,
             on_parent: &on_parent,
+            span: None,
+            joins: &[],
         },
     )?;
 
@@ -486,7 +545,7 @@ pub fn refine<B: MeshBuild>(
 /// boundary faces or as interface faces between volumes) lies on a model edge. With the model
 /// topology it is the one edge common to all those faces that both end vertices can lie on; without
 /// it, the `TopoEdge` of an end vertex (the other end on the same edge or on a `TopoVertex`).
-fn fallback_edge_classes(src: &dyn MeshRead, topo: Option<&dyn TopologyView>) -> BTreeMap<[VertexIx; 2], Classification> {
+pub(crate) fn fallback_edge_classes(src: &dyn MeshRead, topo: Option<&dyn TopologyView>) -> BTreeMap<[VertexIx; 2], Classification> {
     use sm_core::{EntityId, EntityKind};
     use sm_topo_api::TopologyViewExt;
     let mut seen: BTreeMap<[VertexIx; 2], SmallVec<[EntityId; 4]>> = BTreeMap::new();
