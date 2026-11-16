@@ -298,7 +298,7 @@ pub(crate) fn scratch_plan(
     alloc: &SerialAlloc,
     fixed_budget: Option<usize>,
 ) -> Result<(Plan, Vec<Attempt>), SchemeError> {
-    let field = size_field(cfg, intent).map_err(|e| SchemeError::Input(e.to_string()))?;
+    let field = size_field(cfg, intent, model.topo(), targets).map_err(|e| SchemeError::Input(e.to_string()))?;
     let mut driver = make_driver(cfg, field.as_deref(), faces, targets.len());
     if let Some(n) = fixed_budget {
         driver.options.max_replans = n;

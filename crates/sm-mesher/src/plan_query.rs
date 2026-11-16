@@ -817,7 +817,7 @@ impl TypedQuery for MeshPlanQuery {
                     crate::polyscheme::lower(intent, &targets)?.map(|(i, _)| i)
                 };
                 let intent = lowered.as_ref().unwrap_or(intent);
-                let field = size_field(cfg, intent)?;
+                let field = size_field(cfg, intent, model.topo(), &targets)?;
                 let driver = make_driver(cfg, field.as_deref(), faces, targets.len());
                 let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
                 let mut blockers = run_guards(meshes, model.topo(), &targets, faces);

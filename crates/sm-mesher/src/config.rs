@@ -15,6 +15,15 @@ use crate::auto::{AutoStrategy, StrategyRegistry};
 pub type SizeFieldFn =
     Arc<dyn Fn(&SizingSpec) -> Result<Option<Box<dyn SizeField>>, SchemeError> + Send + Sync>;
 
+/// Builds a size field from a sizing spec with the model geometry in reach: the topology view and
+/// the region's targets (volumes, faces or edges; empty means the whole model). Functions that
+/// read the geometry (curvature) need it; the others ignore it.
+pub type GeoSizeFieldFn = Arc<
+    dyn Fn(&dyn TopologyView, &[EntityId], &SizingSpec) -> Result<Option<Box<dyn SizeField>>, SchemeError>
+        + Send
+        + Sync,
+>;
+
 /// Resolves `mesh.size {auto}` to a size for the targets at a factor (1..=10).
 pub type AutoSizeFn =
     Arc<dyn Fn(&dyn TopologyView, &[EntityId], u32) -> Result<f64, String> + Send + Sync>;
@@ -26,6 +35,7 @@ pub struct MesherConfig {
     solver: Arc<dyn IntervalSolver>,
     picker: Arc<dyn CornerPicker>,
     size_fields: Option<SizeFieldFn>,
+    geo_size_fields: Option<GeoSizeFieldFn>,
     auto_size: Option<AutoSizeFn>,
     max_cells: u64,
     cascade: RequestCascade,
@@ -43,6 +53,7 @@ impl MesherConfig {
             solver: Arc::new(ReferenceIntervalSolver::default()),
             picker: Arc::new(ReferenceCornerPicker),
             size_fields: None,
+            geo_size_fields: None,
             auto_size: None,
             max_cells: DEFAULT_MAX_CELLS,
             cascade: RequestCascade::Firmness,
@@ -113,6 +124,15 @@ impl MesherConfig {
         self
     }
 
+    /// Set the geometry-aware size-field builder. It takes precedence over
+    /// [`with_size_fields`](Self::with_size_fields) and must itself handle every spec the
+    /// plain builder would (opt-in functions like `curvature` need the view).
+    #[must_use]
+    pub fn with_geo_size_fields(mut self, f: GeoSizeFieldFn) -> Self {
+        self.geo_size_fields = Some(f);
+        self
+    }
+
     /// Set the automatic-size hook.
     #[must_use]
     pub fn with_auto_size(mut self, f: AutoSizeFn) -> Self {
@@ -135,9 +155,34 @@ impl MesherConfig {
         &*self.picker
     }
 
-    /// The size-field builder, if set.
+    /// The plain size-field builder, if set.
     pub fn size_fields(&self) -> Option<&SizeFieldFn> {
         self.size_fields.as_ref()
+    }
+
+    /// The geometry-aware size-field builder, if set.
+    pub fn geo_size_fields(&self) -> Option<&GeoSizeFieldFn> {
+        self.geo_size_fields.as_ref()
+    }
+
+    /// Whether any size-field builder is configured.
+    pub fn has_size_fields(&self) -> bool {
+        self.size_fields.is_some() || self.geo_size_fields.is_some()
+    }
+
+    /// Build the field of `spec` over `targets` with the geometry-aware builder when set, else
+    /// the plain one. `None` when no builder is configured or the spec builds no field.
+    pub fn build_size_field(
+        &self,
+        view: &dyn TopologyView,
+        targets: &[EntityId],
+        spec: &SizingSpec,
+    ) -> Result<Option<Box<dyn SizeField>>, SchemeError> {
+        match (&self.geo_size_fields, &self.size_fields) {
+            (Some(g), _) => g(view, targets, spec),
+            (None, Some(f)) => f(spec),
+            (None, None) => Ok(None),
+        }
     }
 
     /// The automatic-size hook, if set.

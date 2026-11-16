@@ -33,9 +33,7 @@ fn side_uvs(
     side_keys: &[Vec<NodeKey>],
 ) -> Option<Vec<Vec<[f64; 2]>>> {
     let topo = cx.input.topo;
-    let sm_topo_api::Carrier::Surface(sc) = topo.carrier(f) else {
-        return None;
-    };
+    let sc = topo.composite_surface(f)?;
     let dom = topo.shapes().surface(sc.surface)?.domain();
     if !(dom.u.is_periodic() || dom.v.is_periodic()) {
         return None;
@@ -212,10 +210,9 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
         Ok(([q.x, q.y, q.z], prm))
     };
 
-    let surface = match topo.carrier(f) {
-        sm_topo_api::Carrier::Surface(sc) => topo.shapes().surface(sc.surface),
-        _ => None,
-    };
+    let surface = topo
+        .composite_surface(f)
+        .and_then(|sc| topo.shapes().surface(sc.surface));
     if side_uv.is_some() && surface.is_none() {
         return Err(internal("periodic face lost its surface".into()));
     }

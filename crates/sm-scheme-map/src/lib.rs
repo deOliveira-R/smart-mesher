@@ -16,7 +16,7 @@ use sm_scheme_api::{
     PlanCtx, Requirements, Scheme, SchemeDim, SchemeError, SchemeRegistry, Target, VertexRule,
     VertexType,
 };
-use sm_topo_api::{Carrier, Side, TopologyView};
+use sm_topo_api::{Side, TopologyView};
 
 /// Registered name of the scheme.
 pub const NAME: &str = "map";
@@ -367,10 +367,8 @@ fn hint_row_start(interior: &[([f64; 3], Param)], ni: usize) -> Option<Uv> {
 
 /// The surface carrier of `f`.
 fn surface_of(topo: &dyn TopologyView, f: sm_core::EntityId) -> Option<&dyn ParametricSurface> {
-    match topo.carrier(f) {
-        Carrier::Surface(sc) => topo.shapes().surface(sc.surface),
-        _ => None,
-    }
+    let sc = topo.composite_surface(f)?;
+    topo.shapes().surface(sc.surface)
 }
 
 /// `(u, v)` of every node of the four logical sides (in side order, corner to corner), from the

@@ -476,7 +476,8 @@ impl<'a> GenCtx<'a> {
     /// others at the uniform fraction of the carrier range. A coedge without a pcurve falls
     /// back to **projecting** the node position onto the face's surface, which is only
     /// allowed when the surface is non-periodic in both directions (the projection cannot know
-    /// which seam branch the loop lives on).
+    /// which seam branch the loop lives on). A virtual composite face (overlay) has no pcurves
+    /// (the overlay answers `None` for them), so it always takes the projection path.
     ///
     /// Periodic seams: pcurves are expected to lie on one consistent unrolled branch, so a
     /// seam vertex has `u = lo` on one coedge and `u = lo + period` on the next one only if a

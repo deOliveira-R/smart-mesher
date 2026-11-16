@@ -245,6 +245,8 @@ pub(crate) fn acceptable(q: &Quality, size: Option<f64>, er_limit: f64) -> Resul
     if q.er > er_limit {
         return Err(format!("predicted edge ratio {:.2} exceeds {er_limit}", q.er));
     }
+    // Rounding guard, not a tolerance on the rule: the 6-node disk predicts exactly 0.5 (the
+    // corner angle is `pi / 3` regardless of placement), so a last-bit miss must not flip it.
     if q.sj < SJ_LIMIT - 1e-9 {
         return Err(format!("predicted scaled Jacobian {:.2} is below {SJ_LIMIT}", q.sj));
     }
