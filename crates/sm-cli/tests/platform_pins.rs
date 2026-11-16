@@ -2,8 +2,10 @@
 //!
 //! `tools/platform/expected.txt` holds `script|key|value` lines: the identity hashes of the
 //! milestone scripts (state hash, layer hashes, branch tips, the memory-run hash, and the
-//! hash-like and count prints), measured on macOS arm64 and equal on Linux arm64 (glibc 2.36 and
-//! 2.39), see `docs/design/w3c/platform-hashes.md`. This test recomputes them through the `smesh`
+//! hash-like and count prints), measured on macOS arm64; the W2 to W3c rows are equal on Linux
+//! arm64 (glibc 2.36 and 2.39), see `docs/design/w3c/platform-hashes.md`. W4-INT adds the
+//! polyhedral (`tools/w4_poly.smesh`, with the OpenMC `pin` deck copied where the script stages it)
+//! and regions (`tools/w4_regions.smesh`) milestones. This test recomputes them through the `smesh`
 //! binary with the same pinning as `tools/platform/collect.py` and requires equality, so the
 //! Linux x86_64 GitHub gate enforces them. It runs twice, with default threads and with
 //! `RAYON_NUM_THREADS=1`; both must equal the file. A moved value is never re-blessed per
@@ -76,6 +78,7 @@ fn s(v: &Value) -> R<String> {
 fn collect(
     name: &str,
     script: &Path,
+    stage: &[PathBuf],
     scratch: &Path,
     threads: Option<&str>,
 ) -> R<BTreeSet<String>> {
@@ -86,6 +89,13 @@ fn collect(
     let (ps, mut rows) = (proj.to_string_lossy().into_owned(), BTreeSet::new());
     let mut add = |k: &str, v: String| rows.insert(format!("{name}|{k}|{v}"));
     smesh(&["new", &ps], &dir, threads)?;
+    // files the script stages: from the project directory (project run) and the cwd (memory run)
+    for f in stage {
+        let base = f.file_name().ok_or("stage file without a name")?;
+        for d in [proj.clone(), dir.join("mem")] {
+            std::fs::copy(f, d.join(base)).map_err(|e| format!("stage {}: {e}", f.display()))?;
+        }
+    }
     let mut a = vec!["run", script.as_str(), "-p", ps.as_str()];
     a.extend(PIN);
     a.push("--json");
@@ -133,18 +143,23 @@ fn all(threads: Option<&str>, scratch: &Path) -> R<BTreeSet<String>> {
     ] {
         std::fs::write(emit.join(f), text).map_err(|e| e.to_string())?;
     }
-    let scripts: [(&str, PathBuf); 7] = [
-        ("w2_milestone", data.join("milestone.smesh")),
-        ("w2_fork", data.join("fork.smesh")),
-        ("w3a_hybrid", emit.join("w3a_hybrid.smesh")),
-        ("w3a_tet", emit.join("w3a_tet.smesh")),
-        ("w3b_milestone", t.join("w3b_milestone.smesh")),
-        ("w3b_submap_graded", t.join("platform/submap_graded.smesh")),
-        ("w3c_pin", t.join("w3c_pin.smesh")),
+    // the OpenMC `pin` deck that tools/w4_poly.smesh stages from its working directory
+    let deck = root().join("crates/sm-csgio/tests/fixtures/openmc/pin");
+    let deck = vec![deck.join("geometry.xml"), deck.join("materials.xml")];
+    let scripts: [(&str, PathBuf, &[PathBuf]); 9] = [
+        ("w2_milestone", data.join("milestone.smesh"), &[]),
+        ("w2_fork", data.join("fork.smesh"), &[]),
+        ("w3a_hybrid", emit.join("w3a_hybrid.smesh"), &[]),
+        ("w3a_tet", emit.join("w3a_tet.smesh"), &[]),
+        ("w3b_milestone", t.join("w3b_milestone.smesh"), &[]),
+        ("w3b_submap_graded", t.join("platform/submap_graded.smesh"), &[]),
+        ("w3c_pin", t.join("w3c_pin.smesh"), &[]),
+        ("w4_poly", t.join("w4_poly.smesh"), &deck),
+        ("w4_regions", t.join("w4_regions.smesh"), &[]),
     ];
     let mut rows = BTreeSet::new();
-    for (name, path) in &scripts {
-        rows.extend(collect(name, path, scratch, threads)?);
+    for (name, path, stage) in &scripts {
+        rows.extend(collect(name, path, stage, scratch, threads)?);
     }
     Ok(rows)
 }
