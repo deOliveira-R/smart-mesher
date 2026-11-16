@@ -9,14 +9,21 @@ use sm_core::{Aabb, EntityId, EntityKind, Point3};
 use sm_geom_api::{CurveDef, Interval, SurfaceDef};
 use sm_layer_api::ModelLayer;
 use sm_op_api::{OpError, QueryCtx, State, TypedQuery};
-use sm_topo_api::{Carrier, CellFlags, Dim, QueryError, Side, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CellFlags, Dim, QueryError, Side, TopologyView, TopologyViewExt, VirtualOp};
 
 fn model_layer(state: &State) -> Result<&ModelLayer, OpError> {
     state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer(<ModelLayer as sm_op_api::LayerType>::NAME.to_owned()))
 }
 
+/// Rank of a cell kind the topology view holds: the real kinds and the overlay's virtual
+/// vertices, edges, faces and cells (`PartitionCell`: the pieces of a realized split live in
+/// the overlay view as volumes).
+fn view_dim(kind: EntityKind) -> Option<Dim> {
+    Dim::of_kind(kind)
+}
+
 fn topo_dim(kind: EntityKind) -> Result<Dim, OpError> {
-    Dim::of_real_kind(kind).ok_or_else(|| OpError::Invalid(format!("`{}` is not a topology kind", kind.name())))
+    view_dim(kind).ok_or_else(|| OpError::Invalid(format!("`{}` is not a topology kind", kind.name())))
 }
 
 /// `topo.related {kind, within}`: the live cells of `kind` related to the cells `within`.
@@ -33,7 +40,7 @@ pub struct TopoRelated {
     /// The kind to return (`TopoVertex` .. `TopoBody`).
     pub kind: EntityKind,
     /// Source cells.
-    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace", "PartitionCell"]))]
     pub within: Vec<EntityId>,
 }
 
@@ -48,25 +55,30 @@ impl TypedQuery for TopoRelated {
         let mut seen: BTreeSet<EntityId> = BTreeSet::new();
         let mut stack: Vec<EntityId> = Vec::new();
         for &s in &self.within {
-            let ds = Dim::of_real_kind(s.kind()).ok_or(OpError::WrongKind { id: s, expected: EntityKind::TopoVolume })?;
+            let ds = view_dim(s.kind()).ok_or(OpError::WrongKind { id: s, expected: EntityKind::TopoVolume })?;
             if !topo.is_alive(s) {
                 return Err(OpError::UnknownEntity(s));
             }
             if ds == target {
-                found.insert(s);
+                // Same rank: only a cell of the asked kind (real vs virtual) is a result.
+                if s.kind() == self.kind {
+                    found.insert(s);
+                }
             } else if seen.insert(s) {
                 stack.push(s);
             }
         }
         let down = |d: Dim| d > target;
         while let Some(c) = stack.pop() {
-            let dc = Dim::of_real_kind(c.kind()).ok_or(OpError::Failed(format!("{c} is not a topology cell")))?;
+            let dc = view_dim(c.kind()).ok_or(OpError::Failed(format!("{c} is not a topology cell")))?;
             let next = if down(dc) { topo.boundary(c) } else { topo.coboundary(c) };
             for inc in next {
                 let n = inc.cell;
-                let Some(dn) = Dim::of_real_kind(n.kind()) else { continue };
+                let Some(dn) = view_dim(n.kind()) else { continue };
                 if dn == target {
-                    found.insert(n);
+                    if n.kind() == self.kind {
+                        found.insert(n);
+                    }
                 } else if ((down(dc) && dn > target) || (!down(dc) && dn < target)) && seen.insert(n) {
                     stack.push(n);
                 }
@@ -159,6 +171,13 @@ pub struct Measurement {
 
 /// `model.measure {entity}`: length, area, volume, centroid and bounding box of a topology cell.
 ///
+/// Virtual cells of the overlay (`PartitionVertex`, `PartitionEdge`, `PartitionFace`) measure
+/// like real ones: a composite face is the sum of its members, a half of a partitioned face is
+/// integrated on its own loops, a composite edge by its chain. A half of a partitioned
+/// *composite* is refused (`Unsupported`, naming the id). A `PartitionCell` (a piece of a
+/// realized split) measures by integrating its own faces; if that fails the error is
+/// `Unsupported` and names the piece.
+///
 /// Face and volume integrals are `TopologyView::face_moments` / `volume_moments` (Gauss
 /// quadrature, far below the model tolerance); a whole sphere (a single face with two pole edges
 /// and a seam) keeps the exact closed forms `4 pi r^2` and `4/3 pi r^3` (the view's quadrature
@@ -170,7 +189,7 @@ pub struct Measurement {
 #[serde(deny_unknown_fields)]
 pub struct ModelMeasure {
     /// The cell to measure.
-    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody", "PartitionVertex", "PartitionEdge", "PartitionFace", "PartitionCell"]))]
     pub entity: EntityId,
 }
 
@@ -229,6 +248,15 @@ pub(crate) fn edge_bbox(topo: &dyn TopologyView, e: EntityId) -> Aabb {
             bb.extend(*p);
         }
     }
+    // A composite edge is a chain: sample it (parameter 0..=1 along its length).
+    if matches!(topo.carrier(e), Carrier::Composite(_))
+        && let Some(sm) = topo.edge_sampler(e)
+    {
+        const N: usize = 256;
+        for k in 0..=N {
+            bb.extend(sm.eval(k as f64 / N as f64));
+        }
+    }
     if let Carrier::Curve(cc) = topo.carrier(e) {
         let shapes = topo.shapes();
         if let (Some(def), Some(curve)) = (shapes.curve_def(cc.curve), shapes.curve(cc.curve)) {
@@ -269,8 +297,28 @@ pub(crate) fn face_area(topo: &dyn TopologyView, f: EntityId) -> Result<(f64, Op
         };
         return Ok((sign * 4.0 * PI * r * r, Some(c)));
     }
-    let m = topo.face_moments(f).map_err(qerr)?;
+    let m = match topo.face_moments(f) {
+        Ok(m) => m,
+        // A half of a partitioned virtual face keeps the parent's surface: integrate it on the
+        // view (its loops include the chord).
+        Err(QueryError::Unsupported("moments of a partitioned virtual face")) => sm_topo_api::geometry::face_moments(topo, f).map_err(qerr)?,
+        Err(e) => return Err(qerr(e)),
+    };
     Ok((m.area, m.centroid()))
+}
+
+/// The halves of a partitioned composite carry the composite's member list, which the view
+/// would sum to the whole composite's moments: refuse that case with a clear message.
+fn guard_virtual_face(layer: &ModelLayer, f: EntityId) -> Result<(), OpError> {
+    let Carrier::Composite(_) = layer.topo().carrier(f) else { return Ok(()) };
+    let made_by_composite = layer.overlay().is_some_and(|ov| ov.ops().iter().any(|op| matches!(op, VirtualOp::Composite { id, .. } if *id == f)));
+    if made_by_composite {
+        Ok(())
+    } else {
+        Err(OpError::Unsupported(format!(
+            "{f} is a half of a partitioned composite face: its area and centroid are not defined (model.remove_virtual the partition to measure the composite)"
+        )))
+    }
 }
 
 /// `(volume, centroid)` of a volume.
@@ -283,7 +331,14 @@ pub(crate) fn volume_value(topo: &dyn TopologyView, v: EntityId) -> Result<(f64,
     {
         return Ok((4.0 / 3.0 * PI * r * r * r, Some(c)));
     }
-    let m = topo.volume_moments(v).map_err(qerr)?;
+    let m = match topo.volume_moments(v) {
+        Ok(m) => m,
+        // A piece of a realized split (`PartitionCell`): integrate it on the view, over its
+        // own faces (real, virtual halves and the cut).
+        Err(QueryError::Unsupported("moments of a virtual volume")) => sm_topo_api::geometry::volume_moments(topo, v)
+            .map_err(|e| OpError::Unsupported(format!("{v}: its volume moments are not available ({e})")))?,
+        Err(e) => return Err(qerr(e)),
+    };
     Ok((m.volume, m.centroid()))
 }
 
@@ -294,9 +349,12 @@ impl TypedQuery for ModelMeasure {
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<Measurement, OpError> {
         let topo = model_layer(state)?.topo();
         let e = self.entity;
-        let dim = Dim::of_real_kind(e.kind()).ok_or(OpError::WrongKind { id: e, expected: EntityKind::TopoVolume })?;
+        let dim = view_dim(e.kind()).ok_or(OpError::WrongKind { id: e, expected: EntityKind::TopoVolume })?;
         if !topo.is_alive(e) {
             return Err(OpError::UnknownEntity(e));
+        }
+        if e.kind() == EntityKind::PartitionFace {
+            guard_virtual_face(model_layer(state)?, e)?;
         }
         let mut out = Measurement { entity: e, length: None, area: None, volume: None, centroid: None, bbox: BBox { lo: [0.0; 3], hi: [0.0; 3] } };
         let bb = match dim {
@@ -310,6 +368,8 @@ impl TypedQuery for ModelMeasure {
                         let curve = topo.shapes().curve(cc.curve).ok_or_else(|| OpError::Failed(format!("curve {} is not in the store", cc.curve)))?;
                         curve.length(cc.range, topo.tolerance().linear).map_err(|er| OpError::Failed(format!("measure: {er}")))?
                     }
+                    // A composite edge: the chain's sampler knows the length.
+                    Carrier::Composite(_) => topo.edge_sampler(e).ok_or_else(|| OpError::Failed(format!("{e} has no length")))?.length(),
                     _ => 0.0,
                 });
                 edge_bbox(topo, e)
