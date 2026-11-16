@@ -2089,6 +2089,8 @@ dependencies = [
  "sm-quality",
  "sm-scheme-api",
  "sm-scheme-curve",
+ "sm-scheme-map",
+ "sm-scheme-mapvol",
  "sm-scheme-tri",
  "sm-testkit",
  "sm-topo-api",
