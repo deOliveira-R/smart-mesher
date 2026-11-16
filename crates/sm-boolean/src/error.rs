@@ -80,6 +80,18 @@ pub enum BooleanError {
         /// The operation that produced it.
         rule: &'static str,
     },
+    /// The edit would change a host cell that the model's virtual topology (a partition or a
+    /// composite) is built on while keeping its id; the overlay would silently describe a
+    /// different cell.
+    #[error(
+        "{edit} would change {entity}, which carries virtual topology (a partition or composite): model.remove_virtual it first"
+    )]
+    VirtualTopology {
+        /// The host cell the overlay refers to.
+        entity: EntityId,
+        /// The edit that was refused.
+        edit: &'static str,
+    },
     /// The inputs are not acceptable (reported as `Invalid` by the ops).
     #[error("{0}")]
     Invalid(String),

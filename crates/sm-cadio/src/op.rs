@@ -96,6 +96,20 @@ pub struct ImportStep {
     /// Import STEP names as groups and solid colors as volume colors (default `false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attributes: Option<bool>,
+    /// Repair mode. `tolerant` closes an open shell that lacks planar faces (and treats open
+    /// `SHELL_BASED_SURFACE_MODEL` sheets as candidates), one `step.repaired` warning per fix;
+    /// what it cannot close is refused as `step.open_shell` (solids) or reported as
+    /// `step.repair_failed` (sheets). Default: detect and refuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair: Option<RepairMode>,
+}
+
+/// The repair modes of `model.import_step`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairMode {
+    /// Close open shells whose boundary is planar (see [`ImportStep::repair`]).
+    Tolerant,
 }
 
 fn emit(ctx: &mut ApplyCtx<'_>, n: &crate::model::Note, label: &str, ents: &[EntityId]) {
@@ -120,8 +134,11 @@ impl TypedOp for ImportStep {
             Some(w) => return Err(OpError::Invalid(format!("weld_tol {w} must be finite, positive and at most the model's linear_max {}", tol.linear_max))),
         };
         let bytes = load(&self.source, || ctx.service::<StepInputs>())?;
-        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: self.sheets.unwrap_or(false), flatten_assemblies: true };
+        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: self.sheets.unwrap_or(false), flatten_assemblies: true, repair: self.repair.is_some() };
         let model = read_step(&bytes, &opts)?;
+        if model.solids.is_empty() && let Some(n) = model.notes.iter().find(|n| n.code == NoteCode::RepairFailed) {
+            return Err(OpError::Invalid(format!("step.open_shell: {}", n.message)));
+        }
         if model.solids.is_empty() {
             return Err(OpError::Invalid("step.no_solids: the file contains no solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, FACETED_BREP) to import".to_owned()));
         }

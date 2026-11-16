@@ -16,7 +16,7 @@ use sm_model_api::FaceRole;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 use sm_topo_api::{Carrier, Dim, TopologyView};
 
-use crate::boolean::{BoolOptions, BoolRule, boolean_ordered};
+use crate::boolean::{BoolOptions, BoolRule, Fold, boolean_ordered};
 use crate::error::BooleanError;
 use crate::imprint::{ImprintOptions, imprint_bodies};
 use crate::merge::{MergeKinds, MergeOptions, MergeReport, merge, merge_check};
@@ -81,6 +81,52 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
         "Pieces on neither side (empty for plane, surface and cylinder tools).",
     ),
 ];
+
+/// The host cells the model's overlay (virtual topology) is built on: composite members,
+/// partitioned faces, edges and chord end vertices, split volumes. `None` without an overlay.
+///
+/// An op that edits a cell while keeping its id (a regularize join) must not touch these: the
+/// overlay replays on the new host without re-checking its chords, so it would silently describe
+/// a different cell. A future kind of virtual op that this list does not know is refused
+/// (`Unsupported`) rather than guessed at.
+pub(crate) fn overlay_cells(ctx: &ApplyCtx<'_>) -> Result<Option<BTreeSet<EntityId>>, OpError> {
+    use sm_topo_api::VirtualOp as V;
+    let Some(ov) = ctx.layer::<ModelLayer>()?.overlay() else {
+        return Ok(None);
+    };
+    let mut out: BTreeSet<EntityId> = BTreeSet::new();
+    for op in ov.ops() {
+        match op {
+            V::Composite { faces, .. } => out.extend(faces),
+            V::PartitionEdge { edge, .. } => {
+                out.insert(*edge);
+            }
+            V::PartitionFace { face, cut, .. } => out.extend([*face, cut.from, cut.to]),
+            V::PartitionVolume { volume, cut, .. } => {
+                out.insert(*volume);
+                out.extend(&cut.edges);
+                out.insert(cut.seed);
+            }
+            V::CompositeEdges { edges, .. } => out.extend(edges),
+            V::CollapseEdge {
+                edge,
+                into_vertex,
+                repointed,
+                ..
+            } => {
+                out.extend([*edge, *into_vertex]);
+                out.extend(repointed.iter().map(|&(orig, _)| orig));
+            }
+            _ => {
+                return Err(OpError::Unsupported(
+                    "the model has a kind of virtual topology this op cannot check: model.remove_virtual first"
+                        .into(),
+                ));
+            }
+        }
+    }
+    Ok(Some(out))
+}
 
 /// Refuse operands that have a mesh, are decomposed or are instanced.
 pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
@@ -164,12 +210,29 @@ fn run_boolean(
     // the whole transaction can: roll back and retry with the offending operand fused last (a
     // bridge operand may cover the tangent line). Each retry defers one more operand, so at most
     // one retry per operand.
+    let virtual_cells = if opts.regularize && !opts.keep {
+        overlay_cells(ctx)?
+    } else {
+        None
+    };
     let mut defer: Vec<usize> = Vec::new();
     let mut first_err: Option<OpError> = None;
     let (out, txn) = loop {
         let mut culprit: Option<usize> = None;
         let r = topo_txn(ctx, |topo, _model| {
-            boolean_ordered(topo, rule, a, b, &opts, &defer, &mut culprit).map_err(OpError::from)
+            boolean_ordered(
+                topo,
+                rule,
+                a,
+                b,
+                &opts,
+                Fold {
+                    defer: &defer,
+                    culprit: &mut culprit,
+                    virtual_cells: virtual_cells.as_ref(),
+                },
+            )
+            .map_err(OpError::from)
         });
         match (r, culprit) {
             (Err(e), Some(c)) if rule != BoolRule::Subtract && !defer.contains(&c) => {
@@ -598,9 +661,26 @@ impl TypedOp for Regularize {
         }
         resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         guard_volumes(ctx, &self.volumes)?;
+        let virtual_cells = overlay_cells(ctx)?;
         let ((rep, live), txn) = topo_txn(ctx, |topo, _model| {
             let rep = crate::regularize::regularize_volumes(topo, &self.volumes)
                 .map_err(OpError::from)?;
+            // A join keeps the survivor's id but grows it (a face absorbs its neighbour, an edge
+            // its continuation): refuse when the overlay is built on a survivor. (A retired
+            // cell is already refused by the rebase.)
+            if let Some(vc) = &virtual_cells
+                && let Some(p) = rep
+                    .joined_faces
+                    .iter()
+                    .chain(&rep.joined_edges)
+                    .find(|p| vc.contains(&p.keep))
+            {
+                return Err(BooleanError::VirtualTopology {
+                    entity: p.keep,
+                    edit: "model.regularize",
+                }
+                .into());
+            }
             // A refused cell can die later in the same pass (a neighbouring join absorbs it).
             let live: BTreeSet<EntityId> = rep
                 .refused
@@ -692,6 +772,111 @@ impl TypedQuery for HealCheck {
             blend_max_radius: self.blend_max_radius,
         };
         crate::heal_check::heal_check(layer.topo(), &o).map_err(OpError::from)
+    }
+}
+
+/// The fixes `model.heal` can be limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HealFixName {
+    /// Raise tolerances and merge near cells.
+    Weld,
+    /// Re-orient inside-out volumes.
+    Orient,
+    /// Close planar open loops.
+    Close,
+}
+
+/// `model.heal {entities?, tol?, fixes?}`: tolerant healing, tolerance first. Near gaps up to
+/// `tol` (default and maximum `linear_max`) are welded (the paired cells' tolerances are raised to
+/// the gap, then merged within them; the lowest id survives, so the other side's boundary moves
+/// by the gap, recorded as `Merged { gap }`), inside-out volumes are re-oriented, and planar
+/// open loops are closed by a plane face. Nothing else moves. `fixes` limits the run to a
+/// subset of `weld`, `orient`, `close`. Run `model.heal_check` first and `model.heal_check`
+/// again after: what remains is outside tolerant healing (collapses and defeaturing).
+/// Outputs: the surviving merged `faces`, the `closed` hole faces and the re-oriented `volumes`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Heal {
+    /// The cells to heal within (default: everything).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoVertex", "TopoEdge", "TopoFace", "TopoVolume", "TopoBody"]))]
+    pub entities: Option<Vec<EntityId>>,
+    /// Healing tolerance (at most `linear_max`, which is the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tol: Option<f64>,
+    /// The fixes to run (default all three).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixes: Option<Vec<HealFixName>>,
+}
+
+impl TypedOp for Heal {
+    const NAME: &'static str = "model.heal";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new(
+            "faces",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The surviving faces of merged pairs.",
+        ),
+        OutputRole::new(
+            "closed",
+            &[EntityKind::TopoFace],
+            Cardinality::Many,
+            "The faces created to close open loops.",
+        ),
+        OutputRole::new(
+            "volumes",
+            &[EntityKind::TopoVolume],
+            Cardinality::Many,
+            "The volumes whose faces were reversed.",
+        ),
+    ];
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let layer = ctx.layer::<ModelLayer>()?;
+        check_scope(layer.host(), &self.entities)?;
+        let fixes = match &self.fixes {
+            None => crate::heal::HealFixes::default(),
+            Some(l) => crate::heal::HealFixes {
+                weld: l.contains(&HealFixName::Weld),
+                orient: l.contains(&HealFixName::Orient),
+                close: l.contains(&HealFixName::Close),
+            },
+        };
+        let o = crate::heal::HealApply {
+            entities: self.entities.clone(),
+            tol: self.tol,
+            fixes,
+        };
+        let (rep, txn) = topo_txn(ctx, |topo, _model| {
+            crate::heal::heal(topo, &o).map_err(OpError::from)
+        })?;
+        let dropped: BTreeSet<EntityId> = rep
+            .merged
+            .iter()
+            .filter(|m| m.kind == crate::merge::MergeKind::Face)
+            .map(|m| m.drop)
+            .collect();
+        let faces: Vec<EntityId> = rep
+            .merged
+            .iter()
+            .filter(|m| m.kind == crate::merge::MergeKind::Face && !dropped.contains(&m.keep))
+            .map(|m| m.keep)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let closed: Vec<EntityId> = rep.closed.iter().map(|c| c.face).collect();
+        let volumes: Vec<EntityId> = rep.reoriented.clone();
+        commit_topology(
+            ctx,
+            &txn,
+            &[
+                ("faces", &faces),
+                ("closed", &closed),
+                ("volumes", &volumes),
+            ],
+        )
     }
 }
 

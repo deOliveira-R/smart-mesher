@@ -101,6 +101,10 @@ pub enum NoteCode {
     SplitClosedFace,
     /// `step.attributes`: counts of colors, PMI, tessellation and similar entities not imported.
     Attributes,
+    /// `step.repaired`: an open shell was closed by `repair: "tolerant"` (one note per fix).
+    Repaired,
+    /// `step.repair_failed`: `repair: "tolerant"` could not close an open shell.
+    RepairFailed,
 }
 
 impl NoteCode {
@@ -119,6 +123,8 @@ impl NoteCode {
             Self::AssemblyFlattened => "step.assembly_flattened",
             Self::SplitClosedFace => "step.split_closed_face",
             Self::Attributes => "step.attributes",
+            Self::Repaired => "step.repaired",
+            Self::RepairFailed => "step.repair_failed",
         }
     }
 }
@@ -164,11 +170,17 @@ pub struct ReadOptions {
     /// instance, in the root representation's coordinates. When `false`, or when a placement
     /// cannot be applied, solids stay local and `step.assembly_transforms_ignored` is raised.
     pub flatten_assemblies: bool,
+    /// Tolerant repair: close an open shell whose open boundary forms planar loops of straight
+    /// edges with a planar cap face per loop (one `step.repaired` note each), and treat open
+    /// `SHELL_BASED_SURFACE_MODEL` sheets as repair candidates when `sheets` is off. A shell that
+    /// cannot be closed stays an error (solids) or a `step.repair_failed` note (sheets). Default
+    /// `false`: detect and refuse.
+    pub repair: bool,
 }
 
 impl Default for ReadOptions {
     fn default() -> Self {
-        Self { to_unit: None, assume_unit: None, weld_tol: 1e-6, solids: None, sheets: false, flatten_assemblies: true }
+        Self { to_unit: None, assume_unit: None, weld_tol: 1e-6, solids: None, sheets: false, flatten_assemblies: true, repair: false }
     }
 }
 
