@@ -41,8 +41,8 @@ const R: f64 = 0.4096;
 const ANGLE0: f64 = 1.0;
 const FRAME: &str = "lat20";
 
-const MAC_SMSH: &str = "e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6";
-const MAC_SMRT: &str = "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d";
+const PIN_SMSH: &str = "e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6";
+const PIN_SMRT: &str = "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repo root")
@@ -553,9 +553,7 @@ fn the_exports_are_identical_across_front_ends_runs_and_thread_counts() {
         assert_eq!(&read_bytes(&path).expect("file"), bytes, "CLI {file}");
     }
 
-    // The pinned digests (macOS arm64; INT pins Linux).
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) && !MAC_SMSH.is_empty() {
-        assert_eq!(a.smsh.1, MAC_SMSH, "lattice.smsh");
-        assert_eq!(a.smrt.1, MAC_SMRT, "lattice.smrt");
-    }
+    // The pinned digests (one set: Linux and macOS agree since C12); a mismatch prints the value.
+    assert_eq!(a.smsh.1, PIN_SMSH, "lattice.smsh digest produced {}", a.smsh.1);
+    assert_eq!(a.smrt.1, PIN_SMRT, "lattice.smrt digest produced {}", a.smrt.1);
 }

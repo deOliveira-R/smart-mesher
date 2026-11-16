@@ -12,17 +12,20 @@
 //! | Q1 | the deck bytes are the pinned ones; the dual the script chose is the one `mesh.poly_info` allows (the strict circumcentric gate refuses this mesh and the refusal changes nothing); all-tet source |
 //! | Q2 | block volumes: model volumes are the closed forms (1e-9); the blocks sum to the box (1e-9); each disc is bounded by its circle (inscribed mesh); tet, polyhedral, `.smsh` set and `.smrt` region volumes agree (1e-12) |
 //! | Q3 | `.smrt` regions equal the block names (the `.smsh` cell sets) and the exports carry no warning |
-//! | Q4 | the 600 oracle points through the `.smrt`: the region is OpenMC's or further out, never further in |
+//! | Q4 | the 600 oracle points through the `.smrt`: the region is OpenMC's or further out (then within the circle band), never further in |
 //! | Q5 | `mesh.validate` 0 violations (tet and polyhedral); `.smsh` `gc_*` equals the recomputed geometry and `validate_geometry` is empty |
 //! | Q6 | CLI (twice, 1 thread), MCP, in-process and Python agree on prints and file digests |
 //! | Q7 | the project record replays (also under an unregistered strategy name) to the same state |
-//! | Q8 | the hashes are pinned for macOS arm64 and printed for every platform |
+//! | Q8 | the hashes and the export digests are pinned (every platform) and printed |
 //!
-//! Not asserted, and why: the per-block volume is *not* the inscribed-polygon closed form. The tet
-//! mesher puts Steiner nodes on the cylinders and its lateral triangles are not the polygon's
-//! facets, so the fuel is 1.2% below the circle where the 36-gon prism is 0.6% below it. The
-//! closed form needs a swept mesh (`drafts/csgbrep.md` D7), and `mesh.preserve_volume` refuses a
-//! tet mesh (not a sweep of the circle). The test asserts the rigorous bounds and prints the numbers.
+//! Not asserted, and why: the per-block volume is *not* the inscribed-polygon closed form (ruling
+//! OR-j). The tet mesher puts Steiner nodes on the cylinders and its lateral triangles are not
+//! the polygon's facets. The script turns on the curvature sizing (tol 0.0025) so the sides are
+//! about one interval long: the fuel is 0.7% below the circle where the 36-gon prism is 0.5%
+//! below it. The test asserts two-sided bounds per disc (mesh <= circle, mesh >= prism - 0.55 h^2 H)
+//! and, for the oracle points the mesh puts further out than OpenMC, the band between the circle
+//! and its 36-gon apothem. The closed form needs a swept mesh (`drafts/csgbrep.md` D7), and
+//! `mesh.preserve_volume` refuses a tet mesh (not a sweep of the circle).
 //!
 //! The Python leg runs an inline driver through the installed wheel (`W3C_PYTHON` / `W3B_PYTHON`,
 //! else `tools/w3b_python.sh`); a missing wheel is a skip, or a failure under `CI=true`.
@@ -56,19 +59,16 @@ const RADII: [f64; 3] = [0.4, 0.42, 0.46];
 const HEIGHT: f64 = 4.0;
 const PITCH: f64 = 1.26;
 
-/// macOS arm64 pins (Q8); the Linux values are pinned by the combine from CI.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const PINS: Option<[&str; 7]> = Some([
+/// Pins (Q8), one set for every platform since C12; the last is the oracle mismatch count.
+const PINS: [&str; 7] = [
     "b0cddbd5ad1b0a00e5f255b86de5eadee394f36bb813b4b84be97250249629f8",
-    "c52e9ec1f1ad9086a9290c96283cf272f50e94fa664e31b3ddfeb4db5294d8ac",
-    "7a83b512399b460476937ad63010ddb30ff0b7b0c7ad30613b3a2876d510cc17",
-    "5f50c56da28fae7e6d2b9bec0b27cc23bf1486d20c07355bf5f1bd193fceb601",
-    "4edca2ceace9bb1f3071c6328fd271de83b7ba82529fe42fbb7547ffe3c1a437",
+    "359a5bc6500704a93d6fed43a625976e9600483e35f377a03308b694b85d5f37",
+    "e392a96ef45b53327fcf00677ea896bb6fe7bdcf9479b8a92ade8b04ebe3d2af",
+    "7a49f60fb103c992f9f23b5ca9a6e88ea0b1975771b05d5a0850e09084f1ffe4",
+    "2d8517692a2c46c7a0c3fed38420595371983f56ef91f850181b30925de89627",
     "barycentric",
-    "6",
-]);
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-const PINS: Option<[&str; 7]> = None;
+    "3",
+];
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repo root")
@@ -297,6 +297,9 @@ fn export_in_process(s: &mut Server, path: &Path, format: ExportFormat, mesh: Op
 }
 
 /// The closed forms of the deck: model volume of fuel, void, clad and water.
+/// sha256 of the exported files (every platform).
+const FILE_PINS: [(&str, &str); 2] = [("pin.smrt", "ce02bf55850fcd5c07b2f421a7cc05890f81386c55912479a71d0673428b0c4a"), ("pin.smsh", "1b99be6f3aae029698200664f963ef9ab55e0303338b0f9c200dca990ab753b4")];
+
 fn model_volumes() -> [f64; 4] {
     let disc = |r: f64| PI * r * r * HEIGHT;
     [disc(RADII[0]), disc(RADII[1]) - disc(RADII[0]), disc(RADII[2]) - disc(RADII[1]), PITCH * PITCH * HEIGHT - disc(RADII[2])]
@@ -447,11 +450,11 @@ fn milestone_w4_poly() {
     }
     for (f, d) in &cli.files {
         println!("HASH w4_poly {f} {d}");
+        let pin = FILE_PINS.iter().find(|(n, _)| n == f).map(|(_, h)| (*h).to_owned());
+        rows.eq(8, &format!("pinned digest of {f}"), &Some(d.clone()), &pin);
     }
-    if let Some(p) = PINS {
-        for (i, k) in KEYS.iter().enumerate() {
-            rows.eq(8, &format!("pinned {k}"), &cli.prints.get(*k).cloned().unwrap_or_default(), &p[i].to_owned());
-        }
+    for (i, k) in KEYS.iter().enumerate() {
+        rows.eq(8, &format!("pinned {k}"), &cli.prints.get(*k).cloned().unwrap_or_default(), &PINS[i].to_owned());
     }
     finish(&rows);
 }
@@ -533,8 +536,6 @@ fn content_rows(rows: &mut Rows, s: &mut Server, tet: sm_core::EntityId, poly: s
     let get = |m: &BTreeMap<String, f64>, k: &str| m.get(k).copied().unwrap_or(f64::NAN);
     for (k, name) in NAMES.iter().enumerate() {
         // The model volumes are the closed forms (B-rep exactness, 1e-9 after the cuts).
-        let r_in = if k == 0 { 0.0 } else { RADII[k - 1] };
-        let _ = r_in;
         rows.near(2, &format!("tet {name} vs polyhedral {name}"), get(&tet_vol, name), get(&set_vol, name), 1e-12 * want[k].max(1.0));
         rows.near(2, &format!(".smsh set {name} vs .smrt region {name}"), get(&set_vol, name), get(&rt_vol, name), 1e-12 * want[k].max(1.0));
     }
@@ -546,6 +547,11 @@ fn content_rows(rows: &mut Rows, s: &mut Server, tet: sm_core::EntityId, poly: s
         cum += get(&set_vol, NAMES[k]);
         let circle = PI * RADII[k] * RADII[k] * HEIGHT;
         rows.check(2, cum <= circle * (1.0 + 1e-12), || format!("the mesh inside radius {} is {cum} > the circle {circle}", RADII[k]));
+        // Two-sided (ruling OR-j): not below the 36-gon prism by more than 0.55 h^2 H, h = 2 pi r / 36
+        // (the curvature sizing of the script keeps the lateral triangles to about one interval).
+        let h = 2.0 * PI * RADII[k] / 36.0;
+        let floor = prism(RADII[k], 6.0, 30.0) - 0.55 * h * h * HEIGHT;
+        rows.check(2, cum >= floor, || format!("the mesh inside radius {} is {cum} < the 36-gon prism less 0.55 h^2 H = {floor} (circle {circle})", RADII[k]));
         println!("NOTE Q2 mesh inside r={}: {cum:.6} circle {circle:.6} (excess {:.3e})", RADII[k], circle - cum);
     }
     println!("NOTE Q2 36-gon prisms (not asserted): fuel {:.6} void+fuel {:.6} to the r=0.46 {:.6}", prism(RADII[0], 6.0, 30.0), prism(RADII[1], 6.0, 30.0), prism(RADII[2], 6.0, 30.0));
@@ -599,6 +605,7 @@ fn oracle_rows(rows: &mut Rows, t: &sm_rt::MeshTracker) {
     };
     let mat = o["cell_material"].as_object().cloned().unwrap_or_default();
     let (mut compared, mut equal, mut outside, mut further_out, mut further_in) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut min_margin = f64::INFINITY;
     let mut sc = Scratch::new();
     for p in o["points"].as_array().cloned().unwrap_or_default() {
         let q = p["p"].as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(f64::NAN)).collect::<Vec<_>>()).unwrap_or_default();
@@ -614,7 +621,14 @@ fn oracle_rows(rows: &mut Rows, t: &sm_rt::MeshTracker) {
         let got = t.locate(Point3::new(q[0], q[1], q[2]), None, None, &mut sc).ok().and_then(|l| t.regions().get(l.region).map(|r| r.name.clone())).and_then(|n| region_rank(&n));
         match got {
             Some(g) if g == want => equal += 1,
-            Some(g) if g > want => further_out += 1,
+            Some(g) if g > want => {
+                further_out += 1;
+                // Band: inside the circle of OpenMC's region, outside its inscribed 36-gon apothem.
+                let r = q[0].hypot(q[1]);
+                let (hi, lo) = (RADII[want], RADII[want] * (PI / 36.0).cos());
+                min_margin = min_margin.min((r - lo).min(hi - r));
+                rows.check(4, r < hi && r > lo, || format!("point {q:?} (r = {r}) is in OpenMC region {} but the mesh says {}: outside the band ({lo}, {hi})", NAMES[want], NAMES[g]));
+            }
             Some(_) => further_in += 1,
             None => rows.fail(4, format!("point {q:?} is outside the mesh but inside OpenMC cell {cell}")),
         }
@@ -622,10 +636,9 @@ fn oracle_rows(rows: &mut Rows, t: &sm_rt::MeshTracker) {
     rows.eq(4, "oracle points inside OpenMC cells + outside", &(compared + outside), &600);
     rows.eq(4, "points further in than OpenMC (inscribed mesh)", &further_in, &0);
     println!("NOTE Q4 600 points: {outside} outside the deck, {compared} compared, {equal} equal to OpenMC, {further_out} further out (inside the circle band), {further_in} further in");
+    println!("NOTE Q4 band margin of the further-out points: {min_margin:.3e} (circle - r or r - apothem, smallest)");
     println!("MISMATCH w4_poly {further_out}");
-    if let Some(p) = PINS {
-        rows.eq(4, "pinned mismatch count", &further_out.to_string(), &p[6].to_owned());
-    }
+    rows.eq(4, "pinned mismatch count", &further_out.to_string(), &PINS[6].to_owned());
 }
 
 /// Q7: record the project and replay the record in a fresh in-memory session that staged the deck

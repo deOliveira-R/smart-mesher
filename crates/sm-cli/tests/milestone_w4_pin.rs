@@ -40,6 +40,27 @@ use sm_server::{Server, standard_with};
 use w3a_support::*;
 
 const KEYS: [&str; 4] = ["h_model", "h_auto", "h_linear", "h_mesh"];
+/// Pinned hashes per script, in `KEYS` order (one set for every platform since C12).
+const PINS: [(&str, [&str; 4]); 2] = [
+    (
+        "w4_pin_ogrid",
+        [
+            "fe9830c918b2a8417054afc89f49d402444f0b40b404889a493e1387a807bdaa",
+            "f07ceda8f5a2b0eee8aa93e604b30e8cdb86bf6856aaba032ef1a5122f252e67",
+            "48d329888ef0a19b0990f3265dd091d258343c32ed6698dd751fc6f150be1f28",
+            "f7f9e06a8f3cab9a2c4362649ecdbdc634b3ccb51f7730cc4eb32a743c9fcf6c",
+        ],
+    ),
+    (
+        "w4_pin_enclosed_hex",
+        [
+            "257f44e510e7913e323ff204a757ecf511b6d555e0b8d23e9bf9e7cf29f53bab",
+            "0f3d59fac046ba39eaf2193826fa17c5723cd27bc9ec02fd0a0671a12fff51ef",
+            "cbec6fcc43b9def3af8e15dd4b3df388028ff5c8cb889aae56c3d8fbcaf15852",
+            "dca55a530f8a7c48c7ae09b89eb0abf9b022378c0043a4355203b1d8b2d4775a",
+        ],
+    ),
+];
 const PIN_FILES: [&str; 2] = ["pin.smrt", "pin_foam"];
 const ENCLOSED_FILES: [&str; 2] = ["enclosed.smrt", "enclosed_foam"];
 
@@ -492,13 +513,16 @@ fn all_fronts(rows: &mut Rows, tag: u8, script: &str, files: &[&str]) -> Option<
     }
 }
 
-/// The checks both scripts share: the printed hashes exist and are distinct per stage (printed for INT).
+/// The checks both scripts share: the printed hashes are sha256 values, printed and pinned (the
+/// assert message carries the produced value).
 fn hashes(rows: &mut Rows, tag: u8, script: &str, f: &Front) {
     for k in KEYS {
         match one(&f.prints, k) {
             Ok(h) => {
                 rows.check(tag, h.len() == 64, || format!("{script}: {k} is not a sha256: {h}"));
                 println!("HASH {script} {k} {h}");
+                let pin = PINS.iter().find(|(n, _)| *n == script).map(|(_, p)| p[KEYS.iter().position(|x| *x == k).unwrap_or(0)].to_owned());
+                rows.eq(tag, &format!("{script} pinned {k}"), &Some(h), &pin);
             }
             Err(x) => rows.fail(tag, x),
         }
