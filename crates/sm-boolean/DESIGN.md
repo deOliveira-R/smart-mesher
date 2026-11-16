@@ -228,6 +228,8 @@ refused by the rebase; weld, merge and orientation keep the lowest id and change
 side (refused when the overlay uses it, valid otherwise); a `regularize` join keeps the survivor
 and grows it, which the rebase accepted and silently re-shaped (a chord splitting a bigger face, a
 partition vertex on a longer edge). That one is now refused (`BooleanError::VirtualTopology`,
-`model.remove_virtual` first). `webcut` with a sphere tool refuses (`TangentContact`) a sphere
+`model.remove_virtual` first), also when the join is the default regularize step of
+`unite`/`subtract`/`intersect` (`regularize: false` skips it; `keep` works on copies, so it is
+not checked). `webcut` with a sphere tool refuses (`TangentContact`) a sphere
 that reaches a face of the target but whose surface intersection came back empty (a bite of a few
 1e-3), instead of reporting the target untouched.

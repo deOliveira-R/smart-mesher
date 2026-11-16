@@ -16,7 +16,7 @@ use sm_model_api::FaceRole;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 use sm_topo_api::{Carrier, Dim, TopologyView};
 
-use crate::boolean::{BoolOptions, BoolRule, boolean_ordered};
+use crate::boolean::{BoolOptions, BoolRule, Fold, boolean_ordered};
 use crate::error::BooleanError;
 use crate::imprint::{ImprintOptions, imprint_bodies};
 use crate::merge::{MergeKinds, MergeOptions, MergeReport, merge, merge_check};
@@ -82,7 +82,6 @@ const WEBCUT_OUTPUTS: &[OutputRole] = &[
     ),
 ];
 
-/// Refuse operands that have a mesh, are decomposed or are instanced.
 /// The host cells the model's overlay (virtual topology) is built on: composite members,
 /// partitioned faces, edges and chord end vertices, split volumes. `None` without an overlay.
 ///
@@ -129,6 +128,7 @@ pub(crate) fn overlay_cells(ctx: &ApplyCtx<'_>) -> Result<Option<BTreeSet<Entity
     Ok(Some(out))
 }
 
+/// Refuse operands that have a mesh, are decomposed or are instanced.
 pub(crate) fn guard_volumes(ctx: &ApplyCtx<'_>, volumes: &[EntityId]) -> Result<(), OpError> {
     let model_layer = ctx.layer::<ModelLayer>()?;
     let topo = model_layer.host();
@@ -210,12 +210,29 @@ fn run_boolean(
     // the whole transaction can: roll back and retry with the offending operand fused last (a
     // bridge operand may cover the tangent line). Each retry defers one more operand, so at most
     // one retry per operand.
+    let virtual_cells = if opts.regularize && !opts.keep {
+        overlay_cells(ctx)?
+    } else {
+        None
+    };
     let mut defer: Vec<usize> = Vec::new();
     let mut first_err: Option<OpError> = None;
     let (out, txn) = loop {
         let mut culprit: Option<usize> = None;
         let r = topo_txn(ctx, |topo, _model| {
-            boolean_ordered(topo, rule, a, b, &opts, &defer, &mut culprit).map_err(OpError::from)
+            boolean_ordered(
+                topo,
+                rule,
+                a,
+                b,
+                &opts,
+                Fold {
+                    defer: &defer,
+                    culprit: &mut culprit,
+                    virtual_cells: virtual_cells.as_ref(),
+                },
+            )
+            .map_err(OpError::from)
         });
         match (r, culprit) {
             (Err(e), Some(c)) if rule != BoolRule::Subtract && !defer.contains(&c) => {

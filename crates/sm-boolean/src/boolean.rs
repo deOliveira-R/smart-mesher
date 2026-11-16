@@ -191,7 +191,28 @@ pub fn boolean<E: TopologyEdit + ?Sized>(
     b: &[EntityId],
     o: &BoolOptions,
 ) -> Result<BoolOutcome, BooleanError> {
-    boolean_ordered(topo, rule, a, b, o, &[], &mut None)
+    boolean_ordered(
+        topo,
+        rule,
+        a,
+        b,
+        o,
+        Fold {
+            defer: &[],
+            culprit: &mut None,
+            virtual_cells: None,
+        },
+    )
+}
+
+/// Fold order, retry feedback and the overlay guard of [`boolean_ordered`].
+pub(crate) struct Fold<'a> {
+    /// Operand positions fused last.
+    pub defer: &'a [usize],
+    /// Receives the operand position of a late `TangentContact`.
+    pub culprit: &'a mut Option<usize>,
+    /// Host cells the model's overlay is built on: a regularize join keeping one is refused.
+    pub virtual_cells: Option<&'a BTreeSet<EntityId>>,
 }
 
 /// [`boolean`] with the fold order of unite/intersect adjusted: the operands at the positions
@@ -205,9 +226,13 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(
     a: &[EntityId],
     b: &[EntityId],
     o: &BoolOptions,
-    defer: &[usize],
-    culprit: &mut Option<usize>,
+    fold: Fold<'_>,
 ) -> Result<BoolOutcome, BooleanError> {
+    let Fold {
+        defer,
+        culprit,
+        virtual_cells,
+    } = fold;
     let va = bodies::volumes_of(&*topo, a)?;
     let vb = bodies::volumes_of(&*topo, b)?;
     if va.is_empty() {
@@ -265,7 +290,7 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(
                 let mut fused: Option<(usize, Stage)> = None;
                 let mut untouched: Option<BooleanError> = None;
                 for (i, &(pos, next)) in rest.iter().enumerate() {
-                    match fuse2(topo, rule, cur, next, o) {
+                    match fuse2(topo, rule, cur, next, o, virtual_cells) {
                         Ok(s) => {
                             fused = Some((i, s));
                             break;
@@ -320,7 +345,7 @@ pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(
                     } else {
                         tool
                     };
-                    let s = fuse2(topo, rule, t, tool_now, o)?;
+                    let s = fuse2(topo, rule, t, tool_now, o, virtual_cells)?;
                     for (v, nb) in s.volumes.iter().zip(&s.bodies) {
                         bodies_now.insert(*v, *nb);
                     }
@@ -451,6 +476,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(
     va: EntityId,
     vb: EntityId,
     o: &BoolOptions,
+    virtual_cells: Option<&BTreeSet<EntityId>>,
 ) -> Result<Stage, BooleanError> {
     let tol = *topo.tolerance();
     let lin = tol.linear;
@@ -624,7 +650,21 @@ fn fuse2<E: TopologyEdit + ?Sized>(
     }
     // 11. Regularize.
     if o.regularize {
-        crate::regularize::regularize(topo, &new_volumes, false)?;
+        let rep = crate::regularize::regularize(topo, &new_volumes, false)?;
+        // A join keeps the survivor's id but grows it: refuse when the model's overlay is built
+        // on a survivor (the caller rolls the whole operation back).
+        if let Some(vc) = virtual_cells
+            && let Some(p) = rep
+                .joined_faces
+                .iter()
+                .chain(&rep.joined_edges)
+                .find(|p| vc.contains(&p.keep))
+        {
+            return Err(BooleanError::VirtualTopology {
+                entity: p.keep,
+                edit: "the regularize step of the boolean (regularize: false skips it)",
+            });
+        }
     }
     // Pcurves of the new and moved coedges on curved faces.
     let mut result_faces: BTreeSet<EntityId> = BTreeSet::new();

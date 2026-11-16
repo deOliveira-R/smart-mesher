@@ -392,3 +392,65 @@ fn regularize_elsewhere_keeps_an_unrelated_chord() {
         "{o:?}"
     );
 }
+
+/// The default regularize of a boolean joins coplanar faces too: a chord on a face the unite
+/// joins is refused (typed, state untouched), as `model.regularize` does.
+#[test]
+fn unite_default_regularize_refuses_a_joined_chord_face() {
+    for reg in [None, Some(true)] {
+        let mut r = Rig::cc();
+        r.brick([2.0, 1.0, 1.0], [1.0, 0.5, 0.5]);
+        r.brick([1.0, 1.0, 1.0], [0.5, 1.5, 0.5]);
+        chord(&mut r, [0.0, 0.0, 1.0], [2.0, 1.0, 1.0]);
+        let bodies = r.layer().topo().cells(Dim::Body).to_vec();
+        let o = judge(
+            &mut r,
+            &Unite {
+                bodies: bodies.clone(),
+                keep: None,
+                regularize: reg,
+                tol: None,
+            },
+        );
+        assert!(
+            matches!(&o, Outcome::Refused(m) if m.contains("carries virtual topology")),
+            "unite regularize={reg:?}: {o:?}"
+        );
+        // Escape hatch: regularize false.
+        let o = judge(
+            &mut r,
+            &Unite {
+                bodies,
+                keep: None,
+                regularize: Some(false),
+                tol: None,
+            },
+        );
+        assert!(is_sound(&o), "unite regularize=false: {o:?}");
+    }
+}
+
+/// Control: a chord on a face the unite does not join does not stop it.
+#[test]
+fn unite_default_regularize_elsewhere_is_accepted() {
+    let mut r = Rig::cc();
+    r.brick([2.0, 1.0, 1.0], [1.0, 0.5, 0.5]);
+    r.brick([1.0, 1.0, 1.0], [0.5, 1.5, 0.5]);
+    r.brick([1.0; 3], [20.5, 0.5, 0.5]);
+    chord(&mut r, [20.0, 0.0, 1.0], [21.0, 1.0, 1.0]);
+    let all = r.layer().topo().cells(Dim::Body).to_vec();
+    let two: Vec<EntityId> = all[..2].to_vec();
+    let o = judge(
+        &mut r,
+        &Unite {
+            bodies: two,
+            keep: None,
+            regularize: None,
+            tol: None,
+        },
+    );
+    assert!(
+        matches!(o, Outcome::Accepted { issues: 0, tiling_gap } if tiling_gap < 1e-9),
+        "{o:?}"
+    );
+}
