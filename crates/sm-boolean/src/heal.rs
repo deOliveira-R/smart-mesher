@@ -438,6 +438,20 @@ struct LoopCand {
     flat: f64,
 }
 
+/// Nesting depth of loop `i` in the `parent` forest; `None` when the walk exceeds the number of
+/// loops (a parent cycle between coincident loops).
+fn nesting_depth(parent: &[Option<usize>], mut i: usize) -> Option<usize> {
+    let mut d = 0;
+    while let Some(p) = parent[i] {
+        d += 1;
+        if d > parent.len() {
+            return None;
+        }
+        i = p;
+    }
+    Some(d)
+}
+
 /// Polygon area of the sampled loop (|Newell vector| / 2).
 fn loop_area(l: &LoopCand) -> f64 {
     let mut a = Vector3::new(0.0, 0.0, 0.0);
@@ -628,17 +642,21 @@ pub fn close_open_loops(
         }
         parent[i] = best.map(|b| b.0);
     }
-    // Odd nesting depth: an inner loop, capped with its parent. Even: an outer loop.
-    let depth = |mut i: usize| {
-        let mut d = 0;
-        while let Some(p) = parent[i] {
-            d += 1;
-            i = p;
-        }
-        d
-    };
+    // Odd nesting depth: an inner loop, capped with its parent. Even: an outer loop. The walk is
+    // bounded by `n_c`: exactly coincident loops of opposing normals nest in each other, and a
+    // parent cycle is skipped rather than followed.
+    let depth = |i: usize| nesting_depth(&parent, i);
     for i in 0..n_c {
-        if depth(i) % 2 == 1 {
+        let Some(d) = depth(i) else {
+            skip(
+                out,
+                "close",
+                cands[i].rails.iter().map(|r| r.edge).collect(),
+                "coincident loops nest in each other (a parent cycle): not capped",
+            );
+            continue;
+        };
+        if d % 2 == 1 {
             continue;
         }
         let cd = &cands[i];
@@ -684,4 +702,22 @@ pub fn close_open_loops(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::nesting_depth;
+
+    #[test]
+    fn a_parent_cycle_terminates_with_none() {
+        // 0 and 1 nest in each other; 2 sits in 1; 3 is a root; 4 is in 3.
+        let parent = [Some(1), Some(0), Some(1), None, Some(3)];
+        assert_eq!(nesting_depth(&parent, 0), None);
+        assert_eq!(nesting_depth(&parent, 1), None);
+        assert_eq!(nesting_depth(&parent, 2), None);
+        assert_eq!(nesting_depth(&parent, 3), Some(0));
+        assert_eq!(nesting_depth(&parent, 4), Some(1));
+        // A self parent is a cycle too.
+        assert_eq!(nesting_depth(&[Some(0)], 0), None);
+    }
 }

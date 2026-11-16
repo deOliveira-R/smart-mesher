@@ -490,3 +490,28 @@ fn deterministic_across_runs_and_thread_counts() {
     assert_eq!(h1, run(4));
     assert_eq!(h1, scenario(&mut rig()));
 }
+
+/// W4 review: `model.subdivide_pin` runs webcut inside; a `partition_edge` on a circle of the pin
+/// is refused (the overlay cannot rebase) and leaves the state hash.
+#[test]
+fn a_partitioned_edge_of_the_pin_is_refused_untouched() {
+    use sm_model::PartitionEdge;
+    use sm_topo_api::TopologyViewExt;
+    let mut r = rig();
+    let v = make_pin(&mut r, 0.0, 0.4);
+    let t = r.layer().host();
+    let edge = t
+        .volume_faces(v)
+        .iter()
+        .flat_map(|&f| t.boundary(f).iter().map(|c| c.cell).collect::<Vec<_>>())
+        .find(|&e| t.edge_ends(e).is_some_and(|(a, b)| a == b))
+        .expect("a circle edge");
+    r.run(&PartitionEdge { edge, param: 0.3 }).expect("partition_edge");
+    let before = r.hash();
+    let e = r
+        .run(&pin(v, rings(2, None), sectors(4, None)))
+        .expect_err("refused");
+    // The layer's rebase refuses the edit (sm-layer owns that error kind, a typed refusal).
+    assert!(invalid(e).contains("virtual topology"));
+    assert_eq!(r.hash(), before);
+}
