@@ -13,7 +13,7 @@ pub mod iia;
 pub mod picker;
 
 pub use auto::{SizingError, auto_size};
-pub use curvature::size_field_geo;
+pub use curvature::{is_ungraded_curvature, size_field_geo};
 pub use field::size_field;
 pub use grade::Graded;
 pub use iia::{IiaSolver, compare_deviation_sums, deviation_key, first_violation};

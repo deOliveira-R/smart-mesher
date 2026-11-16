@@ -364,3 +364,14 @@ fn tag_selection_errors_are_typed_and_leave_the_state_alone() {
         assert_eq!(hash(&s), h);
     }
 }
+
+#[test]
+fn cell_set_with_threshold_is_refused_not_ignored() {
+    let mut s = brick_with_slab();
+    let h = hash(&s);
+    let e = s
+        .call(Request::Apply { op: "mesh.refine_local".into(), params: json!({"mesh": "Mesh#1", "cell_set": "slab", "threshold": 0.5}), version: None })
+        .expect_err("cell_set + threshold");
+    assert!(e.to_string().contains("threshold") && e.to_string().contains("cell_set"), "{e}");
+    assert_eq!(hash(&s), h);
+}

@@ -78,6 +78,9 @@ fn refuse(e: LocalError) -> OpError {
 
 fn select(src: &dyn MeshRead, op: &RefineLocal) -> Result<Vec<bool>, OpError> {
     let mut mask = vec![false; src.cell_count()];
+    if op.cell_set.is_some() && op.threshold.is_some() {
+        return Err(OpError::Invalid("`threshold` goes with `tag`; it cannot be combined with `cell_set`".into()));
+    }
     match (&op.cell_set, &op.tag) {
         (Some(name), None) => {
             let set = src.sets().iter().find(|s| s.name == *name).ok_or_else(|| {

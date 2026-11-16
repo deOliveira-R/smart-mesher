@@ -100,7 +100,7 @@ fn composite_top() -> (Overlay, BrickIds, EntityId) {
 #[test]
 fn every_scheme_meshes_a_planar_composite_like_its_host_face() {
     let (host, ids, _) = brick_setup([1.0; 3]);
-    let (ov, ids2, vf) = composite_top();
+    let (ov, _ids, vf) = composite_top();
     let top_edges: Vec<EntityId> = host.face_edges(ids.faces[5]).to_vec();
     assert_eq!(top_edges.len(), 4);
     for name in SCHEMES {
@@ -121,7 +121,6 @@ fn every_scheme_meshes_a_planar_composite_like_its_host_face() {
             min_scaled_jacobian(&want)
         );
         assert!(sj > 0.0, "{name}: inverted cell");
-        let _ = &ids2;
     }
 }
 
@@ -177,7 +176,7 @@ fn a_curved_non_periodic_composite_projects_onto_its_surface() {
     let (ov, vf, edges, def) = curved_composite();
     assert!(ov.composite_surface(vf).is_some());
     let surf = def.as_surface().expect("parametric");
-    for name in ["pave", "trimesh", "tridelaunay", "triadvance"] {
+    for name in SCHEMES {
         let m = mesh_face(&ov, vf, name, counts(&edges, 4));
         let mut interior = 0;
         for v in 0..m.vertex_count() {
