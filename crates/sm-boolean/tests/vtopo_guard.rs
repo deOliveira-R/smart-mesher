@@ -162,6 +162,19 @@ fn audit_regularize_join_faces_chord() {
         matches!(&o, Outcome::Refused(m) if m.contains("carries virtual topology")),
         "regularize join_faces, chord on kept face: {o:?}"
     );
+    // BOOL-TIDY: a deliberate refusal reaches front ends as Unsupported, not Failed.
+    let volumes = all_volumes(&r);
+    let e = r.run(&Regularize { volumes }).expect_err("refused");
+    assert!(
+        matches!(
+            &e,
+            sm_op_api::TimelineError::Apply(sm_op_api::ApplyError::Op {
+                source: sm_op_api::OpError::Unsupported(m),
+                ..
+            }) if m.contains("virtual topology")
+        ),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -377,6 +390,63 @@ fn audit_heal_orient_with_a_chord() {
     rebased.expect("the chord survives the orientation fix");
     let issues = sm_topo_api::validate(&ov).len() + sm_topo_api::validate_geometry(&ov).len();
     assert_eq!(issues, 0);
+}
+
+/// Heal's close fix adds a face on existing edges and keeps every edge id. At the library level
+/// (the overlay is rebased by hand, as `topo_txn` does): a chord on a face of a brick open at
+/// +z survives the cap and the rebased view validates (topology and geometry).
+#[test]
+fn audit_heal_close_with_a_chord() {
+    use sm_boolean::{HealApply, HealFixes, heal};
+    use sm_geom_api::{CurveDef, Interval, Line};
+    use sm_topo_api::fixtures::brick;
+    use sm_topo_api::{CellComplex, OpId, Overlay, TopologyEdit, VirtualCut};
+    use std::sync::Arc;
+
+    let mut h = CellComplex::new();
+    h.begin_op(OpId(1)).unwrap();
+    let b = brick(&mut h, Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
+    h.end_op().unwrap();
+    h.begin_op(OpId(2)).unwrap();
+    h.kill(b.body).unwrap();
+    h.kill(b.volume).unwrap();
+    h.end_op().unwrap();
+    h.begin_op(OpId(3)).unwrap();
+    h.kill(b.faces[5]).unwrap();
+    h.end_op().unwrap();
+    // Chord on the bottom face between opposite corners.
+    let bottom = b.faces[4];
+    let vs: Vec<EntityId> = face_vertices(&h, bottom).into_iter().collect();
+    let far = |a: EntityId, c: EntityId| (vertex_point(&h, a) - vertex_point(&h, c)).norm() > 1.2;
+    let from = vs[0];
+    let to = *vs[1..].iter().find(|&&c| far(from, c)).expect("diagonal");
+    let (pf, pt) = (vertex_point(&h, from), vertex_point(&h, to));
+    let mut ov = Overlay::new(Arc::new(h.clone()));
+    ov.partition_face(
+        bottom,
+        VirtualCut {
+            from,
+            to,
+            curve: CurveDef::Line(Line::new(pf, pt - pf).unwrap()),
+            range: Interval::new(0.0, (pt - pf).norm()),
+        },
+    )
+    .expect("virtual chord");
+    let mut edited = h.clone();
+    edited.begin_op(OpId(4)).unwrap();
+    let apply = HealApply {
+        entities: None,
+        tol: None,
+        fixes: HealFixes::default(),
+    };
+    let out = heal(&mut edited, &apply).unwrap();
+    edited.end_op().unwrap();
+    assert_eq!(out.closed.len(), 1, "{out:?}");
+    ov.rebase(Arc::new(edited)).expect("the chord survives the cap");
+    let issues = sm_topo_api::validate(&ov).len() + sm_topo_api::validate_geometry(&ov).len();
+    assert_eq!(issues, 0);
+    // The chord is still in the rebased overlay.
+    assert_eq!(ov.ops().len(), 1);
 }
 
 /// Control: a chord on a face no join touches does not stop `model.regularize` elsewhere.

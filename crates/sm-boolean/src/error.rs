@@ -111,7 +111,9 @@ impl From<BooleanError> for OpError {
         match e {
             BooleanError::Invalid(m) => OpError::Invalid(m),
             BooleanError::Unsupported(m) => OpError::Unsupported(m.to_owned()),
-            e @ BooleanError::TangentContact { .. } => OpError::Unsupported(e.to_string()),
+            e @ (BooleanError::TangentContact { .. } | BooleanError::VirtualTopology { .. }) => {
+                OpError::Unsupported(e.to_string())
+            }
             other => OpError::Failed(other.to_string()),
         }
     }
