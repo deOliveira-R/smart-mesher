@@ -10,7 +10,7 @@ use sm_mesh_api::{CellShape, Param};
 use sm_scheme_api::{
     ElemShape, FailureKind, GenCtx, GenerateFailure, NodeKey, Patch, PatchNode, Target,
 };
-use sm_topo_api::{Dim, TopologyView};
+use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
 use std::collections::BTreeSet;
 
 type GResult<T> = Result<T, GenerateFailure>;
@@ -236,6 +236,50 @@ fn column_from_path(cx: &GenCtx<'_>, path: &[(EntityId, bool)]) -> Option<Vec<No
     Some(c)
 }
 
+/// The end of the column of node `k` on an edge shared by two source faces: the node of the
+/// target edge that is the image of the edge under the vertex map, at the same position along it.
+fn shared_edge_top(
+    cx: &GenCtx<'_>,
+    vmap: &std::collections::BTreeMap<EntityId, EntityId>,
+    target_edges: &[EntityId],
+    k: NodeKey,
+) -> Result<NodeKey, String> {
+    let t: &dyn TopologyView = cx.input.topo;
+    let e = k.owner;
+    let (a, b) = t.edge_ends(e).ok_or("edge without ends")?;
+    let (Some(&ma), Some(&mb)) = (vmap.get(&a), vmap.get(&b)) else {
+        return Err(format!("edge {e}: ends have no column"));
+    };
+    if ma == mb {
+        return Err(format!(
+            "imprinted edge {e} is closed; a many-to-many sweep over it is not supported"
+        ));
+    }
+    let hits: Vec<(EntityId, bool)> = target_edges
+        .iter()
+        .filter_map(|f| {
+            let (x, y) = t.edge_ends(*f)?;
+            if (x, y) == (ma, mb) {
+                Some((*f, true))
+            } else if (x, y) == (mb, ma) {
+                Some((*f, false))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let [(f, same)] = hits.as_slice() else {
+        return Err(format!(
+            "imprinted edge {e}: {} target edges join the images of its ends (need exactly one)",
+            hits.len()
+        ));
+    };
+    let n = cx
+        .intervals(*f)
+        .ok_or_else(|| format!("edge {f} has no interval count"))?;
+    Ok(NodeKey::new(*f, if *same { k.index } else { n - k.index }))
+}
+
 /// Generate the cells of a sweep (the target face is a copy meshed by the driver).
 pub(crate) fn generate_prism(
     cx: &GenCtx<'_>,
@@ -249,10 +293,15 @@ pub(crate) fn generate_prism(
     let volume = target
         .entity()
         .ok_or_else(|| fatal("a sweep target is a single piece".into()))?;
-    let src = cx
-        .patches
-        .get(Target::Surface(st.source))
-        .ok_or_else(|| fatal("source patch missing".into()))?;
+    let pairs = st.pairs();
+    let mut srcs: Vec<&Patch> = Vec::with_capacity(pairs.len());
+    for [s, _] in &pairs {
+        srcs.push(
+            cx.patches
+                .get(Target::Surface(*s))
+                .ok_or_else(|| fatal(format!("source patch of face {s} missing")))?,
+        );
+    }
     let first = st
         .columns
         .first()
@@ -268,31 +317,70 @@ pub(crate) fn generate_prism(
         return Err(fatal("zero layers".into()));
     }
     let stride = layers + 1;
-    if let Some((e, shape)) = first_unsupported(&src.elements) {
-        return Err(GenerateFailure::new(
-            target,
-            name,
-            FailureKind::Unsupported,
-            format!("cannot sweep source element {e} of shape {shape:?}"),
-        ));
+    for src in &srcs {
+        if let Some((e, shape)) = first_unsupported(&src.elements) {
+            return Err(GenerateFailure::new(
+                target,
+                name,
+                FailureKind::Unsupported,
+                format!("cannot sweep source element {e} of shape {shape:?}"),
+            ));
+        }
     }
 
     // Source nodes in canonical order.
-    let mut keys: Vec<NodeKey> = src
-        .nodes
+    let mut keys: Vec<NodeKey> = srcs
         .iter()
-        .map(|n| n.key)
-        .chain(src.refs.iter().copied())
+        .flat_map(|src| {
+            src.nodes
+                .iter()
+                .map(|n| n.key)
+                .chain(src.refs.iter().copied())
+        })
         .collect();
     keys.sort_unstable();
     keys.dedup();
     let n_src = keys.len();
-    let interior: Vec<bool> = keys.iter().map(|k| k.owner == st.source).collect();
+    // Nodes whose column is made of new interior nodes: the inside of a source face, and the
+    // nodes of an edge shared by two source faces (an imprinted line, no linking face). `tops`
+    // is the end of such a column (a copy node of the target).
+    let source_edges: Vec<BTreeSet<EntityId>> = pairs
+        .iter()
+        .map(|[s, _]| t.face_edges(*s).iter().copied().collect())
+        .collect();
+    let linking_edges: BTreeSet<EntityId> = st
+        .linking
+        .iter()
+        .flat_map(|l| t.face_edges(*l).iter().copied())
+        .collect();
+    let vmap: std::collections::BTreeMap<EntityId, EntityId> =
+        st.vertex_map(t).into_iter().collect();
+    let target_edges: Vec<EntityId> = pairs
+        .iter()
+        .flat_map(|[_, g]| t.face_edges(*g).iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut tops: Vec<Option<NodeKey>> = Vec::with_capacity(n_src);
+    for k in &keys {
+        let top = if let Some([_, g]) = pairs.iter().find(|p| p[0] == k.owner) {
+            Some(NodeKey::new(*g, k.index))
+        } else if t.dim_of(k.owner) == Some(Dim::Edge)
+            && !linking_edges.contains(&k.owner)
+            && source_edges.iter().filter(|e| e.contains(&k.owner)).count() >= 2
+        {
+            Some(shared_edge_top(cx, &vmap, &target_edges, *k).map_err(fatal)?)
+        } else {
+            None
+        };
+        tops.push(top);
+    }
+    let interior: Vec<bool> = tops.iter().map(Option::is_some).collect();
     let n_int = interior.iter().filter(|b| **b).count();
     let n_created = n_int * (layers - 1);
 
     // Column keys.
-    let end_edges: BTreeSet<EntityId> = t.face_edges(st.target).iter().copied().collect();
+    let end_edges: BTreeSet<EntityId> = target_edges.iter().copied().collect();
     let mut lk: Vec<NodeKey> = vec![NodeKey::new(volume, u32::MAX); n_src * stride];
     let mut slot = 0usize;
     let mut used: Vec<EntityId> = Vec::with_capacity(st.linking.len());
@@ -303,7 +391,7 @@ pub(crate) fn generate_prism(
             c.extend(
                 (1..layers).map(|l| NodeKey::new(volume, (slot * (layers - 1) + l - 1) as u32)),
             );
-            c.push(NodeKey::new(st.target.to_owned(), k.index));
+            c.push(tops[i].ok_or_else(|| fatal("interior node without a top".into()))?);
             slot += 1;
             c
         } else {
@@ -401,21 +489,23 @@ pub(crate) fn generate_prism(
 
     // Elements and orientation (decided at layer 0).
     let mut elems = Elems {
-        meta: Vec::with_capacity(src.elements.len()),
+        meta: Vec::with_capacity(srcs.iter().map(|p| p.elements.len()).sum()),
         ring: Vec::new(),
     };
-    for (shape, nodes) in src.elements.iter() {
-        let start = elems.ring.len() as u32;
-        for l in nodes {
-            let k = src
-                .key(*l)
-                .ok_or_else(|| fatal("source element index out of range".into()))?;
-            let at = keys
-                .binary_search(&k)
-                .map_err(|_| fatal(format!("source element node {k:?} not in the node table")))?;
-            elems.ring.push(at as u32);
+    for src in &srcs {
+        for (shape, nodes) in src.elements.iter() {
+            let start = elems.ring.len() as u32;
+            for l in nodes {
+                let k = src
+                    .key(*l)
+                    .ok_or_else(|| fatal("source element index out of range".into()))?;
+                let at = keys.binary_search(&k).map_err(|_| {
+                    fatal(format!("source element node {k:?} not in the node table"))
+                })?;
+                elems.ring.push(at as u32);
+            }
+            elems.meta.push((shape, start, nodes.len() as u32));
         }
-        elems.meta.push((shape, start, nodes.len() as u32));
     }
     let n_el = elems.meta.len();
 

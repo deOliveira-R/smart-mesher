@@ -29,10 +29,14 @@ pub struct Column {
 pub struct Columns {
     /// Member volumes in stacking order (one for a plain sweep or a composite piece).
     pub members: Vec<EntityId>,
-    /// The source face.
+    /// The source face (the first source face of a set sweep).
     pub source: EntityId,
-    /// The target face.
+    /// The target face (the image of `source`).
     pub target: EntityId,
+    /// Further `[source, target]` face pairs of a many-to-many sweep over imprinted faces,
+    /// ascending by source; empty (and absent from the serialised form) for a 1-to-1 sweep.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<[EntityId; 2]>,
     /// Faces between consecutive members (empty for a single piece).
     pub interfaces: Vec<EntityId>,
     /// Linking faces, ascending.
@@ -44,6 +48,27 @@ pub struct Columns {
 }
 
 impl Columns {
+    /// Every `[source, target]` face pair, ascending by source (one pair for a 1-to-1 sweep).
+    pub fn pairs(&self) -> Vec<[EntityId; 2]> {
+        let mut v = Vec::with_capacity(1 + self.more.len());
+        v.push([self.source, self.target]);
+        v.extend_from_slice(&self.more);
+        v
+    }
+
+    /// `(source vertex, target vertex)` of the columns that start on the vertices of `face`.
+    pub fn face_vertex_map(
+        &self,
+        t: &dyn TopologyView,
+        face: EntityId,
+    ) -> Vec<(EntityId, EntityId)> {
+        let vs = face_vertices(t, face);
+        self.vertex_map(t)
+            .into_iter()
+            .filter(|(a, _)| vs.binary_search(a).is_ok())
+            .collect()
+    }
+
     /// The end (target) vertex of a column.
     pub fn end_vertex(&self, t: &dyn TopologyView, c: &Column) -> Option<EntityId> {
         let (e, fwd) = c.path.last()?;
@@ -149,23 +174,78 @@ pub fn discover_columns(
     source: EntityId,
     target: EntityId,
 ) -> Result<Columns, SweepError> {
+    discover_column_sets(t, members, &[source], &[target])
+}
+
+/// [`discover_columns`] for sets of faces: many-to-many over imprinted faces (a volume whose
+/// bottom and top are each split into several faces by imprinted lines, with no internal
+/// face). Every source face must have a target face whose vertices are exactly the ends of
+/// its columns; the pairs come out ascending by source face. One face on each side is the
+/// plain 1-to-1 analysis, unchanged. True many-to-one (a face set against a different number
+/// of faces) is not supported.
+///
+/// # Errors
+/// As [`discover_columns`]; a set that has no face-to-face correspondence names the source and
+/// target face ids and the vertices that find no image.
+pub fn discover_column_sets(
+    t: &dyn TopologyView,
+    members: &[(EntityId, Vec<EntityId>)],
+    sources: &[EntityId],
+    targets: &[EntityId],
+) -> Result<Columns, SweepError> {
     #[cfg(feature = "test-hooks")]
     counters::bump();
     let all: BTreeSet<EntityId> = members.iter().flat_map(|m| m.1.iter().copied()).collect();
-    if !all.contains(&source) || !all.contains(&target) || source == target {
+    let mut sources: Vec<EntityId> = sources.to_vec();
+    let mut targets: Vec<EntityId> = targets.to_vec();
+    sources.sort_unstable();
+    targets.sort_unstable();
+    let distinct = |v: &[EntityId]| v.windows(2).all(|w| w[0] != w[1]);
+    if sources.is_empty()
+        || targets.is_empty()
+        || !distinct(&sources)
+        || !distinct(&targets)
+        || sources.iter().chain(&targets).any(|f| !all.contains(f))
+        || sources.iter().any(|f| targets.contains(f))
+    {
+        return Err(no(match (sources.as_slice(), targets.as_slice()) {
+            ([s], [g]) => {
+                format!("source {s} and target {g} must be two distinct faces of the piece")
+            }
+            _ => format!(
+                "source faces {sources:?} and target faces {targets:?} must be non-empty sets of distinct faces of the piece, disjoint from each other"
+            ),
+        }));
+    }
+    if sources.len() != targets.len() {
         return Err(no(format!(
-            "source {source} and target {target} must be two distinct faces of the piece"
+            "source faces {sources:?} against target faces {targets:?}: the sets differ in size, so there is no face-to-face correspondence (many-to-one sweeps are not supported)"
         )));
     }
+    let (source, target) = (sources[0], targets[0]);
     let interfaces_set: BTreeSet<EntityId> = all
         .iter()
         .copied()
         .filter(|f| members.iter().filter(|m| m.1.contains(f)).count() >= 2)
         .collect();
-    let (vs, vg) = (face_vertices(t, source), face_vertices(t, target));
-    prefilter(&vs, &vg)?;
+    let union_vertices = |fs: &[EntityId]| {
+        let mut v: Vec<EntityId> = fs.iter().flat_map(|f| face_vertices(t, *f)).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let (vs, vg) = (union_vertices(&sources), union_vertices(&targets));
+    prefilter(&vs, &vg).map_err(|e| {
+        if sources.len() == 1 {
+            e
+        } else {
+            no(format!(
+                "source faces {sources:?} against target faces {targets:?}: {e}; there is no face-to-face correspondence"
+            ))
+        }
+    })?;
     let mut excluded: BTreeSet<EntityId> = BTreeSet::new();
-    for f in [source, target].iter().chain(interfaces_set.iter()) {
+    for f in sources.iter().chain(&targets).chain(interfaces_set.iter()) {
         excluded.extend(t.face_edges(*f).iter().copied());
     }
     let piece_edges: BTreeSet<EntityId> = all
@@ -256,7 +336,7 @@ pub fn discover_columns(
     let linking_of = |m: &(EntityId, Vec<EntityId>)| -> Vec<EntityId> {
         m.1.iter()
             .copied()
-            .filter(|f| *f != source && *f != target && !interfaces_set.contains(f))
+            .filter(|f| !sources.contains(f) && !targets.contains(f) && !interfaces_set.contains(f))
             .collect()
     };
     let mut step_member = Vec::with_capacity(steps);
@@ -307,8 +387,45 @@ pub fn discover_columns(
     let linking: Vec<EntityId> = all
         .iter()
         .copied()
-        .filter(|f| *f != source && *f != target && !interfaces_set.contains(f))
+        .filter(|f| !sources.contains(f) && !targets.contains(f) && !interfaces_set.contains(f))
         .collect();
+    // Face pairing: the ends of the columns of one source face are the vertices of one target.
+    let mut pairs: Vec<[EntityId; 2]> = Vec::with_capacity(sources.len());
+    if sources.len() == 1 {
+        pairs.push([source, target]);
+    } else {
+        let mut taken: Vec<EntityId> = Vec::new();
+        for &s in &sources {
+            let sv = face_vertices(t, s);
+            let mut ends: Vec<EntityId> = columns
+                .iter()
+                .filter(|c| sv.binary_search(&c.vertex).is_ok())
+                .filter_map(|c| {
+                    let (e, fwd) = c.path.last()?;
+                    let (a, b) = t.edge_ends(*e)?;
+                    Some(if *fwd { b } else { a })
+                })
+                .collect();
+            ends.sort_unstable();
+            ends.dedup();
+            let hits: Vec<EntityId> = targets
+                .iter()
+                .copied()
+                .filter(|g| face_vertices(t, *g) == ends)
+                .collect();
+            match hits.as_slice() {
+                [g] if !taken.contains(g) => {
+                    taken.push(*g);
+                    pairs.push([s, *g]);
+                }
+                _ => {
+                    return Err(no(format!(
+                        "source face {s}: its columns end at vertices {ends:?}, which are not the vertices of exactly one unused face of the target set {targets:?}; no face-to-face correspondence (many-to-one sweeps are not supported)"
+                    )));
+                }
+            }
+        }
+    }
     let column_edges: BTreeSet<EntityId> = columns
         .iter()
         .flat_map(|c| c.path.iter().map(|(e, _)| *e))
@@ -334,8 +451,9 @@ pub fn discover_columns(
     }
     Ok(Columns {
         members: order.iter().map(|&i| members[i].0).collect(),
-        source,
-        target,
+        source: pairs[0][0],
+        target: pairs[0][1],
+        more: pairs[1..].to_vec(),
         interfaces,
         linking,
         columns,

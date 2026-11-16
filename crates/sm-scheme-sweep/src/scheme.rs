@@ -1,6 +1,6 @@
 //! The `"sweep"` volume scheme.
 
-use crate::discover::{Columns, discover_columns, prefilter, vertex_lists};
+use crate::discover::{Columns, discover_column_sets, discover_columns, prefilter, vertex_lists};
 use crate::emit::generate_prism;
 use crate::fit::{best_effort_transform, fit_target_transform};
 use crate::params::{SweepParams, TargetMode};
@@ -25,7 +25,8 @@ pub struct Sweep;
 /// What planning learns about a sweep.
 pub(crate) struct Analysis {
     pub columns: Columns,
-    pub transform: Transform,
+    /// The copy transform of each `[source, target]` pair, in `columns.pairs()` order.
+    pub transforms: Vec<Transform>,
 }
 
 fn outward_normal(
@@ -65,10 +66,13 @@ fn find_columns(
     let faces = input.piece_faces(target).map_err(|e| e.to_string())?;
     let v = target.entity().ok_or("a sweep meshes a single piece")?;
     let one = [(v, faces.clone())];
-    match (sp.source, sp.target) {
-        (Some([s]), Some([g])) => discover_columns(t, &one, s, g)
-            .map(|c| (c, 1))
-            .map_err(|e| e.to_string()),
+    match (&sp.source, &sp.target) {
+        (Some(s), Some(g)) => match (s.as_slice(), g.as_slice()) {
+            ([s], [g]) => discover_columns(t, &one, *s, *g),
+            _ => discover_column_sets(t, &one, s, g),
+        }
+        .map(|c| (c, 1))
+        .map_err(|e| e.to_string()),
         (None, None) => {
             let mut last = String::from("the piece has fewer than two faces");
             let verts = vertex_lists(t, &faces);
@@ -112,7 +116,29 @@ pub(crate) fn analyse(
     let t = input.topo;
     let (columns, pairs) = find_columns(input, target, sp, count_all)?;
     let v = target.entity().ok_or("a sweep meshes a single piece")?;
-    let vm = columns.vertex_map(t);
+    let mut transforms = Vec::new();
+    for [fs, fg] in columns.pairs() {
+        transforms.push(pair_transform(t, v, &columns, fs, fg, sp.target_mode)?);
+    }
+    Ok((
+        Analysis {
+            columns,
+            transforms,
+        },
+        pairs,
+    ))
+}
+
+/// The copy transform of one source/target face pair.
+fn pair_transform(
+    t: &dyn TopologyView,
+    v: EntityId,
+    columns: &Columns,
+    fs: EntityId,
+    fg: EntityId,
+    mode: TargetMode,
+) -> Result<Transform, String> {
+    let vm = columns.face_vertex_map(t, fs);
     let mut src: Vec<Point3> = Vec::with_capacity(vm.len());
     let mut dst: Vec<Point3> = Vec::with_capacity(vm.len());
     for (a, b) in &vm {
@@ -128,10 +154,10 @@ pub(crate) fn analyse(
     }
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
     let tol = COPY_TOL * diag;
-    let n_s = outward_normal(t, v, columns.source)?;
-    let n_t = outward_normal(t, v, columns.target)?;
+    let n_s = outward_normal(t, v, fs)?;
+    let n_t = outward_normal(t, v, fg)?;
     let strict = fit_target_transform(&src, &dst, n_s, n_t, tol);
-    let transform = match (strict, sp.target_mode) {
+    let transform = match (strict, mode) {
         (Some(tr), _) => tr,
         (None, TargetMode::Copy) => {
             let (tr, resid) = best_effort_transform(&src, &dst, n_s, n_t)
@@ -154,7 +180,7 @@ pub(crate) fn analyse(
             });
         }
     };
-    Ok((Analysis { columns, transform }, pairs))
+    Ok(transform)
 }
 
 fn bad_input(reason: impl Into<String>) -> SchemeError {
@@ -197,11 +223,18 @@ impl Scheme for Sweep {
             return Applicability::yes(60, "parameters are checked when planning");
         };
         match analyse(cx.input, target, &sp, true) {
-            Ok((an, k)) => Applicability::yes(
+            Ok((an, k)) if an.columns.more.is_empty() => Applicability::yes(
                 60,
                 format!(
                     "1-to-1 sweepable from {} to {} ({k} valid pairs)",
                     an.columns.source, an.columns.target
+                ),
+            ),
+            Ok((an, _)) => Applicability::yes(
+                60,
+                format!(
+                    "many-to-many sweepable over imprinted faces, {:?}",
+                    an.columns.pairs()
                 ),
             ),
             Err(e) => Applicability::no(e),
@@ -222,14 +255,11 @@ impl Scheme for Sweep {
                 reason,
             })?;
         let st = &an.columns;
-        out.role(
-            Target::Surface(st.source),
-            Role::SweepSource { volume: target },
-        );
-        out.role(
-            Target::Surface(st.target),
-            Role::SweepTarget { volume: target },
-        );
+        let pairs = st.pairs();
+        for [s, g] in &pairs {
+            out.role(Target::Surface(*s), Role::SweepSource { volume: target });
+            out.role(Target::Surface(*g), Role::SweepTarget { volume: target });
+        }
         for l in &st.linking {
             out.role(Target::Surface(*l), Role::SweepLinking { volume: target });
             out.require_caps(
@@ -238,15 +268,17 @@ impl Scheme for Sweep {
                 Firmness::Hard,
             );
         }
-        out.copy(
-            CopyConstraint::new(
-                Target::Surface(st.source),
-                Target::Surface(st.target),
-                an.transform,
-                CopyReason::SweepTarget { volume: target },
-            )
-            .with_vertex_map(st.vertex_map(cx.input.topo)),
-        );
+        for ([s, g], tr) in pairs.iter().zip(&an.transforms) {
+            out.copy(
+                CopyConstraint::new(
+                    Target::Surface(*s),
+                    Target::Surface(*g),
+                    *tr,
+                    CopyReason::SweepTarget { volume: target },
+                )
+                .with_vertex_map(st.face_vertex_map(cx.input.topo, *s)),
+            );
+        }
         out.set_data(Params(
             serde_json::to_value(st).map_err(|e| bad_input(e.to_string()))?,
         ));
