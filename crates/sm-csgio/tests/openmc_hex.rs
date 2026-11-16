@@ -9,7 +9,7 @@
 //! * an independent brute-force locator over the IR (hexagon test against every element centre) finds
 //!   the same universe as OpenMC's `find_cell` at 600 points per model.
 use serde_json::Value;
-use sm_csgio::ir::{Fill, HexLattice, HexOrientation};
+use sm_csgio::ir::{HexLattice, HexOrientation};
 use sm_csgio::{CsgIr, ImportError, ImportOptions, ImportedCsg, openmc};
 use std::path::PathBuf;
 
@@ -196,27 +196,114 @@ fn rectangular_decks_emit_no_hex_section_and_hex_decks_do() {
     assert_ne!(d.hex_section_hash(), Some(ha));
 }
 
+/// Material OpenMC's cell `cell` of the hex fixtures holds (the generator's numbering).
+fn material_of(cell: u64) -> &'static str {
+    match cell {
+        900 => "gas",
+        c if c % 10 == 0 => "fuel",
+        _ => "water",
+    }
+}
+
 #[test]
-fn consumers_that_cannot_use_hex_lattices_still_refuse_them() {
-    let (g, m, _) = load("hex_y3d");
-    // The default reader entry (sm-csgbrep op, smcsg, sm-rt-bench) is unchanged.
-    match openmc::import(&g, Some(&m)) {
-        Err(ImportError::Unsupported { line: Some(l), what }) => {
-            assert!(what.contains("hex_lattice"), "{what}");
-            assert_eq!(l, 1 + g.lines().position(|t| t.contains("<hex_lattice")).unwrap() as u32);
+fn the_flattened_hex_deck_agrees_with_openmc_at_every_oracle_point() {
+    use sm_core::Point3;
+    use sm_rt_api::{Scratch, Tracker};
+    for name in MODELS {
+        let (ir, o) = ir_of(name);
+        let m = ImportedCsg::import(&ir, &ImportOptions::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let t = m.tracker(&sm_rt_api::BuildOptions::default()).unwrap().0;
+        let mut sc = Scratch::new();
+        let (mut compared, mut skipped) = (0, 0);
+        for pt in o["points"].as_array().unwrap() {
+            let a = pt["p"].as_array().unwrap();
+            let p = [f(&a[0]), f(&a[1]), f(&a[2])];
+            let Some(cell) = pt["cell"].as_u64() else { continue };
+            // A point within 1e-9 of a wall of the tiling is a tie between two cells.
+            if locate(&ir.hex_lattices[&50], p).is_err() {
+                skipped += 1;
+                continue;
+            }
+            let l = t.locate(Point3::new(p[0], p[1], p[2]), None, None, &mut sc).unwrap_or_else(|e| panic!("{name}: locate {p:?}: {e:?}"));
+            let got = &t.regions().get(l.region).unwrap_or_else(|| panic!("{name}: {p:?} (OpenMC cell {cell}) is in no region: {l:?}")).name;
+            assert_eq!(got, material_of(cell), "{name}: {p:?} is in OpenMC cell {cell}");
+            compared += 1;
         }
-        other => panic!("{other:?}"),
+        assert!(compared >= 560, "{name}: {compared} compared, {skipped} skipped");
     }
-    // The flattener refuses an IR that has one, with the same typed error (no line in an IR).
-    let ir = openmc::import_hex(&g, Some(&m)).unwrap();
-    for r in [ImportedCsg::instantiate(&ir, &ImportOptions::default()).map(|_| ()), ImportedCsg::import(&ir, &ImportOptions::default()).map(|_| ())] {
-        match r {
-            Err(ImportError::Unsupported { line: None, what }) => assert!(what.contains("hex_lattice"), "{what}"),
-            other => panic!("{other:?}"),
+}
+
+#[test]
+fn every_element_is_placed_with_its_own_universe_at_its_own_centre() {
+    use sm_core::Point3;
+    use sm_rt_api::{Scratch, Tracker};
+    for name in MODELS {
+        let (ir, o) = ir_of(name);
+        let m = ImportedCsg::import(&ir, &ImportOptions::default()).unwrap();
+        let l = &ir.hex_lattices[&50];
+        // Flat cells: two per element (fuel, water) plus the gas outside the array.
+        assert_eq!(m.cell_count(), 2 * l.universes.len() + 1, "{name}");
+        let t = m.tracker(&sm_rt_api::BuildOptions::default()).unwrap().0;
+        let mut sc = Scratch::new();
+        for e in o["elements"].as_array().unwrap() {
+            let (q, r, k) = (e["q"].as_i64().unwrap() as i32, e["r"].as_i64().unwrap() as i32, e["layer"].as_u64().unwrap() as u32);
+            let (fuel, radius) = (e["fuel_cell"].as_u64().unwrap() as u32, f(&e["radius"]));
+            // The fuel cell of this element carries this (q, r, k) in its path.
+            let n = m.sources().iter().filter(|s| s.cell == fuel && s.path.last().and_then(|h| h.element) == Some([q, r, k as i32])).count();
+            assert_eq!(n, 1, "{name}: fuel cell {fuel} at ({q},{r},{k})");
+            // The fuel disc of the universe placed there is centred on the element.
+            let c = l.element_center(q, r, k);
+            let z = if l.z_pitch.is_finite() { c[2] } else { 0.0 };
+            for dir in 0..6 {
+                let ang = f64::from(dir) * std::f64::consts::FRAC_PI_3 + 0.3;
+                for (scale, want) in [(0.98, "fuel"), (1.02, "water")] {
+                    let loc = t.locate(Point3::new(c[0] + scale * radius * ang.cos(), c[1] + scale * radius * ang.sin(), z), None, None, &mut sc).unwrap();
+                    assert_eq!(t.regions().get(loc.region).unwrap().name, want, "{name}: element ({q},{r},{k}) scale {scale}");
+                }
+            }
         }
     }
-    // A cell reaches the hex lattice through the ordinary lattice fill.
-    assert!(ir.cells.values().any(|c| matches!(c.fill, Fill::Lattice { id: 50, .. })));
+}
+
+#[test]
+fn a_hex_deck_hashes_by_value() {
+    let (ir, _) = ir_of("hex_y");
+    let a = ImportedCsg::instantiate(&ir, &ImportOptions::default()).unwrap();
+    let b = ImportedCsg::instantiate(&ir, &ImportOptions::default()).unwrap();
+    assert_eq!(a.content_hash(), b.content_hash());
+    let mut other = ir.clone();
+    other.hex_lattices.get_mut(&50).unwrap().universes.swap(0, 1);
+    assert_ne!(ImportedCsg::instantiate(&other, &ImportOptions::default()).unwrap().content_hash(), a.content_hash());
+}
+
+#[test]
+fn the_index_guards_are_typed_not_panics() {
+    // A ring or layer beyond the lattice is `None` / 0, never an underflow.
+    assert_eq!(HexLattice::ring_len(3, 3), 0);
+    assert_eq!(HexLattice::ring_len(0, 0), 0);
+    assert_eq!(HexLattice::ring_offset(3, 4), None);
+    assert_eq!(HexLattice::ring_offset(3, 3), Some(19));
+    let (ir, _) = ir_of("hex_x3d");
+    let l = &ir.hex_lattices[&50];
+    assert_eq!(l.flat_index(0, 3, 0), None);
+    assert_eq!(l.flat_index(2, 0, 0), None);
+    assert_eq!(l.flat_index(0, 0, 12), None);
+    assert_eq!(l.flat_index(1, 2, 0), Some(19 + 18));
+    assert_eq!(HexLattice::ring_position(HexOrientation::X, 3, i32::MAX, i32::MIN), None);
+    assert_eq!(HexLattice::ring_position(HexOrientation::Y, 1, 0, 0), Some((0, 0)));
+    assert_eq!(HexLattice::elements_per_layer(u32::MAX), usize::MAX);
+}
+
+#[test]
+fn the_inverse_is_closed_form_so_a_huge_lattice_is_cheap() {
+    // 1e5 rings: a linear scan is ~6e5 steps per call, which a hostile deck pays per element.
+    let n = 100_000u32;
+    for orientation in [HexOrientation::X, HexOrientation::Y] {
+        for (ring, pos) in [(0, 0), (0, 599_993), (0, 123_457), (50_000, 77), (99_999, 0)] {
+            let (q, r) = HexLattice::ring_axial(orientation, n, ring, pos).unwrap();
+            assert_eq!(HexLattice::ring_position(orientation, n, q, r), Some((ring, pos)), "{orientation:?} {ring} {pos}");
+        }
+    }
 }
 
 fn hex_deck(lattice: &str) -> String {
@@ -295,5 +382,67 @@ fn ids_are_one_space_and_a_lattice_cannot_nest() {
 fn import_is_deterministic() {
     for name in MODELS {
         assert_eq!(ir_of(name).0, ir_of(name).0);
+    }
+}
+
+/// A homogeneous `n`-ring lattice (every element universe 7, material 1) with a gas outer universe
+/// (material 2) in a box of half-width 40.
+fn seven_ring_deck(orientation: &str, n: u32) -> String {
+    let per = 3 * n * (n - 1) + 1;
+    let ids = vec!["7"; per as usize].join(" ");
+    format!(
+        r#"<geometry>
+  <cell id="1" universe="0" fill="5" region="1 -2 3 -4 5 -6"/>
+  <cell id="2" material="1" universe="7"/>
+  <cell id="3" material="2" universe="9"/>
+  <hex_lattice id="5" n_rings="{n}" orientation="{orientation}" outer="9"><pitch>1.7</pitch><center>0.3 -0.2</center><universes>{ids}</universes></hex_lattice>
+  <surface id="1" type="x-plane" coeffs="-40" boundary="vacuum"/>
+  <surface id="2" type="x-plane" coeffs="40" boundary="vacuum"/>
+  <surface id="3" type="y-plane" coeffs="-40" boundary="vacuum"/>
+  <surface id="4" type="y-plane" coeffs="40" boundary="vacuum"/>
+  <surface id="5" type="z-plane" coeffs="-1" boundary="vacuum"/>
+  <surface id="6" type="z-plane" coeffs="1" boundary="vacuum"/>
+</geometry>"#
+    )
+}
+
+#[test]
+fn the_outer_universe_fills_exactly_the_space_outside_the_hexagonal_array() {
+    use sm_core::Point3;
+    use sm_rt_api::{Scratch, Tracker};
+    for (orientation, n) in [("x", 1), ("y", 1), ("x", 2), ("y", 2), ("x", 7), ("y", 7)] {
+        let ir = openmc::import(&seven_ring_deck(orientation, n), None).unwrap();
+        let l = ir.hex_lattices[&5].clone();
+        let m = ImportedCsg::import(&ir, &ImportOptions::default()).unwrap();
+        assert_eq!(m.cell_count(), l.universes.len() + 1, "{orientation} {n}");
+        let t = m.tracker(&sm_rt_api::BuildOptions::default()).unwrap().0;
+        let mut sc = Scratch::new();
+        let name_at = |p: [f64; 3], sc: &mut Scratch| {
+            let loc = t.locate(Point3::new(p[0], p[1], p[2]), None, None, sc).unwrap();
+            t.regions().get(loc.region).unwrap().name.clone()
+        };
+        let (inside, outside) = (name_at([0.3, -0.2, 0.0], &mut sc), name_at([30.0, 30.0, 0.0], &mut sc));
+        assert_ne!(inside, outside);
+        // Points over the array and the ring around it (the notches of the outline are in there).
+        let reach = f64::from(n) * l.pitch * 1.3;
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (mut notch, mut compared) = (0, 0);
+        for _ in 0..20_000 {
+            let p = [l.center[0] + (2.0 * rnd() - 1.0) * reach, l.center[1] + (2.0 * rnd() - 1.0) * reach, 0.0];
+            let Ok(want) = locate(&l, [p[0], p[1], 0.0]) else { continue };
+            let got = name_at(p, &mut sc);
+            assert_eq!(&got, if want.is_some() { &inside } else { &outside }, "{orientation} n={n}: {p:?}");
+            compared += 1;
+            if want.is_none() && (p[0] - l.center[0]).hypot(p[1] - l.center[1]) < f64::from(n) * l.pitch * 0.95 {
+                notch += 1;
+            }
+        }
+        assert!(compared > 19_000);
+        // Outside the array but inside the circle of its outermost centres: the notches are exercised.
+        assert!(n == 1 || notch > 50, "{orientation} n={n}: {notch} notch points");
     }
 }

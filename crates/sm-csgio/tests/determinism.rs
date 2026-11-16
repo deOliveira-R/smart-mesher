@@ -42,6 +42,21 @@ fn imports_are_identical_across_runs_and_thread_counts() {
     }
 }
 
+/// A hexagonal fixture of each orientation (2-D x, layered y): hash and chord table.
+#[test]
+fn hex_imports_are_identical_across_runs_and_thread_counts() {
+    for name in ["hex_x", "hex_y3d"] {
+        let d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/openmc_hex").join(name);
+        let (g, m) = (std::fs::read_to_string(d.join("geometry.xml")).unwrap(), std::fs::read_to_string(d.join("materials.xml")).unwrap());
+        let ir = sm_csgio::openmc::import(&g, Some(&m)).unwrap();
+        let a = fingerprint(&ir);
+        assert!(a.0.is_ok(), "{name}: {:?}", a.0);
+        assert_eq!(a, fingerprint(&ir), "{name}");
+        assert_eq!(a, in_pool(1, || fingerprint(&ir)), "{name}");
+        assert_eq!(a, in_pool(4, || fingerprint(&ir)), "{name}");
+    }
+}
+
 #[test]
 fn the_content_hash_sees_the_model() {
     let h = |ir: &sm_csgio::CsgIr| ImportedCsg::instantiate(ir, &ImportOptions::default()).unwrap().content_hash();

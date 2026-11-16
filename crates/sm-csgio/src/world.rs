@@ -115,6 +115,8 @@ pub struct ImportedCsg {
     /// Store handles of the surfaces that carry a boundary flag (for the check's `<outside>`).
     flagged: Vec<EntityId>,
     report: ImportReport,
+    /// [`CsgIr::hex_section_hash`] of the deck: `Some` only when it had hex lattices.
+    hex: Option<ContentHash>,
 }
 
 impl core::fmt::Debug for ImportedCsg {
@@ -185,6 +187,7 @@ impl ImportedCsg {
             complement: ComplementPolicy::Outside,
             flagged,
             report: ImportReport { warnings, dropped: ir.dropped.clone(), checked: None },
+            hex: ir.hex_section_hash(),
         })
     }
 
@@ -321,11 +324,16 @@ impl ImportedCsg {
     }
 
     /// Hash of the flat model by value: surface definitions, cell regions and names, bounds and
-    /// boundaries. Invariant under deck ids and text order (canonical form).
+    /// boundaries. Invariant under deck ids and text order (canonical form). A deck with hex
+    /// lattices appends the hash of its hex section ([`CsgIr::hex_section_hash`]); every other
+    /// deck hashes exactly as before.
     pub fn content_hash(&self) -> ContentHash {
         let mut h = ContentHasher::new();
         h.write_hash(self.leaf().content_hash());
         h.write_hash(self.boundaries.content_hash());
+        if let Some(x) = self.hex {
+            h.write_hash(x);
+        }
         h.finish()
     }
 

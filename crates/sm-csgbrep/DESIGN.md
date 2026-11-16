@@ -51,3 +51,39 @@ Tests:
 ## Quadric classifier
 
 `quadric.rs` (W4-CSG-CLASSIFY): the ten coefficients are divided by a power of two near the largest before the Jacobi sweeps, so tolerances hold at any magnitude. Its `classify_with_tol` rustdoc lists the two fail-safe limits (`k_zero` relative to the translation terms only; radius/offset floor about 3e-5).
+
+## Hexagonal lattices (W4-CSG-HEX, ruling D8)
+
+`model.import_openmc` imports `<hex_lattice>` in both orientations (`deck::place` places the elements as
+hexagonal prisms, `Placed::hex_elements`; the frame is `lat<id>` with `Layout::Hex` and the matching
+`HexOrient`, the tag of an element volume is the centred axial `(q, r)` and the layer).
+
+**Why not the plane partition.** Cutting the model box by the walls of a tiling does not work on this
+kernel: every corner of a hexagonal tiling is a line where three wall planes meet, so the third wall always
+runs through two vertical edges of a convex piece (the 60/120 degree walls leave rhombi, and the wall
+`x = p/2` is their diagonal). `sm_boolean::webcut` then refuses (`a cut lies on neither side of the cut just
+inserted`) or the unite of the pieces fails, depending on round-off in the third digit of the pitch or the
+centre (about half of the pitch/centre combinations tried failed, and the 7-ring decks all did).
+
+**What is built** (`op.rs::build_hex`, no prototype copies yet):
+1. every element is cut alone: the brick of its hexagon (10% larger) cut by what its cells' regions use
+   (its six walls, the layer walls, pin cylinders, enclosing surfaces), as the rectangular prototypes are;
+2. the rest of the deck is cut as before, but the cells of a hex lattice's `outer` universe are cut with
+   `PCell::core`, the region without the exclusion of the array (the clips and the cell's own region), so no
+   hex wall is a cutter there;
+3. the array is a union of whole prisms (`partition::hex_prism`: one brick cut by the six walls of that one
+   hexagon, all layers of a column in one prism), united per connected component, and subtracted from the
+   cells of 2 (`model.subtract` semantics with `keep`);
+4. everything is merged (`merge`), so the faces the prisms share with the elements are single faces.
+
+Limits, all reported or typed: a hex lattice inside the element of another is `csg.unsupported`; the gap
+warning of an element reports only a hexagon its cells do not cover (volume sum against the prism); an
+element crossed by a surface of the enclosing cell is cut by it, and the part beyond is not in the array
+solid's complement either, so it shows as an `import.gap` of that element. Overlaps between a rest cell and
+a hex element are not detected (the rectangular `reserved` box has no hexagonal analogue); the tracker
+import (`ImportedCsg::import`) does check overlaps.
+
+Tests (`tests/hex.rs`): the 600 OpenMC points of `hex_x`, `hex_y`, `hex_x3d`, `hex_y3d` against the B-rep
+(block and element tag), the tracker (material) and OpenMC; the frames and `frame.locate(centroid)` equal
+the tags; 7 rings give 127 prisms of area `sqrt(3)/2 p^2` (volume `area h` to 1e-9, 8 faces each) and the
+rest of the box in the gas, both orientations.

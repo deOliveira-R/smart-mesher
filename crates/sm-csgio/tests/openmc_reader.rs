@@ -162,8 +162,7 @@ fn materials_names_void_and_unknown_ids() {
 
 #[test]
 fn refused_features_name_the_element_and_the_line() {
-    let cases: [(&str, &str); 9] = [
-        (r#"<hex_lattice id="2"><pitch>1</pitch></hex_lattice>"#, "hex_lattice"),
+    let cases: [(&str, &str); 8] = [
         (r#"<dagmc_universe id="2" filename="x.h5m"/>"#, "dagmc_universe"),
         (r#"<cell id="9" material="1 2" region="-1"/>"#, "material list"),
         (r#"<surface id="9" type="x-torus" coeffs="0 0 0 2 0.5 0.4"/>"#, "unequal"),

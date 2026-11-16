@@ -60,8 +60,8 @@ rotation convention and the `outer` frame; see "OpenMC reader" below.
   `sm_rt::check_overlaps` returns no structured indices. `world.rs` pins the format in a unit test;
   an unparsable message becomes a `Build` error, never a lost finding.
 * A lattice flattens to N copies of its universe cells; cold locate is O(cells).
-* Periodic boundaries and DAGMC universes are not in the IR. Hex lattices are (ACR-CSG-HEXIR, "Hexagonal
-  lattices" below) but nothing flattens them yet.
+* Periodic boundaries and DAGMC universes are not in the IR. Hex lattices are (ACR-CSG-HEXIR, W4-CSG-HEX,
+  "Hexagonal lattices" below) and are flattened into hexagonal prisms.
 
 ## Refusal list (core)
 
@@ -119,7 +119,7 @@ unique, else `material_<id>`; `void` for void cells; `ImportOptions::material_na
 
 ## Refused (`Unsupported` with element and line)
 
-`hex_lattice` (by `openmc::import`; `openmc::import_hex` reads it, see "Hexagonal lattices"), `dagmc_universe`, other geometry elements, periodic boundaries, a `material` list,
+`dagmc_universe` (`hex_lattice` is read, see "Hexagonal lattices"), other geometry elements, periodic boundaries, a `material` list,
 tori with `B != C` or `A <= B`, general `cylinder`/`cone` surfaces, a lattice `outer` with position-dependent cells, unknown surface types, a lattice used as an element or as the
 `outer` of another lattice (the IR holds universes there), rotation matrices that are not proper
 orthonormal. Invalid: duplicate ids, wrong coefficient or `universes` counts, a cell with both or
@@ -139,8 +139,7 @@ several root universes.
 The IR gained `HexLattice` (`ir.rs`), kept in `CsgIr::hex_lattices` next to the rectangular
 `lattices`; the two share one id space, and a cell reaches either through `Fill::Lattice { id }`
 (no new `Fill` variant, so no existing `match` on `Fill` changes). This is an additive change to the
-frozen core, approved by the orchestrator as ACR-CSG-HEXIR; the flattener does not place hex lattices
-yet (consumer: W4-CSG-HEX, W4c).
+frozen core, approved by the orchestrator as ACR-CSG-HEXIR; W4-CSG-HEX (W4c) adds the flattening below.
 
 | Item | Convention |
 |---|---|
@@ -156,20 +155,29 @@ yet (consumer: W4-CSG-HEX, W4c).
 | `outer` | homogeneous, as for the rectangular lattice (position-dependent: Unsupported) |
 | Out-of-array points | OpenMC's `outer`; without `outer` OpenMC aborts at such a point |
 
-## Reader entry points and refusals
+## Reader entry points, flattening and guards (W4-CSG-HEX)
 
-* `openmc::import` is unchanged: it still refuses `<hex_lattice>` with `Unsupported { line: Some(l) }`
-  naming the element and its line. Its call sites, which therefore still refuse hex decks exactly as
-  before, are `sm_csgbrep::op` (`crates/sm-csgbrep/src/op.rs:484`), the `smcsg` binary, `sm-rt-bench`
-  (`cases.rs`) and the census probe.
-* `openmc::import_hex` reads both orientations and `n_axial >= 1` into `CsgIr::hex_lattices`; every
-  other behaviour (ids, errors, root universe, rectangular decks) is `import`'s, byte for byte (test
-  `content_hash_golden.rs`). W4-CSG-HEX switches its callers (the B-rep import) to it.
-* `ImportedCsg::instantiate` and `import` refuse an IR with a hex lattice with `Unsupported { line: None }`
-  (the same variant and `hex_lattice` wording; an IR has no line). `sm-csgbrep` reads the IR directly,
-  but only after `openmc::import`, which never yields a hex lattice; a hand-built IR with one is
-  reported there as an undefined lattice (`CsgbrepError::Invalid`) until W4-CSG-HEX teaches it.
-  `sm-rt`'s model bridge does not read the IR.
+* `openmc::import` reads `<hex_lattice>` (both orientations, `n_axial >= 1`) into `CsgIr::hex_lattices`.
+  `openmc::import_hex` is kept as an alias of it (W4-0c review item: the two entries were merged; every
+  caller, `sm-csgbrep`, `smcsg`, `sm-rt-bench` and the census probe, now reads hex decks). Rectangular
+  decks are read exactly as before (`content_hash_golden.rs`).
+* `ImportedCsg::instantiate` places a hex lattice: element `(q, r, k)` is the intersection of its six
+  walls and (with z extent) its two layer walls, the universe is placed at the element centre, the path
+  element of a flat cell is `[q, r, k]`. The three wall directions are `HexLattice::wall_normal`; the
+  wall of an element is at `pitch * m / 2` from the lattice centre with `m = HexLattice::wall_m(..) -+ 1`
+  (an exact integer), so two neighbours compute the wall they share from the same integer and the planes
+  are bit-identical in the flat store.
+* `outer` fills the space outside the array. The union of the elements is a hexagon with a zigzag
+  outline, so the outside is not `NOT(hexagon)`: it is the `6 n` hexagons of the first ring outside
+  (`HexLattice::outside_ring`), the space beyond the six hull planes (the wall normals of the other
+  orientation at `sqrt(3)/2 n p`, through the centres of those hexagons: `hull_normal`, `hull_offset`) and
+  the space beyond the layers. No element of a further ring reaches the hull; tested against a brute-force
+  locator on `n = 1, 2, 7` (`tests/openmc_hex.rs::the_outer_universe_fills_exactly_...`) and against
+  OpenMC at 600 points per fixture (about a third of the `outer` points are in notches).
+* Guards: `HexLattice::ring_len` is 0 and `flat_index` is `None` for a ring, position or layer out of
+  range (no underflow); `ring_position` is a closed form (`O(1)`, six sides), `ring_offset` replaces the
+  per-element sum, and `elements_per_layer` saturates. A hostile `n_rings` costs no more than its
+  `universes` text.
 
 ## Hash
 
@@ -178,7 +186,7 @@ yet (consumer: W4-CSG-HEX, W4c).
 section is `CsgIr::hex_section_hash() -> Option<ContentHash>`: `None` when `hex_lattices` is empty
 (rectangular decks never emit it), else a hash over tag `csgio.hex.v1` and, per lattice in id order,
 orientation, rings, layers, pitches, centre, `outer` and the universes in OpenMC order. The flat model of
-a hex deck (W4-CSG-HEX) appends this section to its `content_hash` only when it is `Some`.
+a hex deck appends this section to its `content_hash` only when it is `Some` (`ImportedCsg::content_hash`).
 
 ## Confirmed against OpenMC 0.16.0 (ruling C7)
 
@@ -192,3 +200,10 @@ picture, the index map and the centres against the recorded values, and an indep
 over the IR (hexagon test against every element centre) against `find_cell` at 600 points per model
 (uniform and within 5e-3 of flats and corners; points within 1e-9 of a face are skipped). Swapping the
 `Y` centre formula fails two of the ten tests.
+
+W4-CSG-HEX adds, in `tests/openmc_hex.rs`, the same 600 points against the flattened deck and the analytic
+tracker (`the_flattened_hex_deck_agrees_with_openmc_at_every_oracle_point`: the material at every point
+OpenMC answered at, the fuel disc of every element centred on its element, and the `(q, r, k)` of every
+fuel cell). The OpenMC evidence is the fixtures `gen_hex.py` made for ACR-CSG-HEXIR (no new generator).
+`crates/sm-rt/DESIGN.md` uses the same orientation map (`LatticeKind::Hex` = x-rows = `HexOrientation::X`,
+`HexYRows` = y-rows = `Y`); `sm-csgbrep` writes the frame with `HexOrient::XRows` / `YRows` accordingly.

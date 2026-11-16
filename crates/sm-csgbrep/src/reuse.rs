@@ -133,7 +133,8 @@ pub fn plan(placed: &Placed) -> ReusePlan {
     let mut out = ReusePlan::default();
     let mut taken: BTreeSet<usize> = BTreeSet::new();
     for lp in &placed.lattices {
-        if lp.rotated || lp.placements != 1 || nested.contains(&lp.id) {
+        // Hexagonal lattices keep the flat partition (no prototype copies yet).
+        if lp.hex.is_some() || lp.rotated || lp.placements != 1 || nested.contains(&lp.id) {
             continue;
         }
         let Some(slots) = by_lattice.get(&lp.id) else { continue };
