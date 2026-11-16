@@ -105,6 +105,9 @@ pub enum NoteCode {
     Repaired,
     /// `step.repair_failed`: `repair: "tolerant"` could not close an open shell.
     RepairFailed,
+    /// `step.sheet_undecoded`: with `repair`, a sheet could not be decoded (an unsupported
+    /// surface or a missing reference), so it was dropped; it is not an open shell.
+    SheetUndecoded,
 }
 
 impl NoteCode {
@@ -125,6 +128,7 @@ impl NoteCode {
             Self::Attributes => "step.attributes",
             Self::Repaired => "step.repaired",
             Self::RepairFailed => "step.repair_failed",
+            Self::SheetUndecoded => "step.sheet_undecoded",
         }
     }
 }

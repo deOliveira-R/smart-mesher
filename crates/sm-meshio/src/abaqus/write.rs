@@ -1,6 +1,7 @@
 //! The Abaqus `.inp` writer.
 
 use super::{AbaqusError, AbaqusOptions, AbaqusReport, PolyPolicy, PyramidPolicy};
+use crate::poly::{FanError, fan_cell};
 use crate::report::{LossItem, LossReport, LossSeverity};
 use rayon::prelude::*;
 use sm_mesh_api::{CellIx, CellShape, FaceIx, MeshDim, MeshRead, SetMembers, Side};
@@ -143,15 +144,6 @@ fn unsupported<T>(m: impl Into<String>) -> Result<T, AbaqusError> {
     Err(AbaqusError::Unsupported(m.into()))
 }
 
-fn centroid(ids: &[u32], pts: &[[f64; 3]]) -> [f64; 3] {
-    let mut c = [0.0; 3];
-    for &i in ids {
-        for (k, ck) in c.iter_mut().enumerate() {
-            *ck += pts[i as usize][k] / ids.len() as f64;
-        }
-    }
-    c
-}
 
 /// The `Sn` of the face of an element whose nodes are `vs` (as a sorted set), if any.
 fn local_face(kind: Kind, nodes: &[u32], vs: &[u32]) -> Option<u8> {
@@ -296,45 +288,29 @@ pub fn write_abaqus(mesh: &dyn MeshRead, o: &AbaqusOptions, w: &mut dyn Write) -
         }
         let mut next_id = nc as u32 + 1;
         for &c in &polys {
-            let ci = CellIx::new(c);
-            let mut vs: Vec<u32> = mesh.cell_faces(ci).iter().flat_map(|sf| mesh.face_vertices(sf.face()).iter().map(|v| v.0)).collect();
-            vs.sort_unstable();
-            vs.dedup();
-            if vs.iter().any(|&v| v as usize >= nv) {
-                return unsupported(format!("cell {c} indexes a missing vertex"));
-            }
-            let cc = pts.len() as u32;
-            pts.push(centroid(&vs, &pts));
             let first = el.id.len() as u32;
-            for sf in mesh.cell_faces(ci) {
-                let f = sf.face();
-                let mut loop_: Vec<u32> = mesh.face_vertices(f).iter().map(|v| v.0).collect();
-                if loop_.len() < 3 || loop_.iter().any(|&v| v as usize >= nv) {
-                    return unsupported(format!("face {} is not a valid polygon", f.0));
-                }
-                if sf.side() == Side::Right {
-                    loop_.reverse();
-                }
-                let n = loop_.len();
-                let ids = fan.entry((c as u32, f.0)).or_default();
-                if n == 3 {
-                    ids.push(next_id);
-                    el.push(next_id, Kind::Tet, &[loop_[0], loop_[2], loop_[1], cc]);
-                    next_id += 1;
-                    continue;
-                }
-                let fc = *face_centre.entry(f.0).or_insert_with(|| {
-                    let id = pts.len() as u32;
-                    let p = centroid(&loop_, &pts);
-                    pts.push(p);
-                    id
-                });
-                for k in 0..n {
-                    let (a, b) = (loop_[k], loop_[(k + 1) % n]);
-                    ids.push(next_id);
-                    el.push(next_id, Kind::Tet, &[a, fc, b, cc]);
-                    next_id += 1;
-                }
+            let ids_of = &mut fan;
+            let res = fan_cell(
+                mesh,
+                c,
+                nv,
+                &mut pts,
+                &mut face_centre,
+                || {},
+                |f, t| {
+                    ids_of.entry((c as u32, f)).or_default().push(next_id);
+                    el.push(next_id, Kind::Tet, &t);
+                    // The ids are 32-bit: refuse instead of wrapping.
+                    next_id = next_id.checked_add(1).ok_or(FanError::TooManyIds)?;
+                    Ok(())
+                },
+            );
+            match res {
+                Ok(()) => {}
+                Err(FanError::TooManyIds) => return Err(AbaqusError::TooLarge("more than 2^32 element ids after decomposition")),
+                Err(FanError::MissingVertex { cell }) => return unsupported(format!("cell {cell} indexes a missing vertex")),
+                Err(FanError::BadPolygon { face }) => return unsupported(format!("face {face} is not a valid polygon")),
+                Err(FanError::Inverted { cell, face }) => return Err(AbaqusError::InvertedDecomposition { cell: cell as u32, face }),
             }
             rec[c] = (first, el.id.len() as u32);
         }

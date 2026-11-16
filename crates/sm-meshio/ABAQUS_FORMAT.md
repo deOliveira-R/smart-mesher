@@ -60,6 +60,12 @@ environment (meshio 5.3.5) does not know `C3D5`. So the default is a typed refus
   Surface faces use the hexahedron numbers `S1` (base) and `S3..S6` (sides); `S2` has zero area and
   is never used. meshio reads it as a hexahedron.
 
+**Deviation from the draft.** The draft had pyramids follow the polyhedron policy while `C3D5`
+was unconfirmed. The writer has its own `pyramids` option instead (default `error`, `c3d5`,
+`degenerate_hex`). The default behaves the same (a typed refusal), and `degenerate_hex` is the
+conforming choice next to hexahedra. The default for hex-tet transition meshes (W4-HEX-PYR) is
+therefore `error`; whether it should change is the orchestrator's or the user's call.
+
 ## Face numbering (`*SURFACE`)
 
 Element-based surfaces name a face of an element by `S<n>`. The tables below are the Abaqus face
@@ -117,6 +123,9 @@ writer's, re-exported there as `sm_meshio::gmsh::PolyPolicy`):
   its fan. Volume is conserved to 1e-12 for planar-faced polyhedra (tested on the truncated
   octahedron, hexagonal prism, split-face cube and the honeycomb dual); the summed surface area equals the analytic boundary area.
   Loss `abaqus.poly_decomposed` (Degraded), `abaqus.nodes_added` (Info).
+  The fan is shared with the Gmsh writer (`poly.rs`). A tet with volume <= 0 (a polyhedron that
+  is not star-shaped about its centroid, or a flat face) is refused as `InvertedDecomposition`,
+  and element ids that would pass `u32::MAX` as `TooLarge`.
 * `drop`: polyhedra are left out, ids of the others are unchanged, `abaqus.poly_dropped` (Dropped).
   A mesh with nothing left to write is `Unsupported`, not an empty deck.
 

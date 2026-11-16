@@ -100,6 +100,20 @@ Limits: list nesting 256 (`TooDeep`, no stack overflow on 100 000 parentheses), 
   face gets a plane through its outer loop (Newell normal). Inward loops are repaired by the
   orientation check like any inverted solid.
 
+### Tolerant repair (`repair: "tolerant"`, `src/repair.rs`)
+
+Off by default: an open shell is refused as `step.open_shell`. With repair on, an open solid
+shell whose open edges form simple straight, planar loops (each edge used once net) gets one
+planar cap per loop; the result is all or nothing per solid and refuses a cap that lands on an
+existing face of the same shell or a shell of about zero volume. Open `SHELL_BASED_SURFACE_MODEL`
+sheets are decoded as repair candidates (like `sheets: true`, this ignores the `solids`
+selection); a closed or capped sheet becomes a solid, one that cannot be closed is dropped with
+`step.repair_failed`, one that does not decode with `step.sheet_undecoded`. A displaced face is
+not a missing one: when a face of another sheet lies on the cap's outline within 1e-3 of its
+extent, the cap is still made (the displaced face is not imported) and the `step.repaired` note
+names that face and its offset (`step-dirty-tol-edge`, face at x = 1.00005). Tolerance sewing at
+import (merging displaced or unsewn faces into one shell) is not done; it is W5 work.
+
 ## Assemblies (stretch S3)
 
 A file with `MAPPED_ITEM` or `NEXT_ASSEMBLY_USAGE_OCCURRENCE` is flattened by default
@@ -185,6 +199,9 @@ Located messages through `ctx.warn` / `ctx.info`; codes are stable.
 | `step.edge_sense` | warning | `EDGE_CURVE.same_sense` repaired from the geometry |
 | `step.assembly_transforms_ignored` | warning | the file has `MAPPED_ITEM` / `NEXT_ASSEMBLY_USAGE_OCCURRENCE`; solids are in local coordinates |
 | `step.attributes` | info | counts of colors, styles, layers, tessellation, PMI not imported |
+| `step.repaired` | warning | `repair: "tolerant"` closed an open shell with planar caps (one note per cap), or promoted a closed surface model to a solid; the cap note says when another sheet holds a face on the same outline (displaced, not missing) |
+| `step.repair_failed` | warning | `repair: "tolerant"` could not close an open sheet; the sheet is dropped |
+| `step.sheet_undecoded` | warning | with `repair`, a sheet could not be decoded (unsupported surface such as `OFFSET_SURFACE`, or a missing reference) and was dropped. It is not an open shell: if no solid comes through, the op fails with `step.sheet_undecoded`, not `step.open_shell` |
 
 A `Severity::Error` issue found by `check: true` fails the op with `OpError::Invalid`
 ("step.validate: ..." listing the first 20). Errors map to `OpError::Invalid("step.<code>:
