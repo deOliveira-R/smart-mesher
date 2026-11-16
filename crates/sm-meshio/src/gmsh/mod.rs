@@ -25,21 +25,8 @@ use serde::{Deserialize, Serialize};
 use sm_mesh_api::MeshError;
 use std::collections::BTreeMap;
 
-/// What to do with polyhedral cells, which msh4 cannot carry.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum PolyPolicy {
-    /// Fail with [`GmshError::PolyhedraUnsupported`].
-    #[default]
-    Error,
-    /// Split each polyhedron into tetrahedra around a cell centroid and face centroids (new
-    /// nodes after the original ones). Allowed only when every neighbour across a polygonal
-    /// face is also decomposed, else [`GmshError::NonconformingDecomposition`].
-    Decompose,
-    /// Omit polyhedra and report `msh.poly_dropped`.
-    Drop,
-}
+/// Polyhedra policy (shared with the Abaqus writer; defined in `crate::poly`).
+pub use crate::poly::PolyPolicy;
 
 /// Options of the msh4 writer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

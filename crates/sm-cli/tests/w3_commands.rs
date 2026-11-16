@@ -77,6 +77,28 @@ fn export_new_formats_are_named_and_msh_stays_gmsh() {
 }
 
 #[test]
+fn fluent_export_passes_its_options_and_never_infers_from_msh() {
+    let o = go(&[
+        "export",
+        "out.msh",
+        "--format",
+        "fluent",
+        "--option",
+        "boundary_types={\"inlet\":\"pressure-inlet\"}",
+        "--option",
+        "cell_zones=none",
+        "--memory",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.err);
+    let Request::Export { format, options, .. } = &o.requests[0] else { panic!() };
+    assert_eq!(*format, Some(ExportFormat::Fluent));
+    assert_eq!(options.as_ref().expect("options"), &json!({"boundary_types": {"inlet": "pressure-inlet"}, "cell_zones": "none"}));
+    // The same name with no `--format` is Gmsh, and a bare name is not guessed at.
+    let o = go(&["export", "out.msh", "--memory"]);
+    assert!(matches!(&o.requests[0], Request::Export { format: Some(ExportFormat::Gmsh), .. }));
+}
+
+#[test]
 fn export_lists_the_files_of_a_multi_file_result() {
     let reply: common::Reply = Box::new(|req| match req {
         Request::Export { .. } => Ok(json!({

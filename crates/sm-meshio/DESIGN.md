@@ -44,6 +44,7 @@ mesh), a loss report saying what OpenFOAM could not carry, and an in-process par
 | `dagmc::model`, `dagmc::write` | `model_from_mesh` / `model_from_facets` (`DagmcModel`, sense normalisation, closed-volume check, graveyard), `write_h5m` / `export_h5m` |
 | `h5` | private pure-Rust HDF5 subset writer (and, under `test` / feature `testing`, its reader); no `sm-*` imports |
 | `gmsh::write`, `gmsh::parse` | `write_msh4` (ASCII or binary), `parse_msh4` (round-trip tests only, not a general reader) |
+| `abaqus::write` | `write_abaqus`: `.inp` with C3D4/C3D6/C3D8, ELSET/NSET/element SURFACE, shared `PolyPolicy` (`poly`), see `ABAQUS_FORMAT.md` |
 | `le`, `crc` | little-endian packing, CRC-32 (slicing-by-8) |
 
 Decoded edge tables and sets use the contract types (`sm_mesh_api::EdgeTable`, `MeshSet`).

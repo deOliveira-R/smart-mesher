@@ -46,6 +46,10 @@ pub enum Dtype {
     U64,
     /// IEEE binary64, little endian.
     F64,
+    /// IEEE binary32, little endian.
+    F32,
+    /// Fixed-size ASCII string of `n` bytes, null-terminated (`H5T_C_S1` resized).
+    Str(u32),
     /// Fixed-size opaque bytes with an empty tag.
     Opaque(u32),
     /// Array of `n` little-endian `u64` (`H5T_ARRAY`).
@@ -61,6 +65,8 @@ impl Dtype {
             Dtype::U8 | Dtype::EnumU8(_) => 1,
             Dtype::I32 => 4,
             Dtype::I64 | Dtype::U64 | Dtype::F64 => 8,
+            Dtype::F32 => 4,
+            Dtype::Str(n) => *n as usize,
             Dtype::Opaque(n) => *n as usize,
             Dtype::ArrayU64(n) => 8 * *n as usize,
         }
@@ -88,6 +94,20 @@ impl Dtype {
                 m.extend_from_slice(&64u16.to_le_bytes()); // precision
                 m.extend_from_slice(&[52, 11, 0, 52]); // exp loc, exp size, mant loc, mant size
                 m.extend_from_slice(&1023u32.to_le_bytes());
+                m
+            }
+            Dtype::F32 => {
+                let mut m = vec![0x11, 0x20, 31, 0];
+                m.extend_from_slice(&4u32.to_le_bytes());
+                m.extend_from_slice(&0u16.to_le_bytes()); // bit offset
+                m.extend_from_slice(&32u16.to_le_bytes()); // precision
+                m.extend_from_slice(&[23, 8, 0, 23]);
+                m.extend_from_slice(&127u32.to_le_bytes());
+                m
+            }
+            Dtype::Str(n) => {
+                let mut m = vec![0x13, 0, 0, 0];
+                m.extend_from_slice(&n.to_le_bytes());
                 m
             }
             Dtype::Opaque(n) => {
@@ -144,6 +164,16 @@ impl Attr {
     pub fn u64(name: &str, v: u64) -> Self {
         Self { name: name.into(), dtype: Dtype::U64, dims: vec![], data: v.to_le_bytes().to_vec() }
     }
+    /// A scalar fixed-size string of `size` bytes (null-padded; `v` must be shorter than `size`).
+    pub fn string(name: &str, size: u32, v: &str) -> Self {
+        let mut d = v.as_bytes().to_vec();
+        d.resize(size as usize, 0);
+        Self { name: name.into(), dtype: Dtype::Str(size), dims: vec![], data: d }
+    }
+    /// A one-dimensional `i32` attribute.
+    pub fn i32s(name: &str, v: &[i32]) -> Self {
+        Self { name: name.into(), dtype: Dtype::I32, dims: vec![v.len() as u64], data: v.iter().flat_map(|x| x.to_le_bytes()).collect() }
+    }
     /// A scalar of any datatype from raw little-endian bytes.
     pub fn raw(name: &str, dtype: Dtype, data: Vec<u8>) -> Self {
         Self { name: name.into(), dtype, dims: vec![], data }
@@ -176,6 +206,10 @@ impl Dataset {
     pub fn i32s(dims: Vec<u64>, v: &[i32]) -> Self {
         Self::raw(Dtype::I32, dims, v.iter().flat_map(|x| x.to_le_bytes()).collect())
     }
+    /// `f32` values with the given shape.
+    pub fn f32s(dims: Vec<u64>, v: &[f32]) -> Self {
+        Self::raw(Dtype::F32, dims, v.iter().flat_map(|x| x.to_le_bytes()).collect())
+    }
     /// `f64` values with the given shape.
     pub fn f64s(dims: Vec<u64>, v: &[f64]) -> Self {
         Self::raw(Dtype::F64, dims, v.iter().flat_map(|x| x.to_le_bytes()).collect())
@@ -199,10 +233,18 @@ pub enum Obj {
 }
 
 /// A group: attributes and children keyed by name (written in sorted order).
+///
+/// With `tracked` set the group records link creation order (HDF5 `H5Pset_link_creation_order`
+/// with tracking and indexing): every link message carries its creation index, which is the
+/// position in `order`; children missing from `order` follow in name order. The CGNS library
+/// iterates its nodes by creation order. Untracked groups write exactly the bytes they always
+/// did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
     pub attrs: Vec<Attr>,
     pub children: BTreeMap<String, Obj>,
+    pub tracked: bool,
+    pub order: Vec<String>,
 }
 
 impl Group {
@@ -223,8 +265,28 @@ impl Group {
         }
     }
 
+    /// A tracked (creation-ordered) empty group.
+    pub fn tracked() -> Self {
+        Self { tracked: true, ..Self::default() }
+    }
+    /// The child group `name` with creation-order tracking, created last if absent.
+    pub fn tracked_group(&mut self, name: &str) -> &mut Group {
+        if !matches!(self.children.get(name), Some(Obj::Group(_))) {
+            self.children.insert(name.to_string(), Obj::Group(Group::tracked()));
+            self.order.retain(|n| n != name);
+            self.order.push(name.to_string());
+        }
+        match self.children.get_mut(name) {
+            Some(Obj::Group(g)) => g,
+            // Inserted as a group just above: statically dead.
+            _ => unreachable!("normalised to a group above"),
+        }
+    }
     /// Add or replace a dataset.
     pub fn put_dataset(&mut self, name: &str, d: Dataset) {
+        if self.tracked && !self.order.iter().any(|n| n == name) {
+            self.order.push(name.to_string());
+        }
         self.children.insert(name.to_string(), Obj::Dataset(d));
     }
     /// Add or replace a committed datatype.
@@ -352,16 +414,26 @@ fn header(obj: &Obj, data_addr: u64, children: &[(&str, u64)]) -> Result<Vec<u8>
     let mut msgs = Vec::new();
     let attrs: &[Attr] = match obj {
         Obj::Group(g) => {
-            let mut li = vec![0, 0];
+            let mut li = vec![0, if g.tracked { 3 } else { 0 }];
+            if g.tracked {
+                li.extend_from_slice(&(children.len() as u64).to_le_bytes()); // max creation index
+            }
             li.extend_from_slice(&UNDEF.to_le_bytes());
             li.extend_from_slice(&UNDEF.to_le_bytes());
+            if g.tracked {
+                li.extend_from_slice(&UNDEF.to_le_bytes()); // creation-order B-tree
+            }
             push_msg(&mut msgs, 0x02, &li)?;
             push_msg(&mut msgs, 0x0a, &[0, 0])?;
-            for (name, addr) in children {
+            for (i, (name, addr)) in children.iter().enumerate() {
                 if name.is_empty() || name.len() > 255 || name.contains('/') || name.contains('\0') {
                     return Err(H5Error::Unsupported(format!("link name {name:?}")));
                 }
-                let mut l = vec![1, 0, name.len() as u8];
+                let mut l = vec![1, if g.tracked { 4 } else { 0 }];
+                if g.tracked {
+                    l.extend_from_slice(&(i as u64).to_le_bytes()); // creation order
+                }
+                l.push(name.len() as u8);
                 l.extend_from_slice(name.as_bytes());
                 l.extend_from_slice(&addr.to_le_bytes());
                 push_msg(&mut msgs, 0x06, &l)?;
@@ -412,6 +484,20 @@ fn data_of(obj: &Obj) -> &[u8] {
 
 fn children_of(obj: &Obj) -> Vec<(&String, &Obj)> {
     match obj {
+        Obj::Group(g) if g.tracked => {
+            // Creation order: `order` first (names that exist, once), then the rest by name.
+            let mut seen = std::collections::BTreeSet::new();
+            let mut v: Vec<(&String, &Obj)> = Vec::with_capacity(g.children.len());
+            for n in &g.order {
+                if let Some((k, o)) = g.children.get_key_value(n)
+                    && seen.insert(k)
+                {
+                    v.push((k, o));
+                }
+            }
+            v.extend(g.children.iter().filter(|(k, _)| !seen.contains(k)));
+            v
+        }
         Obj::Group(g) => g.children.iter().collect(),
         _ => Vec::new(),
     }

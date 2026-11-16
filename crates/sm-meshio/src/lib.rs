@@ -6,6 +6,9 @@
 //! * [`smsh`]: the native format (`SMSH_FORMAT.md`), writer and reader.
 //! * [`foam`]: OpenFOAM polyMesh (ASCII) writer, parser and checker.
 //! * [`dagmc`]: DAGMC `.h5m` (MOAB HDF5) faceted B-rep writer (`H5M_FORMAT.md`).
+//! * [`abaqus`]: Abaqus `.inp` writer (`ABAQUS_FORMAT.md`).
+//! * [`cgns`]: CGNS 4.x HDF5 writer (`CGNS_FORMAT.md`).
+//! * [`fluent`]: Ansys Fluent ASCII `.msh` writer (`FLUENT_FORMAT.md`).
 //! * [`gmsh`]: Gmsh MSH 4.1 writer, ASCII and binary, and a round-trip parser.
 //! * [`report`]: the loss report every exporter shares.
 //! * [`vtu`]: ParaView / VTK export with polyhedra, mixed cells and region/color cell data.
@@ -13,8 +16,11 @@
 //! See `DESIGN.md`.
 
 mod crc;
+pub mod abaqus;
+pub mod cgns;
 pub mod dagmc;
 pub mod error;
+pub mod fluent;
 pub mod foam;
 pub mod gmsh;
 #[cfg(feature = "testing")]
@@ -23,6 +29,7 @@ pub mod h5;
 #[cfg(not(feature = "testing"))]
 mod h5;
 mod le;
+mod poly;
 pub mod report;
 pub mod select;
 pub mod smsh;

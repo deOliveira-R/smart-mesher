@@ -37,6 +37,8 @@ physical groups, positive Jacobians and the analytic volume, re-saves, and reads
 
 ## Tier B (Docker, mandatory when the image is present)
 
+The image also carries `cgnscheck` and `cgnslist` (CGNS library tools) for the CGNS oracle.
+
 ```
 docker build -t smesh-dagmc-conformance tools/conformance/dagmc
 docker run --rm -v "$OUT:/in:ro" smesh-dagmc-conformance \
