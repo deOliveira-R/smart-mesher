@@ -1,0 +1,130 @@
+# W4-INT MEASURE table and dual eligibility rates (plan.md section 5 item 5)
+
+Inputs for three orchestrator decisions: VORO-CLIP / CONFORM (ruling D1, trigger-based), `CONVEX_CHECK_MAX`, and
+the circumcentric default (ruling D10). This file states each trigger, says whether the data meets it and recommends.
+**It decides nothing.**
+
+## What was measured, and how
+
+- Code: `714e2af` (= `main` `b51806f` for code). Release `smesh` (`crates/sm-cli`), run per mesh as a script; the
+  only new files are in `docs/design/w4/int/`. No crate was edited.
+- Per mesh, three calls on the tet source or the hex mesh: `mesh.poly_info` on the source (carries `dual_eligibility`
+  for an all-tet mesh: exact `insphere` non-Delaunay count and exact `orient3d` outside-circumcentre count, W4-POLY-MEASURE),
+  `mesh.to_poly {keep_source: true}` (barycentric, the default) then `mesh.poly_info` on the dual (convexity in the `sm-rt` sense,
+  fast-path share, over-64-face share, convex-over-64, hub-split share, faces per cell), and `mesh.to_poly {dual: "circumcentric"}`
+  (the strict gate; what it answers is recorded in the last section).
+- Definitions (`crates/sm-poly/W4_POLY_MEASURE.md`): **convex** = all faces planar and no vertex outside a face plane (the `sm-rt` test
+  without the face cap); **fast path** = convex and at most 64 faces (`CONVEX_CHECK_MAX`, `sm_quality::CONVEX_CHECK_MAX`);
+  **over 64** = more than 64 faces; **convex over 64** = convex but over the cap (what raising `CONVEX_CHECK_MAX` would recover).
+- Meshes. Census meshes: `polydual` (conformance fixture script, brick 10x10x6, size 1.0), the W3a part tet branch whose dual is
+  `w3a_poly` (path B, size 1.0, script emitted by `milestone_w3a::emit_conformance_scripts`), `w3c_pin_enclosed` (733 tets). Milestone-like
+  meshes: the OpenMC pin deck family meshed all-tet by `mesh.size` + `mesh.auto {strategy: "tet"}` (a generated 1x1 and 2x2 pin lattice, radii
+  0.3, 0.4, 0.5, pitch 1.26, h = 1.0 with a void gap, the deck of `crates/sm-csgbrep/tests/common/decks.rs::pin_lattice`, imported
+  with `smesh import-openmc`; sizes 0.15 and 0.1) and the all-hex pin and lattice meshes `w3c_pin`, `w3b_milestone`, `w4_pin_ogrid`,
+  `w4_pin_enclosed_hex`, `w3c_warped`.
+- Numbers for `polydual`, `w3a_poly` and `w3c_pin_enclosed` reproduce the a1 table of `crates/sm-poly/W4_POLY_MEASURE.md` (measured at `1a76bc2`) to every
+  printed digit, so the barycentric dual and the eligibility counts did not move between `1a76bc2` and `714e2af` (consistent with C3).
+- **Not measured, and why.** (a) `tools/w4_poly.smesh` and its milestone test do not exist yet (they are W4-INT item 1, another worker); the
+  generated pin deck above is the closest stand-in and is labelled as such. (b) The W4-REFCORPUS decks `openmc-pin`,
+  `openmc-pin-layered` and `openmc-mini-3x3` do **not mesh all-tet today** with `intervals 16` on every circle and size 0.3: the surface
+  mesher refuses a cap face at the quality gate ("minimum angle 5.030 deg is below the gate 12.000 deg", and for the layered pin
+  "advancing front stuck", 0.174 deg), because their gap and ring widths are 0.008 to 0.02 cm; a conforming all-tet mesh needs about 1e6 tets
+  (the same limitation `crates/sm-rt-bench/DESIGN.md` records for the P1 twin and `oracle_mesh.rs` for the `pin` fixture). So no
+  refcorpus row; `openmc-assembly-17x17` was not tried for the same reason. (c) Mixed hex+tet meshes (`mesh.to_poly` on mixed input,
+  W4-POLY-MIXED): not measured here; the table covers all-tet sources and all-hex meshes. (d) The `mesh.to_poly` op refuses an all-hex mesh
+  ("needs at least one tetrahedron"), so hex rows have no dual and show the hex mesh itself.
+
+## The MEASURE table
+
+Eligibility columns are on the all-tet source mesh; the dual columns are on the barycentric dual (the op default,
+hub-split planar mode, `all_polyhedra`).
+
+| mesh | source cells | tets: non-Delaunay faces / interior | tets: outside circumcentres / tets | dual cells (barycentric) | convex | fast path | over 64 faces | convex over 64 | hub-split share | faces/cell mean, max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| polydual (10x10x6 brick, size 1.0) | 4292 | 442 / 7990 = 0.055 | 3 / 4292 = 0.0007 | 1051 | 5 (0.005) | 5 (0.005) | 196 (0.186) | 0 | 0.955 | 47.2, 108 |
+| w3a_tet part (3 volumes, size 1.0) | 16338 | 1504 / 30788 = 0.049 | 51 / 16338 = 0.0031 | 3982 | 16 (0.004) | 16 (0.004) | 741 (0.186) | 0 | 0.953 | 47.4, 120 |
+| w3c_pin_enclosed (733 tets) | 733 | 102 / 1342 = 0.076 | 59 / 733 = 0.0805 | 301 | 30 (0.100) | 30 (0.100) | 20 (0.066) | 0 | 0.943 | 36.9, 92 |
+| w3c_pin | 648 | n/a (not all-tet) | n/a (not all-tet) | n/a (to_poly refuses all-hex) | 648 (1.000) [hex mesh itself] | 648 (1.000) | 0 | 0 | - | 6.0, 6 |
+| w3c_warped | 125 | n/a (not all-tet) | n/a (not all-tet) | n/a (to_poly refuses all-hex) | 0 (0.000) [hex mesh itself] | 0 (0.000) | 0 | 0 | - | 6.0, 6 |
+| w3b_milestone | 675 | n/a (not all-tet) | n/a (not all-tet) | n/a (to_poly refuses all-hex) | 675 (1.000) [hex mesh itself] | 675 (1.000) | 0 | 0 | - | 6.0, 6 |
+| w4_pin_ogrid | 2160 | n/a (not all-tet) | n/a (not all-tet) | n/a (to_poly refuses all-hex) | 2160 (1.000) [hex mesh itself] | 2160 (1.000) | 0 | 0 | - | 6.0, 6 |
+| w4_pin_enclosed_hex | 400 | n/a (not all-tet) | n/a (not all-tet) | n/a (to_poly refuses all-hex) | 400 (1.000) [hex mesh itself] | 400 (1.000) | 0 | 0 | - | 6.0, 6 |
+| deck_pin1 size 0.15 | 5828 | 581 / 11136 = 0.052 | 69 / 5828 = 0.0118 | 1845 | 12 (0.007) | 12 (0.007) | 115 (0.062) | 0 | 0.960 | 42.4, 111 |
+| deck_pin2 size 0.15 | 23492 | 2244 / 45534 = 0.049 | 282 / 23492 = 0.0120 | 7415 | 46 (0.006) | 46 (0.006) | 486 (0.066) | 0 | 0.958 | 42.6, 120 |
+| deck_pin1 size 0.1 | 16213 | 1596 / 31252 = 0.051 | 402 / 16213 = 0.0248 | 4470 | 27 (0.006) | 27 (0.006) | 503 (0.113) | 0 | 0.959 | 45.8, 105 |
+
+Reading the columns: "non-Delaunay faces / interior" counts interior faces whose opposite vertex lies strictly inside the neighbour's
+circumsphere (exact `insphere`; a lower bound, see `dual_eligibility`); "outside circumcentres / tets" counts tets whose
+circumcentre is outside their region (exact `orient3d`). `w3c_warped` is a 5x5x5 warped hex mesh: its faces are non-planar
+(max non-planarity 8.5e-4), so none of its cells passes the planar `sm-rt` convexity rule even though it is all hex. The
+all-hex rows are what the user's transport code and `sm-rt` get from `hex_only`: 100% convex and fast-path (6 faces each), no hub triangles.
+
+## What the strict circumcentric gate answers on the same meshes
+
+`mesh.to_poly {dual: "circumcentric"}` (opt-in, strict, W4-POLY-VORO) refuses every real all-tet mesh above and changes nothing
+(the state hash is unchanged by a refusal; the message is the `NotOrthogonalDual` report):
+
+| source mesh | refusal |
+|---|---|
+| polydual | 442 non-Delaunay interior faces, 3 tets with an outside circumcentre |
+| w3a_tet part | 1504 non-Delaunay interior faces, 51 tets with an outside circumcentre |
+| w3c_pin_enclosed | 102 non-Delaunay interior faces, 59 tets with an outside circumcentre |
+| pin deck 1x1, size 0.15 | 581 non-Delaunay interior faces, 69 tets with an outside circumcentre |
+| pin deck 2x2, size 0.15 | 2244 non-Delaunay interior faces, 282 tets with an outside circumcentre |
+| pin deck 1x1, size 0.1 | 1596 non-Delaunay interior faces, 402 tets with an outside circumcentre |
+
+The gate passes only on the analytic fixtures of W4-POLY-VORO (Kuhn block and BCC patch; `crates/sm-poly/tests/voro*.rs`), whose eligibility
+counts are 0/0 by construction. On every mesh the tet mesher produced, both counts are non-zero, so the eligibility report says
+**barycentric** for all of them. The W4-INT item 1 milestone test should therefore assert `dual: "barycentric"` for the pin deck, from the report
+(it will not find a circumcentric-eligible mesh at the sizes the oracle tests use).
+
+## Decisions, triggers and data
+
+**1. VORO-CLIP and POLY-CONFORM (ruling D1: trigger-based; plan section 8).**
+
+- Trigger text (plan section 8 and `drafts/poly.md`): "refusals dominated by outside circumcentres -> VORO-CLIP; by non-Delaunay interior
+  faces -> CONFORM (scope approved under ruling D10)". VORO-CLIP: "most real meshes fail the VORO gate on outside circumcentres".
+  CONFORM: "non-Delaunay interior faces (from smoothing and recovery) dominate the refusals".
+- Data. 6 of 6 real tet meshes are refused (all of them, strict gate). Every refusal has both causes at once. Counts: non-Delaunay
+  faces vs outside-circumcentre tets are 442 vs 3, 1504 vs 51, 581 vs 69, 2244 vs 282, 1596 vs 402, and 102 vs 59 (enclosed pin). The
+  non-Delaunay share is 4.9% to 7.6% of the interior faces on every mesh (stable with size and model). The outside-circumcentre share is 0.07% to 8.1% of the
+  tets and grows with the boundary-to-volume ratio: 1.2% at size 0.15 and 2.5% at 0.1 on the same pin, 8.1% on the 733-tet enclosed pin.
+- Does the data meet the triggers? By count, **non-Delaunay faces dominate on every mesh** (1.7x on the enclosed pin, 4x to 147x on the
+  others, with the caveat that a face and a tet are different units), so the **CONFORM trigger is met**. The **VORO-CLIP trigger as worded
+  ("most meshes fail on outside circumcentres") is met only in the weak sense** that every mesh also has outside circumcentres; those would still refuse
+  the gate after a Delaunay restoration unless the boundary is protected. The numbers do not show outside circumcentres dominating on any mesh.
+- Recommendation (not a decision): treat the evidence as CONFORM first. Its draft scope is a boundary-protected (Gabriel) Delaunay option plus a final
+  Delaunay restoration after smoothing, which addresses both counts at the source; re-run this table on its output before spending on VORO-CLIP
+  (L/XL). If the orchestrator holds that orthogonality is a goal and not a requirement (ruling D1), the cheaper reading is to defer both to W5 with
+  these numbers as the baseline, because the barycentric dual already produces valid, volume-conserving, `sm-rt`-correct meshes. Ruling D10's
+  "optional Delaunay output in `sm-scheme-tet` if MEASURE needs it" is the same item.
+
+**2. `CONVEX_CHECK_MAX` (plan section 8: "MEASURE shows many convex cells over 64 faces").**
+
+- Data: **convex over 64 faces = 0 on every dual** (6 of 6), including the finer pin meshes (503 cells over the cap at size 0.1, all non-convex).
+  Cells over 64 faces are 6.2% to 18.6% of the barycentric duals and every one of them is non-convex (hub-split cells; the hub-split share is 94% to 96% on every dual); the all-hex meshes have 6 faces per cell.
+- Trigger not met. Recommendation: do not raise it; a larger cap recovers no cell. (A circumcentric/Voronoi cell has about 15.5 faces on average, far below the cap,
+  so the cap would matter for neither dual.)
+
+**3. Circumcentric default (ruling D10: "circumcentric dual opt-in until W4-INT decides").**
+
+- Data: the strict gate passes 0 of 6 real tet meshes (above); the barycentric dual's fast-path share (convex and at most 64 faces) is 0.4% to 10% of cells
+  (polydual 0.5%, w3a 0.4%, enclosed pin 10.0%, pin decks 0.6% to 0.7%); the dual is valid and conserves volume on all of them.
+- Recommendation: **keep circumcentric opt-in** (and keep barycentric the default). Making circumcentric the default would turn `mesh.to_poly` into a refusal on every
+  mesh the tet mesher makes today, and would move the barycentric hashes pinned by C3 (the `w3a_poly`, `polydual` fixtures and the sm-poly counts). Revisit after CONFORM
+  (item 1) shows a mesh family that passes the gate; the decision rule can be "default circumcentric only when the eligibility report says the mesh qualifies, else barycentric"
+  (what plan item 1 already does for the milestone), which needs a new op argument value, not a hash move.
+- For the transport and ray-tracing goals today, hex meshes (`hex_only`, `ogrid`) are the all-convex fast-path route (100% of cells), the barycentric tet dual is the valid but
+  mostly non-convex route (cells go through the exact fan walk), and the circumcentric dual is available only on analytic lattices.
+
+**4. Not covered by this data.** `drafts/poly.md` §W4-POLY-SHAPES (trigger: "VORO shows hex-lattice outputs matter") was not evaluated: it needs a VORO result on a
+mesh the gate accepts, and no real mesh is accepted. Mixed hex+tet meshes through `mesh.to_poly` (W4-POLY-MIXED) are not in this table.
+
+## Reproduction
+
+`smesh` release at `714e2af`; per mesh a script of the form `<model + mesh.run> ; let ti = mesh.poly_info(mesh: m.mesh[0]) ; let pb = mesh.to_poly(mesh: m.mesh[0], keep_source: true) ;
+let bi = mesh.poly_info(mesh: pb.mesh[0])`, and a second run with `mesh.to_poly(..., dual: "circumcentric")`. Scripts: `tools/*.smesh` as named above, the polydual script of
+`tools/conformance/fixtures/polydual.smesh` (without its fem lines), `w3a_tet.smesh` from `MILESTONE_W3A_EMIT=<dir> cargo test --release -p sm-cli --test milestone_w3a emit_conformance_scripts`, and the pin deck
+by `smesh -p proj import-openmc geometry.xml --materials materials.xml` followed by
+`mesh.size(targets: all volumes, size: 0.15) ; mesh.auto(strategy: "tet") ; let m = mesh.run(targets: all volumes)`.
+Counts are sums over fixed chunks, so they are the same for one thread and many.
