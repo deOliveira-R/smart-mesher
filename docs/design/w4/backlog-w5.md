@@ -116,7 +116,6 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 - `mesh_export::write` (`mesh_export.rs:313`): list `Smsh | Vtu | Exodus | Openfoam | Fluent | Cgns | Abaqus` explicitly in the refusal arm ahead of the mandatory `_`, or reuse `host.rs` `not_implemented()`. Source: W4-EXPORT-WIRE.
 - `gmsh_error` and `abaqus_error` map the new `InvertedDecomposition` variants to the generic `export-failed` kind; add an `inverted-decomposition` kind next to `nonconforming-decomposition`. Source: W4-INT-FIX-IO review.
 - `host.rs` `parse_format` keeps its own `ALL` list of 10 variants; an `ExportFormat::ALL` or `from_name` in `sm-protocol` (next contract window) would make it one table. Source: W4-EXPORT-WIRE.
-- MCP and Python exposure of the export `source` argument (ruling OR-b). Source: `rulings.md`.
 
 ## sm-py
 

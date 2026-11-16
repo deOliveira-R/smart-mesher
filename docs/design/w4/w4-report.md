@@ -78,7 +78,7 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 | Ruling | Applied how |
 |---|---|
 | OR-a (2D lattice z) | RT-LATZ not built; docs corrected; a test pins the rule |
-| OR-b (`source` in test literals) | Mechanical additions accepted; MCP and Python exposure of `source` is W5 (backlog, sm-server) |
+| OR-b (`source` in test literals) | Mechanical additions accepted; MCP and Python exposure of `source` was delivered by W4-DAGMC-MODEL (7485f80), as OR-b deferred it to that task (not W5) |
 | OR-c (hash tags) | Lattice frames tag 14, region tags tag 15, emitted only when non-empty |
 | OR-d (XDG x86_64 only) | XDG rows `Partial` on arm64; real numbers come from the user's x86_64 run (Dev-5) |
 | OR-e (checks in a sub-wave) | Workers ran their own crates; the combines ran `tools/ci.sh` once and re-blessed catalog goldens once each time (section 4) |
