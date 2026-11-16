@@ -4,9 +4,9 @@
 //! OpenMC itself): `<surface>` of the types plane, x/y/z-plane, x/y/z-cylinder, sphere,
 //! x/y/z-cone, quadric and circular x/y/z-torus, with `boundary` transmission, vacuum,
 //! reflective or white; `<cell>` with `material` (an id or `void`), `fill`, `universe`, `region`,
-//! `translation` and `rotation`; rectangular `<lattice>` with a position-independent `outer`; `materials.xml` for names.
+//! `translation` and `rotation`; rectangular `<lattice>` and `<hex_lattice>` (both orientations, 2-D and layered) with a position-independent `outer`; `materials.xml` for names.
 //! Refused with [`ImportError::Unsupported`]: a lattice `outer` universe whose cells have regions,
-//! the general `cylinder` and `cone` types (OpenMC's C++ layer rejects them), `hex_lattice` (by [`import`]; [`import_hex`] reads it), `dagmc_universe`, periodic boundaries,
+//! the general `cylinder` and `cone` types (OpenMC's C++ layer rejects them), `dagmc_universe`, periodic boundaries,
 //! a `material` list, elliptic tori, lattices nested directly in a lattice, and rotations that are
 //! not proper orthonormal matrices.
 //!
@@ -145,32 +145,28 @@ fn count_label(n: usize, what: &str) -> String {
 /// the module documentation, [`ImportError::Invalid`] for inconsistent data (duplicate ids, wrong
 /// coefficient counts, bad regions, a lattice whose `universes` count does not match, no unique
 /// root universe).
+///
+/// `<hex_lattice>` (both orientations, `n_axial >= 1`) goes to [`CsgIr::hex_lattices`]. Its
+/// `universes` text is OpenMC's row picture: for `orientation="x"` the rows from the highest `y`
+/// down, each left to right; for `"y"` (the default) the lines of the picture from the highest `y`
+/// down (a line holds the elements whose `2r + q` is equal), each left to right. Layers follow from
+/// the lowest z up. The reader stores them in OpenMC's ring order ([`crate::ir::HexLattice`]). A
+/// wrong `n_rings`, `n_axial`, `orientation`, `pitch`/`center` count or `universes` count is
+/// [`ImportError::Invalid`].
 pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
-    import_impl(geometry_xml, materials_xml, false)
+    import_impl(geometry_xml, materials_xml)
 }
 
-/// Like [`import`], and additionally reads `<hex_lattice>` (both orientations, `n_axial >= 1`) into
-/// [`CsgIr::hex_lattices`] instead of refusing it (ACR-CSG-HEXIR).
-///
-/// [`import`] keeps refusing `<hex_lattice>` with [`ImportError::Unsupported`] (element and line), so
-/// every consumer that calls it, today `sm-csgbrep`, the `smcsg` binary and `sm-rt-bench`, behaves as
-/// before. A consumer that can use hex lattices calls this function instead (W4-CSG-HEX). The
-/// returned IR is refused by [`crate::ImportedCsg::instantiate`] while the flattener has no hex
-/// support.
-///
-/// The `universes` text is OpenMC's row picture: for `orientation="x"` the rows from the highest `y`
-/// down, each row left to right; for `"y"` (the default) the lines of the picture from the highest
-/// `y` down (a line holds the elements whose `2r + q` is equal), each left to right. Layers follow
-/// from the lowest z up. The reader stores them in OpenMC's ring order ([`crate::ir::HexLattice`]).
+/// The same as [`import`]; kept as the entry the hex-lattice IR change introduced (ACR-CSG-HEXIR),
+/// before [`import`] itself read `<hex_lattice>`.
 ///
 /// # Errors
-/// As [`import`], plus [`ImportError::Invalid`] for a wrong `n_rings`, `n_axial`, `orientation`,
-/// `pitch`/`center` count or `universes` count.
+/// As [`import`].
 pub fn import_hex(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
-    import_impl(geometry_xml, materials_xml, true)
+    import(geometry_xml, materials_xml)
 }
 
-fn import_impl(geometry_xml: &str, materials_xml: Option<&str>, allow_hex: bool) -> Result<CsgIr, ImportError> {
+fn import_impl(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
     let gdoc = parse_xml(geometry_xml)?;
     let root = gdoc.root_element();
     if root.tag_name().name() != "geometry" {
@@ -182,7 +178,7 @@ fn import_impl(geometry_xml: &str, materials_xml: Option<&str>, allow_hex: bool)
     // Pass 1: lattice ids, so a cell's `fill` can be told apart.
     for n in root.children().filter(|n| n.is_element()) {
         let t = n.tag_name().name();
-        if t == "lattice" || (allow_hex && t == "hex_lattice") {
+        if t == "lattice" || t == "hex_lattice" {
             let cx = ctx(&gdoc, n, t.into());
             lattice_ids.insert(id_of(&cx, n)?);
         }
@@ -200,13 +196,13 @@ fn import_impl(geometry_xml: &str, materials_xml: Option<&str>, allow_hex: bool)
                 lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?;
                 lattice_lines.insert(id_of(&ctx(&gdoc, n, "lattice".into()), n)?, ctx(&gdoc, n, String::new()).line);
             }
-            "hex_lattice" if allow_hex => {
+            "hex_lattice" => {
                 hex_lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?;
                 lattice_lines.insert(id_of(&ctx(&gdoc, n, "hex_lattice".into()), n)?, ctx(&gdoc, n, String::new()).line);
             }
-            "hex_lattice" | "dagmc_universe" => {
+            "dagmc_universe" => {
                 let cx = ctx(&gdoc, n, tag.into());
-                return Err(unsupported(&cx, format!("<{tag}> is not supported (rectangular lattices only; no DAGMC universes)")));
+                return Err(unsupported(&cx, format!("<{tag}> is not supported (no DAGMC universes)")));
             }
             other => {
                 let cx = ctx(&gdoc, n, other.into());
@@ -491,7 +487,7 @@ fn hex_lattice(doc: &Document<'_>, n: Node<'_, '_>, ir: &mut CsgIr, lattice_ids:
             }
             filled.insert(u);
             let (ring, pos) = HexLattice::ring_position(orientation, n_rings, q, r).ok_or_else(|| invalid(&cx, "internal: element outside the rings".into()))?;
-            let at = k * per + (0..ring).map(|g| HexLattice::ring_len(n_rings, g)).sum::<usize>() + pos as usize;
+            let at = k * per + HexLattice::ring_offset(n_rings, ring).unwrap_or(0) + pos as usize;
             ordered[at] = u;
         }
     }

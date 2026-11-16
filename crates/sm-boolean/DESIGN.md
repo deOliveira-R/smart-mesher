@@ -140,6 +140,30 @@ eleven STEP entries, including `step-dirty-tol-edge` (`gap_near`, `open_shell`: 
 Findings are sorted by `(code, entity, value)`; the per-entity scans run under rayon with ordered
 collection.
 
+## W4-HEAL-TOL: `model.heal`
+
+`heal.rs`, tolerance first (ruling "Healing"): fixes run weld, orient, close, each on its own
+finding. **Weld** takes the `gap_near` findings of `heal_check` up to `tol` (default and maximum
+`linear_max`), raises the paired cells to half the gap each (the kernel's coincidence test is
+`gap <= tol_a + tol_b <= linear_max`, so a gap near `linear_max` needs both halves), and calls
+`merge` with `tol: None` on that finding's closure, so only the finding's cells are touched; a pair
+that is close by construction (a 1e-4 notch corner) is not a finding. A closure edge of at most
+twice the gap is skipped and reported: merging would collapse it, and collapse is virtual (ACR-V3).
+The lowest id survives, so the other volume's boundary moves by the gap: for two bricks, `V1` and
+`V2 + A g`, recorded as `Merged { gap }` lineage and in `HealOutcome.merged`; the kept face's
+tolerance is raised to the gap. **Orient** reverses the faces of a volume with negative
+`volume_moments` (one outer shell, faces used by that volume alone) with the uses taken off and put
+back; the result has the analytic volume (the hash is not equal to a never-inverted brick: the
+use order differs). **Close** (after the weld, which may close the loops itself) takes each chain of
+free edges that is one simple loop with consistent orientation, planar within `tol` (Newell normal,
+8 samples per edge), and makes a plane face whose coedges run against the neighbours'. A lone
+face's boundary is not a hole. The cap is a free face (no body-member edit exists).
+`heal`, `weld_gaps`, `orient_volumes` and `close_open_loops` take `&mut dyn TopologyEdit`, so
+W4-STEP-REPAIR (`sm-cadio`) calls them without an ACR; they need an open operation. What does not
+heal here (reported by `heal_check` before and after): `small_edge`, `small_face`, `sliver_face`
+(collapses), `small_hole` and `blend_candidate` (defeaturing), and a `Conflict` pair. `mode:
+"geometric"` (moving geometry on request) is not implemented.
+
 ## W3b-1: candidate-pair BVH
 
 `pieces::candidate_pairs` queries a BVH (`bvh.rs`, median split, index tie-break) over the second
@@ -194,3 +218,18 @@ ladder of depths.
 `model.webcut_surface` takes the face of any of these surfaces (the whole surface is the tool; a
 face with a reversed carrier swaps the sides). `model.regularize` lists the cells of refused pairs
 in a `refused` output role.
+
+## W4-BOOL-TIDY: virtual topology and id-keeping edits
+
+`Overlay::rebase` replays the recorded virtual ops on the edited host and does not re-check a
+`partition_face` chord against it. Audit of the edits that keep a cell id (`tests/vtopo_guard.rs`):
+split edits (webcut, imprint, subdivide) retire the split cell, so an overlay built on it is
+refused by the rebase; weld, merge and orientation keep the lowest id and change only the other
+side (refused when the overlay uses it, valid otherwise); a `regularize` join keeps the survivor
+and grows it, which the rebase accepted and silently re-shaped (a chord splitting a bigger face, a
+partition vertex on a longer edge). That one is now refused (`BooleanError::VirtualTopology`,
+`model.remove_virtual` first), also when the join is the default regularize step of
+`unite`/`subtract`/`intersect` (`regularize: false` skips it; `keep` works on copies, so it is
+not checked). `webcut` with a sphere tool refuses (`TangentContact`) a sphere
+that reaches a face of the target but whose surface intersection came back empty (a bite of a few
+1e-3), instead of reporting the target untouched.

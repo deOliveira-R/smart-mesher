@@ -269,3 +269,113 @@ def test_source_model_exports_dagmc_without_a_mesh(s: sm.Session, tmp_path: path
     with pytest.raises(sm.SmartMeshError) as ei:
         s.export(tmp_path / "f.h5m", chord_tol=1e-3)  # a mesh is not re-faceted
     assert ei.value.kind == "bad-request"
+
+
+def test_fluent_export_takes_polyhedra_is_never_inferred_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path) -> None:
+    """`format="fluent"` writes a `.msh` with polyhedra (cell type 7); with no format `.msh` stays Gmsh."""
+    slice_typed(s)
+    fl = tmp_path / "f.msh"
+    r = s.export(fl, format="fluent")
+    assert r.format == "fluent"
+    text = fl.read_text()
+    assert text.startswith('(0 "smart-mesh Fluent export")') and "\n(2 3)\n" in text
+    plain = tmp_path / "g.msh"
+    assert s.export(plain).format == "gmsh"
+    assert plain.read_bytes().startswith(b"$MeshFormat")
+    # Polyhedra are exported (Gmsh refuses them): the dual's cells are type 7.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.msh"
+    p.export(out, format="fluent", mesh=pm)
+    poly_text = out.read_text()
+    assert "(12 (2 1 " in poly_text and " 1 7))" in poly_text
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.msh"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(bad, format="fluent", options={"binary": True})
+    assert ei.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.msh"), "--format", "fluent"],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert fl.read_bytes() == (tmp_path / "cli.msh").read_bytes()
+
+
+@pytest.mark.parametrize("name", ["a.cgns", "A.CGNS"])
+def test_cgns_export_is_inferred_takes_polyhedra_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
+    """A `.cgns` path (any case) infers `cgns`: an HDF5 file with the CGNS node labels, NGON_n/NFACE_n for polyhedra."""
+    slice_typed(s)
+    path = tmp_path / name
+    r = s.export(path)
+    assert r.format == "cgns"
+    data = path.read_bytes()
+    assert data.startswith(b"\x89HDF\r\n\x1a\n") and b"CGNSBase_t" in data and b"Elements_t" in data
+    # Polyhedra are exported (Gmsh refuses them): the dual uses NGON_n and NFACE_n.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.cgns"
+    p.export(out, mesh=pm)
+    poly = out.read_bytes()
+    assert b"NGON" in poly and b"NFACE" in poly
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.cgns"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(bad, options={"binary": True})
+    assert ei.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.cgns")],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert data == (tmp_path / "cli.cgns").read_bytes()
+
+
+@pytest.mark.parametrize("name", ["a.inp", "A.INP"])
+def test_abaqus_export_is_inferred_follows_the_polyhedra_policy_and_matches_cli(s: sm.Session, tmp_path: pathlib.Path, name: str) -> None:
+    """A `.inp` path (any case) infers `abaqus`: an ASCII deck with C3D elements; polyhedra need a policy."""
+    slice_typed(s)
+    path = tmp_path / name
+    r = s.export(path)
+    assert r.format == "abaqus"
+    text = path.read_text()
+    assert text.startswith("*HEADING\n") and "\n*NODE\n" in text and "\n*ELEMENT, TYPE=C3D" in text
+    # Polyhedra are refused by default (typed), decomposed to C3D4 on request.
+    p = sm.Session.memory()
+    pm = _poly(p)
+    out = tmp_path / "poly.inp"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        p.export(out, mesh=pm)
+    assert ei.value.kind == "polyhedra-unsupported"
+    assert not out.exists()
+    p.export(out, mesh=pm, options={"polyhedra": "decompose"})
+    assert "*ELEMENT, TYPE=C3D4\n" in out.read_text()
+    # Options are checked: an unknown key is a bad request and writes nothing.
+    bad = tmp_path / "bad.inp"
+    with pytest.raises(sm.SmartMeshError) as ei2:
+        s.export(bad, options={"binary": True})
+    assert ei2.value.kind == "bad-request"
+    assert not bad.exists()
+    # Same bytes through the CLI.
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli.inp")],
+    ):
+        c = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert c.returncode == 0, (args, c.stdout, c.stderr)
+    assert path.read_bytes() == (tmp_path / "cli.inp").read_bytes()

@@ -22,11 +22,17 @@ pub enum Format {
     Gmsh,
     /// Self-contained `.smrt` tracking image for the transport handover.
     Smrt,
-    /// Fluent ASCII `.msh` (not implemented yet). Never inferred: `.msh` means Gmsh.
+    /// Fluent ASCII `.msh`: cell zones per block or region, boundary zones per face set, polyhedra
+    /// as cell type 7. Never inferred (`.msh` means Gmsh), so `--format fluent` is always needed.
+    /// Options: `--option cell_zones=none`, `--option boundary_types={"inlet":"pressure-inlet"}`.
     Fluent,
-    /// CGNS HDF5 `.cgns` (not implemented yet).
+    /// CGNS HDF5 `.cgns`: one unstructured zone, standard sections (or NGON_n/NFACE_n for
+    /// polyhedra), BCs per face set, cell sets as sub-regions and families. Inferred from `.cgns`.
+    /// Options: `--option layout=ngon`, `--option boundary_types={"inlet":"inflow"}`.
     Cgns,
-    /// Abaqus `.inp` input deck (not implemented yet).
+    /// Abaqus `.inp` deck: `*NODE`, `*ELEMENT` (C3D4, C3D6, C3D8), `*ELSET` per cell set, `*NSET`
+    /// and element-based `*SURFACE` per face set. Inferred from `.inp`. Options:
+    /// `--option polyhedra=decompose`, `--option pyramids=degenerate_hex`, `--option nsets=false`.
     Abaqus,
 }
 

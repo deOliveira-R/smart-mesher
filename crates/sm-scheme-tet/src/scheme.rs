@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_mesh_api::{CellShape, Param};
 use sm_scheme_api::{
-    Applicability, Caps, ElemShape, Firmness, GenCtx, GenerateFailure, NodeKey, Params, Patch, PatchBuilder, PlanCtx,
+    Applicability, Caps, ElemShape, FailureKind, Firmness, GenCtx, GenerateFailure, NodeKey, Params, Patch, PatchBuilder, PlanCtx,
     Requirements, Scheme, SchemeDim, SchemeNote, SchemeRegistry, SizeField, Target,
 };
 use sm_topo_api::{CellFlags, Dim, Incidence, Side, TopologyView, TopologyViewExt};
@@ -46,6 +46,37 @@ pub struct TetParams {
     /// [`MIN_MEAN_RATIO`](crate::MIN_MEAN_RATIO), at most 1). Does not change the mesh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_mean_ratio: Option<f64>,
+    /// Hex-tet transition (W4-HEX-PYR, ruling D5): `none` (default, today's behaviour: every
+    /// face must be triangulated) or `pyramid` (a quad on a bounding face becomes the base of
+    /// one pyramid whose apex lies inside this volume; its four triangles are frozen boundary
+    /// for the tet fill, so the quad nodes stay shared with the hex neighbour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
+    /// Pyramid apex height as a fraction of the mean quad edge (default
+    /// [`DEFAULT_PYRAMID_HEIGHT`], range 0.2..=2). Only with `transition: "pyramid"`; a failed
+    /// recovery retries with 0.6 and 0.35 times this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pyramid_height: Option<f64>,
+}
+
+/// Default pyramid height over the mean edge of its base quad (the spike value: 0.6 keeps the
+/// pyramid's own faces at about 60 degrees and the neighbouring tets well shaped).
+pub const DEFAULT_PYRAMID_HEIGHT: f64 = 0.6;
+
+/// How the tet scheme meets quad faces of a hex neighbour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transition {
+    /// Triangles on every face (the W3 behaviour).
+    None,
+    /// One pyramid per quad of a bounding face.
+    Pyramid,
+}
+
+impl TetParams {
+    fn pyramid(&self) -> bool {
+        self.transition == Some(Transition::Pyramid)
+    }
 }
 
 impl TetParams {
@@ -80,6 +111,14 @@ impl TetParams {
             && !(m.is_finite() && (0.0..=1.0).contains(&m)) {
                 return Err(format!("tetmesh params: min_mean_ratio = {m} must be in 0..=1"));
             }
+        if let Some(h) = p.pyramid_height {
+            if !(h.is_finite() && (0.2..=2.0).contains(&h)) {
+                return Err(format!("tetmesh params: pyramid_height = {h} must be in 0.2..=2"));
+            }
+            if !p.pyramid() {
+                return Err("tetmesh params: pyramid_height needs transition = \"pyramid\"".to_owned());
+            }
+        }
         Ok(p)
     }
 }
@@ -150,8 +189,8 @@ impl Scheme for TetVolume {
     fn dim(&self) -> SchemeDim {
         SchemeDim::Volume
     }
-    fn caps(&self, _params: &Params) -> Caps {
-        Caps::TET
+    fn caps(&self, params: &Params) -> Caps {
+        if TetParams::parse(params).is_ok_and(|p| p.pyramid()) { Caps::TET | Caps::PYRAMID } else { Caps::TET }
     }
 
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, params: &Params) -> Applicability {
@@ -180,9 +219,12 @@ impl Scheme for TetVolume {
         Applicability::yes(10, "last resort: Delaunay + recovery + refinement, needs triangles on every face")
     }
 
-    fn requirements(&self, cx: &PlanCtx<'_>, target: Target, _params: &Params, out: &mut Requirements<'_>) -> sm_scheme_api::Result<()> {
+    fn requirements(&self, cx: &PlanCtx<'_>, target: Target, params: &Params, out: &mut Requirements<'_>) -> sm_scheme_api::Result<()> {
+        // With the pyramid transition TRI is a preference: a Hard QUAD of a hex neighbour wins
+        // in the same planning pass (`planner::resolve`), a face used only here stays triangles.
+        let firmness = if TetParams::parse(params).is_ok_and(|p| p.pyramid()) { Firmness::Soft } else { Firmness::Hard };
         for f in cx.input.piece_faces(target)? {
-            out.require_caps(Target::Surface(f), Caps::TRI, Firmness::Hard);
+            out.require_caps(Target::Surface(f), Caps::TRI, firmness);
         }
         Ok(())
     }
@@ -206,21 +248,33 @@ impl Scheme for TetVolume {
         // Triangles as node keys, with the owning face.
         let mut tri_keys: Vec<[NodeKey; 3]> = Vec::new();
         let mut tri_face: Vec<EntityId> = Vec::new();
+        // Quads (outward order) and their faces: only with `transition: "pyramid"`.
+        let pyramid = p.pyramid();
+        let mut quad_keys: Vec<[NodeKey; 4]> = Vec::new();
+        let mut quad_face: Vec<EntityId> = Vec::new();
         for f in &faces {
             let side = *side_of.get(f).ok_or_else(|| fail(format!("{f} is not a face use of {owner}: cannot determine its orientation")))?;
             let patch = cx.surface_patch(*f).ok_or_else(|| fail(format!("the surface patch of {f} is missing (is a triangle scheme set on it?)")))?;
             for (shape, local) in patch.elements.iter() {
-                if shape != ElemShape::Tri {
-                    return Err(fail(format!("{f} is not triangulated (found {shape:?}); set mesh.scheme trimesh on its faces")));
-                }
                 let key = |i: usize| patch.key(local[i]).ok_or_else(|| fail(format!("{f}: dangling node index in its patch")));
-                let (a, b, c) = (key(0)?, key(1)?, key(2)?);
-                tri_keys.push(if side == Side::Right { [a, c, b] } else { [a, b, c] });
-                tri_face.push(*f);
+                match shape {
+                    ElemShape::Tri => {
+                        let (a, b, c) = (key(0)?, key(1)?, key(2)?);
+                        tri_keys.push(if side == Side::Right { [a, c, b] } else { [a, b, c] });
+                        tri_face.push(*f);
+                    }
+                    ElemShape::Quad if pyramid => {
+                        let (a, b, c, d) = (key(0)?, key(1)?, key(2)?, key(3)?);
+                        quad_keys.push(if side == Side::Right { [a, d, c, b] } else { [a, b, c, d] });
+                        quad_face.push(*f);
+                    }
+                    _ if pyramid => return Err(fail(format!("{f}: found {shape:?}; the pyramid transition takes triangles and quads"))),
+                    _ => return Err(fail(format!("{f} is not triangulated (found {shape:?}); set mesh.scheme trimesh on its faces"))),
+                }
             }
         }
         // Dense point ids in ascending key order.
-        let keys: BTreeSet<NodeKey> = tri_keys.iter().flatten().copied().collect();
+        let keys: BTreeSet<NodeKey> = tri_keys.iter().flatten().chain(quad_keys.iter().flatten()).copied().collect();
         let keys: Vec<NodeKey> = keys.into_iter().collect();
         let id_of: BTreeMap<NodeKey, u32> = keys.iter().enumerate().map(|(i, k)| (*k, i as u32)).collect();
         let mut points: Vec<[f64; 3]> = Vec::with_capacity(keys.len());
@@ -229,7 +283,9 @@ impl Scheme for TetVolume {
             points.push([q.x, q.y, q.z]);
         }
         let tris: Vec<[u32; 3]> = tri_keys.iter().map(|t| t.map(|k| id_of[&k])).collect();
-        let input = SurfaceInput { points, tris };
+        let quads: Vec<[u32; 4]> = quad_keys.iter().map(|q| q.map(|k| id_of[&k])).collect();
+        let n_ref = keys.len();
+        let plain = SurfaceInput { points, tris };
 
         // Options. A size field from the context and the constant `size` parameter combine by min.
         let ctx_size: Option<&dyn SizeField> = cx.size;
@@ -265,19 +321,173 @@ impl Scheme for TetVolume {
         if let Some(m) = p.min_mean_ratio {
             opts.floor_mean_ratio = m;
         }
-        if let Some(c) = const_size {
-            // The default Steiner budget scales with the boundary; a constant size that is fine
-            // against a coarse boundary needs room for the interior points (about one per six
-            // tets, a regular tet of edge `c` having volume c^3 / (6 sqrt 2)).
-            let vol = input.tris.iter().map(|t| signed_volume6(t.map(|i| input.points[i as usize]))).sum::<f64>().abs() / 6.0;
-            let wanted = 2.0 * vol / (c * c * c * 0.1179 * 6.0);
-            if wanted.is_finite() {
-                opts.max_steiner = 8 * input.points.len() + 100_000 + wanted.min(1.0e8) as usize;
+        // One shell per apex height: volume triangles + the four side triangles of every
+        // pyramid (see `pyramid_apexes`). Without quads this runs once, on the plain input.
+        let base = p.pyramid_height.unwrap_or(DEFAULT_PYRAMID_HEIGHT);
+        let heights: &[f64] = if quads.is_empty() { &[1.0] } else { &[1.0, 0.6, 0.35] };
+        let mut last: Option<GenerateFailure> = None;
+        let mut retried_out = false;
+        for &scale in heights {
+            let mut input = plain.clone();
+            let mut keys = keys.clone();
+            let mut tri_keys = tri_keys.clone();
+            let mut tri_face = tri_face.clone();
+            if !quads.is_empty() {
+                let apexes = pyramid_apexes(&plain.points, &quads, base * scale).map_err(|(q, why)| {
+                    GenerateFailure::new(target, NAME, FailureKind::Geometry, format!("pyramid transition on {}: {why}", quad_face[q]))
+                })?;
+                // Apexes too close to each other or to foreign shell points make the pyramid
+                // shell degenerate; treat it like a recovery failure so a shallower apex is tried.
+                if let Some(why) = apex_crowding(&plain.points, &quads, &apexes, base * scale) {
+                    last = Some(GenerateFailure::new(target, NAME, FailureKind::Geometry, format!("pyramid transition: {why}")));
+                    retried_out = false;
+                    continue;
+                }
+                for (q, ap) in apexes.iter().enumerate() {
+                    let key = NodeKey::new(owner, q as u32);
+                    let id = input.points.len() as u32;
+                    input.points.push(*ap);
+                    keys.push(key);
+                    let (v, kq) = (quads[q], quad_keys[q]);
+                    for e in 0..4 {
+                        input.tris.push([v[e], v[(e + 1) % 4], id]);
+                        tri_keys.push([kq[e], kq[(e + 1) % 4], key]);
+                        tri_face.push(quad_face[q]);
+                    }
+                }
+            }
+            if let Some(c) = const_size {
+                // The default Steiner budget scales with the boundary; a constant size that is fine
+                // against a coarse boundary needs room for the interior points (about one per six
+                // tets, a regular tet of edge `c` having volume c^3 / (6 sqrt 2)).
+                let vol = input.tris.iter().map(|t| signed_volume6(t.map(|i| input.points[i as usize]))).sum::<f64>().abs() / 6.0;
+                let wanted = 2.0 * vol / (c * c * c * 0.1179 * 6.0);
+                if wanted.is_finite() {
+                    opts.max_steiner = 8 * input.points.len() + 100_000 + wanted.min(1.0e8) as usize;
+                }
+            }
+            match tetrahedralize(&input, &opts) {
+                Ok(mesh) if !quads.is_empty() && !tets_positive(&mesh, &quads, &plain.points) => {
+                    last = Some(GenerateFailure::new(
+                        target,
+                        NAME,
+                        FailureKind::Geometry,
+                        "pyramid transition: pyramid apex height too large, the tetrahedralization has a non-positive or degenerate tet (apexes too close to other apexes or faces)".to_owned(),
+                    ));
+                    retried_out = false;
+                }
+                Ok(mesh) => return Ok(build_patch(target, owner, &mesh, &keys, &tri_face, n_ref, &quads)),
+                Err(e) => {
+                    let retry = matches!(e, TetError::RecoveryFailed { .. } | TetError::SelfIntersection { .. } | TetError::InvertedShell { .. });
+                    last = Some(explain(&e, target, &input, &tri_keys, &tri_face, &keys));
+                    retried_out = retry;
+                    if !retry {
+                        break;
+                    }
+                }
             }
         }
-        let mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
-        Ok(build_patch(target, owner, &mesh, &keys, &tri_face))
+        // With pyramids the failure is usually the apex leaving a thin volume, which a different
+        // scheme can fix: type it `Geometry` so the replan loop may fall back (D5).
+        match last {
+            Some(mut f) if !quads.is_empty() && f.kind == FailureKind::Internal && retried_out => {
+                f.kind = FailureKind::Geometry;
+                f.reason = format!(
+                    "pyramid transition failed: pyramid apex height exceeds the local thickness of the volume; lower pyramid_height or use transition none ({})",
+                    f.reason
+                );
+                Err(f)
+            }
+            Some(f) => Err(f),
+            None => Err(fail("no attempt ran".into())),
+        }
     }
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+
+/// Apex of the pyramid on each outward-ordered quad: the centroid moved by `hfac` times the mean
+/// edge length against the outward normal `(c - a) x (d - b)` (into the volume). A quad whose
+/// normal vanishes or whose apex would make any corner tetrahedron of the pyramid non-positive
+/// (a bow-tie or strongly warped quad) is rejected with its index and the reason.
+fn pyramid_apexes(points: &[[f64; 3]], quads: &[[u32; 4]], hfac: f64) -> Result<Vec<[f64; 3]>, (usize, String)> {
+    let mut out = Vec::with_capacity(quads.len());
+    for (qi, q) in quads.iter().enumerate() {
+        let v = q.map(|i| points[i as usize]);
+        let n = cross(sub(v[2], v[0]), sub(v[3], v[1]));
+        let nl = norm(n);
+        let mean_edge = (0..4).map(|e| norm(sub(v[(e + 1) % 4], v[e]))).sum::<f64>() / 4.0;
+        if !(nl > 0.0 && mean_edge > 0.0 && nl.is_finite()) {
+            return Err((qi, "degenerate quad (zero area)".to_owned()));
+        }
+        let c = [0, 1, 2].map(|k| (v[0][k] + v[1][k] + v[2][k] + v[3][k]) / 4.0);
+        let h = hfac * mean_edge;
+        let apex = [0, 1, 2].map(|k| c[k] - h * n[k] / nl);
+        // The apex must see every corner triangle of the base on its inner side.
+        for e in 0..4 {
+            let (a, b, d) = (v[e], v[(e + 1) % 4], v[(e + 3) % 4]);
+            let vol = dot(cross(sub(b, a), sub(d, a)), sub(apex, a));
+            if vol >= -1e-12 * mean_edge * mean_edge * mean_edge {
+                return Err((qi, format!("the quad is not convex enough for a pyramid (corner {e})")));
+            }
+        }
+        out.push(apex);
+    }
+    Ok(out)
+}
+
+/// Minimum clearance of an apex, as a fraction of its own height, from every other apex and from
+/// every shell point outside its own base.
+const APEX_CLEARANCE: f64 = 0.5;
+
+/// First apex that sits closer than `APEX_CLEARANCE * h` to another apex or a foreign shell
+/// point, as a message. Sorted-by-x sweep, so near-linear for ordinary shells.
+fn apex_crowding(points: &[[f64; 3]], quads: &[[u32; 4]], apexes: &[[f64; 3]], hfac: f64) -> Option<String> {
+    let dist2 = |a: [f64; 3], b: [f64; 3]| (0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum::<f64>();
+    let mut cand: Vec<([f64; 3], Option<usize>, u32)> = points.iter().enumerate().map(|(i, p)| (*p, None, i as u32)).collect();
+    cand.extend(apexes.iter().enumerate().map(|(q, a)| (*a, Some(q), q as u32)));
+    cand.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+    let xs: Vec<f64> = cand.iter().map(|c| c.0[0]).collect();
+    for (q, a) in apexes.iter().enumerate() {
+        let v = quads[q].map(|i| points[i as usize]);
+        let mean_edge = (0..4).map(|e| dist2(v[(e + 1) % 4], v[e]).sqrt()).sum::<f64>() / 4.0;
+        let r = APEX_CLEARANCE * hfac * mean_edge;
+        let lo = xs.partition_point(|&x| x < a[0] - r);
+        for c in cand[lo..].iter().take_while(|c| c.0[0] <= a[0] + r) {
+            let own = match c.1 {
+                Some(o) => o == q,
+                None => quads[q].contains(&c.2),
+            };
+            if !own && dist2(c.0, *a) < r * r {
+                return Some(format!(
+                    "pyramid apex height exceeds the local thickness: apex of quad {q} lies within {APEX_CLEARANCE} of its height from another apex or shell point; lower pyramid_height or use transition none"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Every output tet has a clearly positive volume relative to the pyramid base scale.
+fn tets_positive(mesh: &TetMesh, quads: &[[u32; 4]], points: &[[f64; 3]]) -> bool {
+    let d = |a: [f64; 3], b: [f64; 3]| norm(sub(a, b));
+    let scale = quads.iter().map(|q| (0..4).map(|e| d(points[q[(e + 1) % 4] as usize], points[q[e] as usize])).sum::<f64>() / 4.0).fold(f64::INFINITY, f64::min);
+    let tol = 1e-9 * scale * scale * scale;
+    mesh.tets.iter().all(|t| {
+        let p = t.map(|i| mesh.points[i as usize]);
+        dot(cross(sub(p[1], p[0]), sub(p[2], p[0])), sub(p[3], p[0])) > tol
+    })
 }
 
 /// Six times the signed volume of the cone from the origin over a triangle.
@@ -365,19 +575,29 @@ fn note_of(d: &QualityDiagnostic, owner: EntityId, tri_face: &[EntityId]) -> Sch
     SchemeNote::new(Point3::new(d.position[0], d.position[1], d.position[2]), entities, metric, d.value, d.threshold, suggestion)
 }
 
-fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey], tri_face: &[EntityId]) -> Patch {
+/// `n_ref` input points are nodes of earlier waves; the following `quads.len()` are pyramid
+/// apexes (keys `(owner, 0..)`, owned by the piece); Steiner keys follow the apexes.
+fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey], tri_face: &[EntityId], n_ref: usize, quads: &[[u32; 4]]) -> Patch {
     let mut pb = PatchBuilder::new(target);
     let mut local: Vec<u32> = Vec::with_capacity(mesh.points.len());
     for (i, p) in mesh.points.iter().enumerate() {
-        if i < mesh.n_input {
+        if i < n_ref {
             local.push(pb.refer(keys[i]));
+        } else if i < mesh.n_input {
+            local.push(pb.node(keys[i], Point3::new(p[0], p[1], p[2]), Param::None));
         } else {
-            let k = (i - mesh.n_input) as u32;
+            let k = (i - n_ref) as u32;
             local.push(pb.node(NodeKey::new(owner, k), Point3::new(p[0], p[1], p[2]), Param::None));
         }
     }
     for t in &mesh.tets {
         pb.push(ElemShape::Cell(CellShape::Tet), &t.map(|i| local[i as usize]));
+    }
+    // Pyramid template: base counter-clockwise seen from the apex, i.e. the reverse of the
+    // outward quad order.
+    for (q, v) in quads.iter().enumerate() {
+        let apex = local[n_ref + q];
+        pb.push(ElemShape::Cell(CellShape::Pyramid), &[local[v[0] as usize], local[v[3] as usize], local[v[2] as usize], local[v[1] as usize], apex]);
     }
     for d in &mesh.stats.quality_diagnostics {
         pb.note(note_of(d, owner, tri_face));
@@ -389,6 +609,32 @@ fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey]
 mod tests {
     use super::*;
     use sm_core::EntityKind;
+
+    #[test]
+    fn apex_of_a_cylinder_quad_lies_inside_and_a_bow_tie_is_rejected() {
+        // A quad on the unit cylinder x^2 + y^2 = 1, 20 degrees wide, outward order, outward
+        // normal +radial: the apex must be nearer the axis than the surface.
+        let t = 10f64.to_radians();
+        let p = |a: f64, z: f64| [a.cos(), a.sin(), z];
+        // (a, b, c, d) counter-clockwise seen from outside: z up first, then angle up.
+        let pts = vec![p(-t, 0.0), p(t, 0.0), p(t, 0.2), p(-t, 0.2)];
+        let apex = pyramid_apexes(&pts, &[[0, 1, 2, 3]], 0.6).expect("a smooth quad is accepted")[0];
+        assert!((apex[0] * apex[0] + apex[1] * apex[1]).sqrt() < 1.0, "apex {apex:?} is outside the cylinder");
+        // Exactly h = 0.6 * mean edge below the centroid along -normal.
+        let mean_edge = {
+            let d = |i: usize, j: usize| norm(sub(pts[i], pts[j]));
+            (d(0, 1) + d(1, 2) + d(2, 3) + d(3, 0)) / 4.0
+        };
+        let c = [0, 1, 2].map(|k| pts.iter().map(|q| q[k]).sum::<f64>() / 4.0);
+        let h = norm(sub(c, apex));
+        assert!((h - 0.6 * mean_edge).abs() < 1e-12, "h {h}");
+        // A bow-tie (swapped corners) has no consistent inward side: typed rejection, no panic.
+        let bow = vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert!(pyramid_apexes(&bow, &[[0, 1, 2, 3]], 0.6).is_err());
+        // A zero-area quad too.
+        let flat = vec![[0.0; 3]; 4];
+        assert!(pyramid_apexes(&flat, &[[0, 1, 2, 3]], 0.6).is_err());
+    }
 
     #[test]
     fn recovery_failure_names_the_face_and_carries_the_triangle_keys() {

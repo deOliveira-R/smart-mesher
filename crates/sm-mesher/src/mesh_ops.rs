@@ -264,10 +264,12 @@ pub(crate) fn ignored_volume_requests(
 pub(crate) fn size_field(
     cfg: &MesherConfig,
     intent: &MeshIntent,
+    view: &dyn TopologyView,
+    targets: &[EntityId],
 ) -> Result<Option<Box<dyn SizeField>>, OpError> {
-    match (cfg.size_fields(), &intent.defaults.sizing) {
-        (Some(build), Some(spec)) => build(spec).map_err(failed),
-        _ => Ok(None),
+    match &intent.defaults.sizing {
+        Some(spec) => cfg.build_size_field(view, targets, spec).map_err(failed),
+        None => Ok(None),
     }
 }
 
@@ -336,7 +338,7 @@ impl TypedOp for MeshRun {
             }
         }
 
-        let field = size_field(&cfg, &intent)?;
+        let field = size_field(&cfg, &intent, model.topo(), &targets)?;
         let driver = make_driver(&cfg, field.as_deref(), faces, targets.len());
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
         // Plan once; the driver enforces the cell budget on this plan and every re-plan

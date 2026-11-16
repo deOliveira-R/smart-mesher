@@ -48,14 +48,14 @@ pub fn size_field(spec: &SizingSpec) -> Result<Option<Box<dyn SizeField>>, Schem
     }
 }
 
-fn num(p: &Value, key: &str) -> Result<f64, String> {
+pub(crate) fn num(p: &Value, key: &str) -> Result<f64, String> {
     p.get(key)
         .and_then(Value::as_f64)
         .filter(|x| x.is_finite())
         .ok_or_else(|| format!("`{key}` must be a finite number"))
 }
 
-fn pos(p: &Value, key: &str) -> Result<f64, String> {
+pub(crate) fn pos(p: &Value, key: &str) -> Result<f64, String> {
     let x = num(p, key)?;
     if x > 0.0 { Ok(x) } else { Err(format!("`{key}` must be positive, got {x}")) }
 }

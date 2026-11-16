@@ -606,3 +606,34 @@ neighbour adjacency exposure on `TetMesh`, higher-order tets, tet-to-polyhedron 
 gate (needs the bulk commit), automatic scheme selection. Also untested here: `PartitionCell`
 pieces (the adapter reads `boundary(piece)` for the face sides and owns Steiner nodes by the
 piece; only `TopoVolume` pieces have a fixture in the W3a stage 0 set).
+
+## W4-HEX-PYR: hex-tet transition by pyramids
+
+**Spike (R3), result: no `GenCtx` change needed.** `GenCtx::surface_patch(face)` already returns
+the earlier wave's patch with its `ElemShape::Quad` elements and canonical `NodeKey`s, and a
+volume patch may contain `Cell(Pyramid)` next to `Cell(Tet)`. The planner half is the existing
+Soft-yields-to-Hard rule. No `sm-scheme-api` ACR.
+
+Behaviour (`tetmesh` params, both optional, absent from the serialised params when unset so
+every existing plan hash is unchanged):
+- `transition: "pyramid"` (default `none`): TRI becomes a Soft requirement on the bounding faces
+  and `caps` reports `TET | PYRAMID`. A face that stays triangles is meshed as before; a quad of
+  a hex neighbour (Hard QUAD wins in the planner) becomes the base of one pyramid.
+- Apex: centroid minus `h` times the unit normal `(c-a) x (d-b)` (outward for the volume), `h =
+  pyramid_height * mean edge` (default 0.6, range 0.2..=2). The apex is rejected (`FailureKind::
+  Geometry`, so the driver may re-plan) when the quad has no area or any corner tetrahedron of the
+  pyramid is not positive. If the tet recovery fails with the shell, the fill retries with 0.6 and
+  0.35 times `h`; the last error is reported as before (`Internal`, with node keys).
+- Shell: volume triangles plus the four side triangles of every pyramid (normals into the
+  pyramid); apexes are extra input points with keys `(piece, 0..n_pyr)`; Steiner keys follow them.
+  The pyramid base nodes are the neighbour's nodes, so the interface is conforming by
+  construction. Pyramid node order is the reverse of the outward quad order (apex last).
+- Without quads the code path equals the old one (a lone brick with `pyramid` hashes equal to
+  `none`).
+
+Measured (hex brick `[0,1]^3` n^3 hexes against tet brick `[1,2]x[0,1]^2`, size 1/n, h = 0.6 s):
+n=2: 4 pyramids, 127 tets, min SJ pyramid 0.915, tet 0.450; n=3: 9 / 337 /
+0.915 / 0.302; n=4: 16 / 766 / 0.915 / 0.391 (hexes 64, SJ 1.000); n=5: 25 / 1376 / 0.915 / 0.344.
+Pyramid volume equals `s^2 h / 3` to 1e-12; total volume 2 to 1e-12.
+
+Not here: the exporter rows (Gmsh, VTU, OpenFOAM, Exodus) and B6 live in other crates.

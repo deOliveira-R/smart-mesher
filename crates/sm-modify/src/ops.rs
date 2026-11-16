@@ -1,4 +1,5 @@
-//! Op `mesh.refine`: uniform refinement into a new, linked mesh.
+//! Ops `mesh.refine`, `mesh.thex` and `mesh.tquad`: uniform refinement and tet-to-hex / tri-to-quad
+//! conversion into new, linked meshes.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,11 +11,12 @@ use sm_mesh_api::{CatalogEdit, LevelMap, MeshDim, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_quality::{Metric, Options, compute_many};
 
-use crate::refine::{RefineError, refine};
+use crate::refine::{RefineError, Rule, pass};
 
 /// A level warns (`refine.quality`) when its minimum scaled Jacobian is below this factor times the
-/// parent's. Measured on the default-mesher pin (boundary-hugging corner cells): 0.54, 0.51, 0.50
-/// per level, so 0.6 catches that and stays quiet for the 0.7 of a tet octahedron cut.
+/// parent's. Measured on the forced-pave pin (boundary-hugging corner cells, ruling D11: the default
+/// pin takes the O-grid and keeps 0.7071): 0.54, 0.51, 0.50 per level, so 0.6 catches that and stays
+/// quiet for the 0.7 of a tet octahedron cut.
 pub const QUALITY_DROP_FACTOR: f64 = 0.6;
 
 /// Most levels one `mesh.refine` call may add (each is 8 times the cells).
@@ -80,7 +82,7 @@ fn refuse(e: RefineError) -> OpError {
 }
 
 /// `(min scaled Jacobian, total volume)` of a mesh, `None` where the metrics fail.
-fn quality(m: &dyn MeshRead) -> (Option<f64>, Option<f64>) {
+pub(crate) fn quality(m: &dyn MeshRead) -> (Option<f64>, Option<f64>) {
     match compute_many(m, &[Metric::ScaledJacobian, Metric::Volume], &Options::default()) {
         Ok(t) => {
             let sj = t.columns[0].iter().copied().filter(|x| x.is_finite()).fold(f64::INFINITY, f64::min);
@@ -96,12 +98,31 @@ impl TypedOp for Refine {
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let source = ctx.resolve_kind(self.mesh, EntityKind::Mesh)?;
         let levels = self.levels.unwrap_or(1);
         if !(1..=MAX_LEVELS).contains(&levels) {
             return Err(OpError::Invalid(format!("levels must be 1..={MAX_LEVELS}, got {levels}")));
         }
-        let keep = self.keep_source != Some(false);
+        drive(ctx, self.mesh, levels, self.keep_source != Some(false), self.project != Some(false), Rule::Uniform)
+    }
+}
+
+/// Run `levels` passes of `rule` from `mesh`, each into a new linked mesh entry (the body of
+/// `mesh.refine`, `mesh.thex` and `mesh.tquad`).
+pub(crate) fn drive(
+    ctx: &mut ApplyCtx<'_>,
+    mesh: EntityId,
+    levels: u32,
+    keep: bool,
+    project: bool,
+    rule: Rule,
+) -> Result<(), OpError> {
+    let (c_report, c_proj) = match rule {
+        Rule::Uniform => ("refine.report", "refine.projection"),
+        Rule::TetToHex => ("thex.report", "thex.projection"),
+        Rule::TriToQuad => ("tquad.report", "tquad.projection"),
+    };
+    {
+        let source = ctx.resolve_kind(mesh, EntityKind::Mesh)?;
         let (mut cur, selection, plan, quanta, stale) = {
             let layer = ctx.layer::<MeshLayer>()?;
             let e = layer.get(source).ok_or(OpError::UnknownEntity(source))?;
@@ -109,7 +130,6 @@ impl TypedOp for Refine {
         };
         let model = ctx.layer::<ModelLayer>()?.clone();
         let topo = Some(model.topo());
-        let project = self.project != Some(false);
         let mut prev = source;
         for level in 1..=levels {
             ctx.step(u64::from(level - 1), u64::from(levels), "refining")?;
@@ -117,7 +137,7 @@ impl TypedOp for Refine {
             let mut alloc: SerialAlloc = alloc0.clone();
             let src = cur.as_read();
             let builder = if src.dim() == MeshDim::Two { MeshBuilder::surface() } else { MeshBuilder::new() };
-            let r = refine(src, topo, project, builder, &mut alloc).map_err(refuse)?;
+            let r = pass(src, topo, project, rule, builder, &mut alloc).map_err(refuse)?;
             let map = LevelMap::new(&r.finished.mesh, src, r.coarse_of, Some(r.face_map))
                 .map_err(|e| OpError::Failed(e.to_string()))?;
             let (sj0, vol0) = quality(src);
@@ -140,10 +160,10 @@ impl TypedOp for Refine {
                 "volume_parent": vol0, "volume": vol1,
                 "min_scaled_jacobian_parent": sj0, "min_scaled_jacobian": sj1,
             });
-            ctx.info("refine.report", report.to_string(), &[new]);
+            ctx.info(c_report, report.to_string(), &[new]);
             if s.projection_failed + s.projection_rejected > 0 {
                 ctx.warn(
-                    "refine.projection",
+                    c_proj,
                     format!(
                         "level {level}: {} new boundary node(s) kept their straight position ({} where the projection failed, {} where it would have inverted a cell)",
                         s.projection_failed + s.projection_rejected,
@@ -154,6 +174,7 @@ impl TypedOp for Refine {
                 );
             }
             if let (Some(a), Some(b)) = (sj0, sj1)
+                && rule == Rule::Uniform
                 && a > 0.0
                 && b < QUALITY_DROP_FACTOR * a
             {
@@ -185,5 +206,82 @@ impl TypedOp for Refine {
             retire_mesh(ctx, source)?;
         }
         Ok(())
+    }
+}
+
+/// `mesh.thex`: convert a tetrahedral mesh into a hexahedral one, every tet into 4 hexes (one per
+/// corner, joining the corner, its 3 edge midpoints, 3 face centres and the tet centroid).
+///
+/// Always conformal: every face is subdivided the same way, so a deck pair is split identically
+/// by construction. Each hex has exactly V/4 of its tet (an affine image of the regular case) but
+/// poor angles; the result is a new mesh entry linked to the source by a `LevelMap` with a face
+/// map. Classification, sets, blocks and cell tags carry over as in `mesh.refine`; new nodes on a
+/// curved model face or edge are projected unless that would invert a cell (`project: false`
+/// keeps straight midpoints). The `thex.report` diagnostic carries counts, volumes and the minimum
+/// scaled Jacobian of source and result.
+///
+/// Refused with `OpError::Invalid`: any cell that is not a tet.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Thex {
+    /// The tetrahedral mesh to convert.
+    #[schemars(extend("x-entity-kind" = ["Mesh"]))]
+    pub mesh: EntityId,
+    /// Keep the source mesh entry (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_source: Option<bool>,
+    /// Project new boundary nodes onto the model geometry (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<bool>,
+}
+
+impl TypedOp for Thex {
+    const NAME: &'static str = "mesh.thex";
+    const OUTPUTS: &'static [OutputRole] = &[OutputRole::new(
+        "mesh",
+        &[EntityKind::Mesh],
+        Cardinality::Many,
+        "the hexahedral mesh",
+    )];
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        drive(ctx, self.mesh, 1, self.keep_source != Some(false), self.project != Some(false), Rule::TetToHex)
+    }
+}
+
+/// `mesh.tquad`: convert a triangle mesh into a quad mesh, every triangle into 3 quads (one per
+/// corner, joining the corner, two edge midpoints and the centroid).
+///
+/// Always conformal; each quad has exactly A/3 of its triangle. The result is a new mesh entry
+/// linked to the source by a `LevelMap`; classification, sets and tags carry over as in
+/// `mesh.refine`. The `tquad.report` diagnostic carries counts, areas and the minimum scaled
+/// Jacobian of source and result.
+///
+/// Refused with `OpError::Invalid`: any cell that is not a triangle.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tquad {
+    /// The triangle mesh to convert.
+    #[schemars(extend("x-entity-kind" = ["Mesh"]))]
+    pub mesh: EntityId,
+    /// Keep the source mesh entry (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_source: Option<bool>,
+    /// Project new boundary nodes onto the model geometry (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<bool>,
+}
+
+impl TypedOp for Tquad {
+    const NAME: &'static str = "mesh.tquad";
+    const OUTPUTS: &'static [OutputRole] = &[OutputRole::new(
+        "mesh",
+        &[EntityKind::Mesh],
+        Cardinality::Many,
+        "the quadrilateral mesh",
+    )];
+
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        drive(ctx, self.mesh, 1, self.keep_source != Some(false), self.project != Some(false), Rule::TriToQuad)
     }
 }

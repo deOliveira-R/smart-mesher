@@ -26,7 +26,7 @@ use core::f64::consts::TAU;
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{ParametricSurface, Uv};
 use sm_scheme_api::{GenCtx, NodeKey, SizeField};
-use sm_topo_api::{Carrier, CellFlags, Sense, TopologyViewExt};
+use sm_topo_api::{CellFlags, Sense, TopologyViewExt};
 
 /// One node of a lifted boundary loop.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -239,12 +239,12 @@ impl<'a> FaceChart<'a> {
         if loops.is_empty() {
             return Err(TriError::Degenerate("face has no boundary nodes".into()));
         }
-        let (surface, flip) = match topo.carrier(face) {
-            Carrier::Surface(sc) => (
+        let (surface, flip) = match topo.composite_surface(face) {
+            Some(sc) => (
                 topo.shapes().surface(sc.surface),
                 if sc.sense == Sense::Reversed { -1.0 } else { 1.0 },
             ),
-            _ => (None, 1.0),
+            None => (None, 1.0),
         };
         // Positions of the boundary nodes (also for the default size).
         let mut pos: Vec<Vec<Point3>> = Vec::new();

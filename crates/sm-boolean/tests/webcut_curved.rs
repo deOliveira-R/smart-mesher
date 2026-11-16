@@ -321,10 +321,53 @@ fn sphere_crossing_near_an_arc_extreme_still_cuts() {
     }
 }
 
+/// The 8 plane-cut-cylinder plus sphere-bite cases that used to return `Ok` with an empty inside
+/// piece (the surface intersection misses a bite of a few 1e-3): each is now a typed
+/// `TangentContact` (or a real cut), never a silent no-cut.
+#[test]
+fn tiny_sphere_bites_after_a_plane_cut_are_never_silent() {
+    let cases = [
+        ([1.0, 0.0], 0.3, 0.002, [0.0, -1.0]),
+        ([1.0, 0.0], 0.3, 0.002, [0.0, 1.0]),
+        ([1.0, 0.0], 0.3, 0.01, [0.0, -1.0]),
+        ([1.0, 0.0], 0.2, 0.002, [0.0, 1.0]),
+        ([1.0, -0.6], 0.2, 0.002, [0.0, 1.0]),
+        ([1.0, -0.6], 0.1, 0.002, [-1.0, 0.0]),
+        ([0.3, 1.0], 0.5, 0.002, [-1.0, 0.0]),
+        ([1.0, 0.5], 0.3, 0.002, [0.0, -1.0]),
+    ];
+    let mut refused = 0;
+    for (n, off, delta, dir) in cases {
+        match plane_then_sphere(n, off, delta, dir) {
+            Ok(v) => assert!(
+                v > 1e-9,
+                "silent no-cut for {n:?} {off} {delta} {dir:?}: inside volume {v:e}"
+            ),
+            Err(sm_boolean::BooleanError::TangentContact { .. }) => refused += 1,
+            Err(e) => panic!("{n:?} {off} {delta} {dir:?}: unexpected {e}"),
+        }
+    }
+    assert!(refused > 0, "the tiny bites are refused as tangent contact");
+}
+
+/// A sphere that clears the target stays a quiet no-op (the graze check has no false positive
+/// on a cylinder whose plane-cut face the sphere crosses far from the face).
+#[test]
+fn a_clear_sphere_after_a_plane_cut_is_untouched() {
+    let v = plane_then_sphere([1.0, 0.0], 0.3, -0.5, [0.0, 1.0]);
+    assert!(matches!(v, Ok(x) if x.abs() < 1e-9), "{v:?}");
+}
+
 /// The degenerate split reaches `ResultInvalid` end to end (not the coincident-boundary text).
 #[test]
 fn degenerate_split_is_result_invalid_end_to_end() {
-    let e = plane_then_sphere([1.0, 0.37], 0.3, 0.03, [core::f64::consts::FRAC_1_SQRT_2; 2]).unwrap_err();
+    let e = plane_then_sphere(
+        [1.0, 0.37],
+        0.3,
+        0.03,
+        [core::f64::consts::FRAC_1_SQRT_2; 2],
+    )
+    .unwrap_err();
     assert!(
         matches!(
             e,

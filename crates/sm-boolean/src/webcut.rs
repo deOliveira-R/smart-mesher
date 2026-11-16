@@ -656,7 +656,11 @@ fn sphere_clear_of<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) 
         // The box comes from edge samples (8 intervals), so an arc can bulge past it by up to
         // ~0.08 of its radius, itself under half the box size: pad by 10% of the diagonal.
         // Surfaces whose interior can bulge past their edges decline the shortcut.
-        if let Carrier::Surface(sc) = view.carrier(f) {
+        // A face that is not a plain surface (virtual, no carrier) declines too.
+        let Carrier::Surface(sc) = view.carrier(f) else {
+            return None;
+        };
+        {
             use sm_geom_api::SurfaceDef as D;
             if !matches!(
                 view.shapes().surface_def(sc.surface),
@@ -692,6 +696,36 @@ fn sphere_clear_of<V: TopologyView + ?Sized>(view: &V, v: EntityId, s: &Sphere) 
     } else {
         None
     }
+}
+
+/// A face of `v` that the sphere `s` reaches or grazes although the surface intersection found
+/// nothing: the sphere centre's nearest point on the face's surface lies within `s.radius` (plus
+/// the model tolerance) and on the face, or within the radius of the cap that the sphere cuts
+/// from that surface (`sqrt(R^2 - d^2)`) of its boundary. `None` if every face is clear.
+fn sphere_reaches_face<V: TopologyView + ?Sized>(
+    view: &V,
+    v: EntityId,
+    s: &Sphere,
+) -> Result<Option<EntityId>, BooleanError> {
+    let tol = view.tolerance().linear;
+    let cache = faceclass::FaceCache::new();
+    for &f in view.volume_faces(v) {
+        let Some((surf, _)) = geo::face_surface(view, f) else {
+            return Err(BooleanError::Unsupported("a face has no surface"));
+        };
+        let pr = surf.project(s.frame.origin, None)?;
+        let p = surf.eval(pr.uv);
+        let d = geo::dist(p, s.frame.origin);
+        if d > s.radius + tol {
+            continue;
+        }
+        let cap = (s.radius * s.radius - d * d).max(0.0).sqrt();
+        let (class, _) = faceclass::classify(view, &cache, f, p, tol)?;
+        if class != sm_topo_api::PointClass::Out || faceclass::boundary_distance(view, f, p) <= cap + tol {
+            return Ok(Some(f));
+        }
+    }
+    Ok(None)
 }
 
 /// The error for a split that left no inside piece, outside piece or cap. Fragments that lie on
@@ -782,6 +816,16 @@ fn split_closed<E: TopologyEdit + ?Sized>(
     {
         // Disjoint, or the volume lies wholly inside the tool.
         let positive = all(&im.class_a, Class::Out);
+        if positive && let SurfaceDef::Sphere(s) = def {
+            // The surface intersection can miss a tiny bite (a rim grazed by a few 1e-3): a
+            // sphere that reaches a face must not pass for a disjoint one.
+            if let Some(face) = sphere_reaches_face(&*topo, v, s)? {
+                return Err(BooleanError::TangentContact {
+                    entity: face,
+                    detail: "the sphere reaches the face but the intersection is too small to resolve",
+                });
+            }
+        }
         topo.kill_cascade(tb.body)?;
         return Ok(Closed::Untouched(positive));
     }
@@ -1510,5 +1554,45 @@ mod tests {
                 matches!(degenerate_split(v, &plain, &[row(c)]), BooleanError::Unsupported(m) if m.contains("coincides"))
             );
         }
+    }
+
+    /// The box shortcut answers on the host (a far sphere is clear of a brick half) and declines
+    /// on a view where a face of the volume has no plain surface (a virtual composite).
+    #[test]
+    fn sphere_clear_of_declines_for_a_composite_face() {
+        use sm_geom_api::{CurveDef, Interval, Line};
+        use sm_topo_api::{
+            CellComplex, FaceCut, InnerLoopAssign, OpId, Overlay, Sense, TopologyEdit, fixtures,
+        };
+        use std::sync::Arc;
+        let mut t = CellComplex::new();
+        let b = fixtures::with_op(&mut t, OpId(1), |t| {
+            fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])
+        })
+        .unwrap();
+        // The top face split by a chord into two coplanar halves, both in the one volume.
+        let halves = fixtures::with_op(&mut t, OpId(2), |t| {
+            let line = Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap();
+            let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(line)).unwrap();
+            let chord = t.make_edge(
+                b.vertices[4],
+                b.vertices[7],
+                Some(CurveCarrier {
+                    curve,
+                    range: Interval::new(0.0, 2f64.sqrt()),
+                    sense: Sense::Forward,
+                }),
+            )?;
+            Ok(t.split_face(b.faces[5], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+        })
+        .unwrap();
+        let far = Sphere::new(Frame::from_z(Point3::new(9.0, 9.0, 9.0), Vector3::new(0.0, 0.0, 1.0)).unwrap(), 1.0).unwrap();
+        let vol = b.volume;
+        assert_eq!(sphere_clear_of(&t, vol, &far), Some(true));
+        let host: Arc<dyn TopologyView> = Arc::new(t);
+        let mut ov = Overlay::new(host);
+        let vf = ov.composite_faces(&halves).unwrap();
+        assert!(ov.volume_faces(vol).contains(&vf), "the composite is a face of the volume");
+        assert_eq!(sphere_clear_of(&ov, vol, &far), None);
     }
 }

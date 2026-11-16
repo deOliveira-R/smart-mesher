@@ -40,6 +40,10 @@ class MeshOps:
         """`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.
         Output `set` (optional, MeshSet): the new cell set; absent when nothing was flagged"""
 
+    def htet(self, *, cell_set: str | None = ..., closure: Literal['polyhedral', 'whole'] | None = ..., keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
+        """`mesh.htet`: split hexes, wedges and pyramids into tetrahedra, conformally and without any propagation: every quad is cut along the diagonal through its lowest-ranked corner, so neighbouring cells agree by construction (Dompierre, Labbe, Vallet, Camarero 1999). A hex gives 5 or 6 tets, a wedge 3, a pyramid 2; vertices keep their indices and no point is added.
+        Output `mesh` (many, Mesh): the converted mesh"""
+
     def interval_relation(self, *, a: Sequence[EntityId | str], b: Sequence[EntityId | str], ratio: int | None = ..., relation: Literal['eq', 'le', 'ge'] | None = ...) -> ApplyResult:
         """`mesh.interval_relation`: a relative interval between curves, `sum(a) rel ratio * sum(b)`."""
 
@@ -49,9 +53,17 @@ class MeshOps:
     def preserve_volume(self, *, curves: Sequence[EntityId | str] | None = ..., mesh: EntityId | str, surfaces: Sequence[EntityId | str] | None = ...) -> ApplyResult:
         """`mesh.preserve_volume`: move the nodes classified on circular edges (`curves`), or on circular cylinder faces (`surfaces`), radially to the equal-area radius, so that the linear mesh of each round region has the exact volume of the cylinder it approximates. Opt-in; recorded in the history and replayed as an op (no strategy is consulted); deterministic; the node count and every id stay."""
 
+    def qtri(self, *, cell_set: str | None = ..., keep_source: bool | None = ..., mesh: EntityId | str, mode: Literal['two', 'four'] | None = ...) -> ApplyResult:
+        """`mesh.qtri`: split the quads of a surface mesh into triangles, either 2 per quad along the diagonal through the lowest-indexed corner (`mode: "two"`, default; deck pairs are not considered on surface meshes) or 4 per quad around a new centroid vertex (`mode: "four"`, each triangle has A/4 of a parallelogram). Triangles pass through. `cell_set` names the quads to split (default all).
+        Output `mesh` (many, Mesh): the converted mesh"""
+
     def refine(self, *, keep_source: bool | None = ..., levels: int | None = ..., mesh: EntityId | str, project: bool | None = ...) -> ApplyResult:
         """`mesh.refine`: refine a mesh uniformly into new, finer, independent mesh entries.
         Output `mesh` (many, Mesh): the refined meshes, coarsest first"""
+
+    def refine_local(self, *, balance: bool | None = ..., cell_set: str | None = ..., keep_source: bool | None = ..., levels: int | None = ..., mesh: EntityId | str, project: bool | None = ..., tag: str | None = ..., threshold: float | None = ...) -> ApplyResult:
+        """`mesh.refine_local`: split the selected hexes of a volume mesh into 8 (or 64, 512 with `levels`) children and keep the mesh conformal without transition elements: a neighbour that meets a refined cell gains the split sub-faces of the shared face and the hanging edge nodes on its other faces, and becomes a polyhedron (the OpenFOAM `hexRef8` idea, native here because the cell is a polyhedron). The 3x3x3 block with its centre hex refined gives 8 children, 6 face neighbours with 9 faces each (4 of their side faces become 5-vertex polygons), 12 edge neighbours with 6 faces (2 of them 5-vertex), 8 untouched corner hexes and `64 + 19` vertices.
+        Output `mesh` (many, Mesh): the locally refined mesh"""
 
     def run(self, *, targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.run`: mesh whole volumes, or faces only, with the driver and store the result as one mesh.
@@ -66,9 +78,17 @@ class MeshOps:
     def smooth(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., set: str | None = ..., tolerance: float | None = ...) -> ApplyResult:
         """`mesh.smooth`: smooth the nodes of a mesh in place (the mesh keeps its ids; no id is minted or retired). Boundary nodes stay on their curves and surfaces, vertices never move, and the guard refuses any move that makes an incident cell worse than `min(its ScaledJacobian, guard_floor)` or turns a positive volume non-positive."""
 
+    def thex(self, *, keep_source: bool | None = ..., mesh: EntityId | str, project: bool | None = ...) -> ApplyResult:
+        """`mesh.thex`: convert a tetrahedral mesh into a hexahedral one, every tet into 4 hexes (one per corner, joining the corner, its 3 edge midpoints, 3 face centres and the tet centroid).
+        Output `mesh` (many, Mesh): the hexahedral mesh"""
+
     def to_poly(self, *, dual: Literal['barycentric', 'circumcentric'] = ..., keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
         """`mesh.to_poly`: convert a whole tet mesh into a new polyhedral mesh.
         Output `mesh` (one, Mesh): the new polyhedral mesh"""
+
+    def tquad(self, *, keep_source: bool | None = ..., mesh: EntityId | str, project: bool | None = ...) -> ApplyResult:
+        """`mesh.tquad`: convert a triangle mesh into a quad mesh, every triangle into 3 quads (one per corner, joining the corner, two edge midpoints and the centroid).
+        Output `mesh` (many, Mesh): the quadrilateral mesh"""
 
     def unflag_cells(self, *, mesh: EntityId | str = ..., set: str) -> ApplyResult:
         """`mesh.unflag_cells`: remove the cell set `set` from a mesh."""
@@ -159,6 +179,12 @@ class ModelOps:
     def delete(self, *, bodies: Sequence[EntityId | str]) -> ApplyResult:
         """`model.delete`: delete bodies, their volumes, and every face, edge and vertex that no surviving cell uses (`kill_cascade`). All retired ids are retired in the entity table, the model tables drop the deleted volumes and faces, and `meshes` entries on a deleted volume become `stale` (they are not deleted: `mesh.delete` retires meshes)."""
 
+    def heal(self, *, entities: Sequence[EntityId | str] | None = ..., fixes: Sequence[Literal['weld', 'orient', 'close']] | None = ..., tol: float | None = ...) -> ApplyResult:
+        """`model.heal {entities?, tol?, fixes?}`: tolerant healing, tolerance first. Near gaps up to `tol` (default and maximum `linear_max`) are welded (the paired cells' tolerances are raised to the gap, then merged within them; the lowest id survives, so the other side's boundary moves by the gap, recorded as `Merged { gap }`), inside-out volumes are re-oriented, and planar open loops are closed by a plane face. Nothing else moves. `fixes` limits the run to a subset of `weld`, `orient`, `close`. Run `model.heal_check` first and `model.heal_check` again after: what remains is outside tolerant healing (collapses and defeaturing). Outputs: the surviving merged `faces`, the `closed` hole faces and the re-oriented `volumes`.
+        Output `faces` (many, TopoFace): The surviving faces of merged pairs.
+        Output `closed` (many, TopoFace): The faces created to close open loops.
+        Output `volumes` (many, TopoVolume): The volumes whose faces were reversed."""
+
     def import_openmc(self, *, geometry: Mapping[str, Any], materials: Mapping[str, Any] | None = ..., options: Mapping[str, Any] | None = ...) -> ApplyResult:
         """`model.import_openmc {geometry, materials?, options?}`: build the B-rep volumes of an OpenMC `geometry.xml` (and `materials.xml`) by space partition.
         Output `volumes` (many, TopoVolume): Intermediate: the lattice element copies the import placed (a later merge may change their faces). Read `deck_volumes`.
@@ -168,7 +194,7 @@ class ModelOps:
         Output `block` (many, Color): The volume colors that are the blocks, one per region name.
         Output `sideset` (many, Color): The face colors that are the sidesets (vacuum, reflective, white)."""
 
-    def import_step(self, *, assume_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., attributes: bool | None = ..., check: bool | None = ..., name: str | None = ..., sheets: bool | None = ..., solids: Sequence[int] | None = ..., source: Mapping[str, Any], to_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., weld_tol: float | None = ...) -> ApplyResult:
+    def import_step(self, *, assume_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., attributes: bool | None = ..., check: bool | None = ..., name: str | None = ..., repair: Literal['tolerant'] | None = ..., sheets: bool | None = ..., solids: Sequence[int] | None = ..., source: Mapping[str, Any], to_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., weld_tol: float | None = ...) -> ApplyResult:
         """`model.import_step`: read the B-rep solids of a STEP file into the model.
         Output `bodies` (many, TopoBody): One body per imported solid.
         Output `volumes` (many, TopoVolume): One volume per imported solid (none for sheets).

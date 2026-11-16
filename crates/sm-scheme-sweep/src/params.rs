@@ -34,6 +34,20 @@ pub enum Placement {
     Interpolate,
 }
 
+/// A face list that also accepts a bare id (`"source": 7` is `"source": [7]`).
+fn face_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<EntityId>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum One {
+        List(Vec<EntityId>),
+        Single(EntityId),
+    }
+    Ok(Option::<One>::deserialize(d)?.map(|o| match o {
+        One::List(v) => v,
+        One::Single(f) => vec![f],
+    }))
+}
+
 fn default_power() -> f64 {
     3.0
 }
@@ -46,12 +60,22 @@ fn default_support() -> u32 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepParams {
-    /// The source face; give both `source` and `target`, or neither.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<[EntityId; 1]>,
-    /// The target face.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<[EntityId; 1]>,
+    /// The source faces; give both `source` and `target`, or neither. One face is the 1-to-1
+    /// sweep; several are a many-to-many sweep over imprinted faces (each source face has a
+    /// target face with the vertices its columns end at). A bare id is read as a one-item list.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "face_list"
+    )]
+    pub source: Option<Vec<EntityId>>,
+    /// The target faces (as many as source faces).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "face_list"
+    )]
+    pub target: Option<Vec<EntityId>>,
     /// How the target face is produced (default `auto`).
     #[serde(default)]
     pub target_mode: TargetMode,
@@ -99,7 +123,7 @@ impl SweepParams {
     ///
     /// # Errors
     /// [`SchemeError::BadParams`] for a wrong type, an unknown field, only one of
-    /// `source`/`target`, a non-positive `shepard_power`, `layers: 0`, a non-finite
+    /// `source`/`target`, source and target lists of different lengths, a non-positive `shepard_power`, `layers: 0`, a non-finite
     /// `min_scaled_jacobian` (or one of at least 1), or `target_mode: "project"`.
     pub fn from_params(p: &Params) -> Result<Self, SchemeError> {
         let bad = |reason: String| SchemeError::BadParams {
@@ -114,6 +138,18 @@ impl SweepParams {
         let s: SweepParams = serde_json::from_value(value).map_err(|e| bad(e.to_string()))?;
         if s.source.is_some() != s.target.is_some() {
             return Err(bad("give both `source` and `target`, or neither".into()));
+        }
+        if s.source.as_ref().is_some_and(Vec::is_empty)
+            || s.target.as_ref().is_some_and(Vec::is_empty)
+        {
+            return Err(bad("`source` and `target` need at least one face".into()));
+        }
+        if let (Some(a), Some(b)) = (&s.source, &s.target)
+            && a.len() != b.len()
+        {
+            return Err(bad(format!(
+                "source faces {a:?} against target faces {b:?}: the sets differ in size, so there is no face-to-face correspondence (many-to-one sweeps are not supported)"
+            )));
         }
         if !(s.shepard_power.is_finite() && s.shepard_power > 0.0) {
             return Err(bad(format!(

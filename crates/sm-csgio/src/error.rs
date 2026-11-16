@@ -17,7 +17,8 @@ pub struct CellSource {
 pub struct PathStep {
     /// The deck cell whose `fill` was entered.
     pub cell: u32,
-    /// The lattice element `[i, j, k]` entered, when the fill is a lattice.
+    /// The lattice element `[i, j, k]` entered, when the fill is a lattice (`[q, r, k]`, centred
+    /// axial indices and layer, for a hex lattice).
     pub element: Option<[i32; 3]>,
 }
 

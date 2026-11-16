@@ -17,6 +17,7 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
+sm-model-api = { path = "../sm-model-api" }
 sm-quality = { path = "../sm-quality" }
 sm-topo-api = { path = "../sm-topo-api" }
 rayon = "1"
@@ -31,6 +32,10 @@ sm-testkit = { path = "../sm-testkit" }
 sm-server = { path = "../sm-server" }
 sm-protocol = { path = "../sm-protocol" }
 sm-engine = { path = "../sm-engine" }
+sm-rt = { path = "../sm-rt" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-meshio = { path = "../sm-meshio" }
+sm-exodus = { path = "../sm-exodus" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

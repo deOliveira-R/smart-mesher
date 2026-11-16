@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::deck::{Origin, PCell, PSurf, Placed};
 use crate::error::CsgbrepError;
-use sm_boolean::{BoolOptions, BoolRule, BooleanError, CutTool, WebcutOptions, boolean, webcut};
+use sm_boolean::{BoolOptions, BoolRule, BooleanError, CutTool, KeepSide, WebcutOptions, boolean, webcut};
 use sm_core::{EntityId, Point3, Vector3};
 use sm_csgio::ir::{BoundaryFlag, Expr, Sign};
 use sm_geom_api::{Cylinder, Frame, SurfaceDef};
@@ -37,6 +37,9 @@ pub struct BuildOptions {
     pub overlap: OverlapPolicy,
     /// Bounds `[lo, hi]` of the start box; `None` derives them from the cells.
     pub bounds: Option<([f64; 3], [f64; 3])>,
+    /// Do not report pieces no cell owns as `import.gap` (a start box that is known to be larger
+    /// than the region of the cells, as for one hexagonal lattice element).
+    pub quiet_gaps: bool,
 }
 
 /// A finding that is not an error.
@@ -198,7 +201,7 @@ struct Piece {
     signs: Signs,
 }
 
-fn kernel(what: &str, e: BooleanError) -> CsgbrepError {
+pub(crate) fn kernel(what: &str, e: BooleanError) -> CsgbrepError {
     CsgbrepError::Kernel(format!("{what}: {e}"))
 }
 
@@ -206,7 +209,7 @@ fn topo_err(e: impl core::fmt::Display) -> CsgbrepError {
     CsgbrepError::Kernel(e.to_string())
 }
 
-fn volume_of_body(topo: &dyn TopoHost, body: EntityId) -> Option<EntityId> {
+pub(crate) fn volume_of_body(topo: &dyn TopoHost, body: EntityId) -> Option<EntityId> {
     topo.boundary(body).iter().map(|i| i.cell).find(|c| topo.dim_of(*c) == Some(Dim::Volume))
 }
 
@@ -310,6 +313,44 @@ fn meets_interior(topo: &dyn TopoHost, body: EntityId, r: Reserved) -> bool {
     }
     let eps = 1e-9 * (0..3).map(|a| r.1[a] - r.0[a]).fold(0.0_f64, f64::max);
     (0..3).all(|a| lo[a] - sag < r.1[a] - eps && hi[a] + sag > r.0[a] + eps)
+}
+
+/// The bounds of the start box of one hexagonal element: the corners enlarged by 10% in the xy
+/// plane, `z` from `z` (enlarged by 10% on a side that is not an axis-aligned deck plane).
+pub fn hex_box(polygon: &[[f64; 2]; 6], z: (f64, f64, bool, bool)) -> ([f64; 3], [f64; 3]) {
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in polygon {
+        for a in 0..2 {
+            lo[a] = lo[a].min(p[a]);
+            hi[a] = hi[a].max(p[a]);
+        }
+    }
+    let m = 0.1 * (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    let zm = 0.1 * (z.1 - z.0);
+    ([lo[0] - m, lo[1] - m, if z.2 { z.0 } else { z.0 - zm }], [hi[0] + m, hi[1] + m, if z.3 { z.1 } else { z.1 + zm }])
+}
+
+/// A hexagonal prism of the corners `polygon` (counter-clockwise) between `z.0` and `z.1`: a brick
+/// cut by the six wall planes of that one hexagon (no other plane is involved, so no triple
+/// junction of a tiling is cut through).
+///
+/// # Errors
+/// `Kernel` when a cut is refused.
+pub fn hex_prism(topo: &mut dyn TopoHost, polygon: &[[f64; 2]; 6], z: (f64, f64)) -> Result<EntityId, CsgbrepError> {
+    let (lo, hi) = hex_box(polygon, (z.0, z.1, true, true));
+    let b = brick(topo, Point3::new(lo[0], lo[1], lo[2]), [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]).map_err(topo_err)?;
+    let mut body = b.body;
+    for i in 0..6 {
+        let (a, c) = (polygon[i], polygon[(i + 1) % 6]);
+        let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+        let tool = CutTool::Plane { origin: Point3::new(a[0], a[1], 0.0), normal: Vector3::new(dy, -dx, 0.0) };
+        let r = webcut(topo, &[body], &tool, &WebcutOptions { keep: KeepSide::Negative, ..WebcutOptions::default() }).map_err(|e| kernel("cutting a hexagonal prism", e))?;
+        match r.negative.as_slice() {
+            [one] => body = *one,
+            other => return Err(CsgbrepError::Kernel(format!("cutting a hexagonal prism by wall {i} gave {} bodies", other.len()))),
+        }
+    }
+    Ok(body)
 }
 
 /// Build the B-rep volumes of `placed` inside the open operation of `topo`.
@@ -464,7 +505,7 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
                 let beyond = outside.iter().any(|(s, side)| piece.signs.get(s) == Some(side));
                 let centre = moments.centroid();
                 let in_box = centre.is_none_or(|c| (0..3).all(|a| [c.x, c.y, c.z][a] > lo[a] && [c.x, c.y, c.z][a] < hi[a]));
-                if !beyond && in_box {
+                if !beyond && in_box && !opts.quiet_gaps {
                     out.notes.push(Note { code: "import.gap", message: format!("no cell contains a piece of volume {:e} near {:?}; the space between cells is not part of the model", moments.volume, centre.map(|c| [c.x, c.y, c.z])) });
                 }
                 topo.kill_cascade(piece.body).map_err(topo_err)?;
@@ -535,7 +576,7 @@ fn check_piece(topo: &dyn TopoHost, placed: &Placed, vol: EntityId, cell: &PCell
         Some(q) => {
             let mut ids = BTreeSet::new();
             surfaces_in(&cell.expr, &mut ids);
-            // Deck id 0 is an plane the lattice expansion synthesised (an array box face), not a deck surface.
+            // Deck id 0 is a plane the lattice expansion synthesised (an array box face), not a deck surface.
             let deck: Vec<u32> = ids.iter().map(|&s| placed.surfaces[s as usize].deck_id).filter(|&d| d != 0).collect::<BTreeSet<_>>().into_iter().collect();
             Err(CsgbrepError::Kernel(format!("a piece given to cell {} has a vertex at {q:?} outside its region: a cut by one of its deck surface ids {deck:?} left the piece unsplit (kernel defect, the geometry is refused instead of imported wrong)", cell.origin)))
         }
@@ -691,8 +732,9 @@ mod tests {
             ],
             cells: Vec::new(),
             lattices: Vec::new(),
+            hex_elements: Vec::new(),
         };
-        let cell = |expr: Expr| PCell { expr, name: "c".into(), origin: Origin { cell: 42, path: Vec::new() } };
+        let cell = |expr: Expr| PCell { expr, name: "c".into(), origin: Origin { cell: 42, path: Vec::new() }, core: None };
         let region = Expr::And((0..5).map(Expr::neg).collect());
         let err = check_piece(&t, &placed, vol, &cell(region)).expect_err("corners at r = 2.8 are outside the unit cylinder");
         let CsgbrepError::Kernel(msg) = err else { panic!("not a kernel error: {err:?}") };

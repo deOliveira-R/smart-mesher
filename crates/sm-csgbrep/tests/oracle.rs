@@ -259,7 +259,10 @@ fn no_point_around_the_mini3x3_h2_pins_is_in_two_volumes() {
 /// the plenum springs, 289 (1.25984^2 - 1.2203^2) ((40.52 - 37.1621) + (415.164 - 411.806)) +
 /// 264 pi 0.06459^2 (417.164 - 402.508) = 241.04409 cm3, and all materials sum to the box
 /// 21.41728^2 460 = 211001.946 cm3. The grid spacer boxes with their pin holes are covered by
-/// these two sums and by the exact fuel volume (a hole off by any amount moves one of them).
+/// these two sums and by the exact fuel volume: an end-grid hole off by more than the 1e-9 relative
+/// tolerance moves the Inconel total, the fuel volume or the box sum. The intermediate-grid
+/// Zircaloy volume is not asserted here, so a hole error confined to it is seen only by the 600
+/// oracle points.
 #[test]
 #[ignore = "slow: about 940 s in debug, 69 s in release; run with --ignored"]
 fn the_beavrs_assembly_imports_with_the_analytic_fuel_and_agrees_with_openmc() {
@@ -281,7 +284,7 @@ fn the_beavrs_assembly_imports_with_the_analytic_fuel_and_agrees_with_openmc() {
     assert!((got - inconel).abs() < 1e-9 * inconel, "Inconel 718: {got} vs analytic {inconel}");
     let (total, box_v) = (by.values().sum::<f64>(), 21.41728_f64.powi(2) * 460.0);
     assert!((total - box_v).abs() < 1e-9 * box_v, "total {total} vs box {box_v}");
-    let fuel = 264.0 * core::f64::consts::PI * 0.39218_f64.powi(2) * 365.76;
+    let fuel = 264.0 * pi * 0.39218_f64.powi(2) * 365.76;
     assert!((fuel_got - fuel).abs() < 1e-6 * fuel, "Fuel 1.6%: {fuel_got} vs analytic {fuel} ({:.1}%)", 100.0 * (fuel_got - fuel) / fuel);
     let t = compare(name, &fixture(name, "geometry.xml")).unwrap_or_else(|e| panic!("{name}: {e}"));
     assert!(t.points >= 595 && t.undecided <= 5 && t.contested == 0, "{name}: {} decided, {} undecided, {} contested", t.points, t.undecided, t.contested);

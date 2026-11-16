@@ -18,8 +18,8 @@ pub(crate) struct Lineage<'a> {
     pub nn: usize,
     /// Source edges as sorted vertex pairs; node `base_e + i` is the midpoint of edge `i`.
     pub pairs: &'a [[u32; 2]],
-    /// Whether source edge `i` lies on a model edge.
-    pub edge_on_curve: &'a [bool],
+    /// Model entity of source edge `i` (it lies on a model edge when this is a `TopoEdge`).
+    pub edge_ent: &'a [EntityId],
     /// Source faces with a centre node (`base_q + rank`), ascending.
     pub qfaces: &'a [u32],
     /// Source cells with a centre node (`base_c + rank`), ascending.
@@ -36,16 +36,31 @@ pub(crate) struct Lineage<'a> {
     pub c_parent: &'a [u32],
     /// `(source face, new provisional face)` of every new face lying on a source face, ascending.
     pub on_parent: &'a [(u32, FaceIx)],
+    /// Local refinement: the source vertices every new node (`nv..nn`, in order) spans. With it the
+    /// node layout fields above are not used (set `pairs`, `qfaces` empty), a new node joins a
+    /// vertex set when all the vertices it spans are members, and vertex tags use the span.
+    pub span: Option<&'a [SmallVec<[u32; 8]>]>,
+    /// With `span`: which new nodes may join a vertex set (those on the boundary of the mesh;
+    /// interior face and cell nodes never join, as in `mesh.refine`).
+    pub joins: &'a [bool],
 }
 
 /// Per-mesh wall data for vertex-set coverage, built once on the first non-empty vertex set.
 struct WallCover {
-    /// Dimension of the model entities that carry walls (face in 3D, edge in 2D).
-    wall_dim: u8,
     /// `(mesh face, model entity)` of every wall face.
     wall_faces: Vec<(u32, EntityId)>,
+    /// Per mesh face: its wall entity, when it lies on a model entity of the wall dimension (face
+    /// in 3D, edge in 2D).
+    wall_ent: Vec<Option<EntityId>>,
+    /// Per mesh face: a boundary face with no model classification (it covers when all its
+    /// vertices are members).
+    bare_boundary: Vec<bool>,
+    /// Model entity of every mesh vertex.
+    vert_ent: Vec<EntityId>,
     /// Model entities of the wall dimension with a mesh vertex in their interior.
     has_interior: BTreeSet<EntityId>,
+    /// Model edges with a mesh vertex in their interior (a one-interval edge has none).
+    edge_interior: BTreeSet<EntityId>,
     /// CSR of the vertices of every face.
     off: Vec<u32>,
     vs: Vec<u32>,
@@ -55,24 +70,33 @@ impl WallCover {
     fn new(src: &dyn MeshRead, nv: usize) -> Self {
         let wall_dim = if matches!(src.dim(), MeshDim::Two) { 1 } else { 2 };
         let mut wall_faces = Vec::new();
+        let (mut wall_ent, mut bare_boundary) = (Vec::with_capacity(src.face_count()), Vec::with_capacity(src.face_count()));
         let (mut off, mut vs) = (vec![0u32], Vec::new());
         for f in 0..src.face_count() {
             let fi = FaceIx::new(f);
             let c = src.face_class(fi);
-            if c.dim() == Some(wall_dim) {
+            let on_wall = c.dim() == Some(wall_dim);
+            if on_wall {
                 wall_faces.push((f as u32, c.entity));
             }
+            wall_ent.push(on_wall.then_some(c.entity));
+            bare_boundary.push(c.dim().is_none() && src.face_right(fi).is_none());
             vs.extend(src.face_vertices(fi).iter().map(|x| x.0));
             off.push(vs.len() as u32);
         }
-        let mut has_interior = BTreeSet::new();
+        let (mut has_interior, mut edge_interior) = (BTreeSet::new(), BTreeSet::new());
+        let mut vert_ent = Vec::with_capacity(nv);
         for v in 0..nv {
             let c = src.vertex_class(VertexIx::new(v));
             if c.dim() == Some(wall_dim) {
                 has_interior.insert(c.entity);
             }
+            if c.dim() == Some(1) {
+                edge_interior.insert(c.entity);
+            }
+            vert_ent.push(c.entity);
         }
-        WallCover { wall_dim, wall_faces, has_interior, off, vs }
+        WallCover { wall_faces, wall_ent, bare_boundary, vert_ent, has_interior, edge_interior, off, vs }
     }
 
     fn verts(&self, f: usize) -> &[u32] {
@@ -102,7 +126,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
     l: &Lineage<'_>,
 ) -> Result<Vec<(&'static str, String)>, MeshError> {
     let mut notes: Vec<(&'static str, String)> = Vec::new();
-    let Lineage { nv, nn, pairs, edge_on_curve, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent } = *l;
+    let Lineage { nv, nn, pairs, edge_ent, qfaces, cen_cells, base_e, base_q, base_c, child_start, c_parent, on_parent, span, joins } = *l;
     let mut wall: Option<WallCover> = None;
     let children_of = |c: u32| child_start[c as usize]..child_start[c as usize + 1];
     for set in src.sets() {
@@ -150,6 +174,27 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     }
                     continue;
                 }
+                if let Some(span) = span {
+                    let mut inset = vec![false; nv];
+                    for x in v {
+                        inset[x.get()] = true;
+                    }
+                    let mut out: Vec<VertexIx> = v.iter().map(|x| VertexIx(x.0)).collect();
+                    out.extend((nv..nn).filter(|&n| joins[n - nv] && span[n - nv].iter().all(|&x| inset[x as usize])).map(|n| VertexIx(n as u32)));
+                    b.add_set(&set.name, SetMembers::Vertices(out))?;
+                    if let Some(l) = set.label {
+                        b.set_label(&set.name, Some(l))?;
+                    }
+                    continue;
+                }
+                if pairs.is_empty() && qfaces.is_empty() {
+                    // No edge or face nodes are added: a vertex set keeps its members (cell centres never join).
+                    b.add_set(&set.name, SetMembers::Vertices(v.iter().map(|x| VertexIx(x.0)).collect()))?;
+                    if let Some(l) = set.label {
+                        b.set_label(&set.name, Some(l))?;
+                    }
+                    continue;
+                }
                 let wc = wall.get_or_insert_with(|| WallCover::new(src, nv));
                 let mut inset = vec![false; nv];
                 for x in v {
@@ -173,16 +218,14 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                 let mut ambiguous: BTreeSet<EntityId> = BTreeSet::new();
                 let mut face_cov = vec![false; src.face_count()];
                 for (f, cov) in face_cov.iter_mut().enumerate() {
-                    let fi = FaceIx::new(f);
-                    let c = src.face_class(fi);
-                    *cov = if c.dim() == Some(wc.wall_dim) {
-                        if ent_cov.get(&c.entity).copied().unwrap_or(false) {
+                    *cov = if let Some(ent) = wc.wall_ent[f] {
+                        if ent_cov.get(&ent).copied().unwrap_or(false) {
                             true
                         } else if all_in(f) {
-                            if wc.verts(f).iter().any(|&x| src.vertex_class(VertexIx(x)).entity == c.entity) {
+                            if wc.verts(f).iter().any(|&x| wc.vert_ent[x as usize] == ent) {
                                 true
-                            } else if !wc.has_interior.contains(&c.entity) {
-                                ambiguous.insert(c.entity);
+                            } else if !wc.has_interior.contains(&ent) {
+                                ambiguous.insert(ent);
                                 true
                             } else {
                                 false
@@ -191,7 +234,7 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                             false
                         }
                     } else {
-                        c.dim().is_none() && src.face_right(fi).is_none() && all_in(f)
+                        wc.bare_boundary[f] && all_in(f)
                     };
                 }
                 for ent in ambiguous {
@@ -217,13 +260,29 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                         }
                     }
                 }
-                out.extend(
-                    pairs
-                        .iter()
-                        .enumerate()
-                        .filter(|(e, [a, bb])| edge_in[*e] || (edge_on_curve[*e] && inset[*a as usize] && inset[*bb as usize]))
-                        .map(|(e, _)| VertexIx((base_e + e) as u32)),
-                );
+                // A model edge of a single mesh interval has no interior vertex, so its two end nodes
+                // being members cannot tell a member edge from two member corners (reported).
+                let mut edge_amb: BTreeSet<EntityId> = BTreeSet::new();
+                for (e, [a, bb]) in pairs.iter().enumerate() {
+                    let ent = edge_ent[e];
+                    let by_ends = ent.kind() == sm_core::EntityKind::TopoEdge && inset[*a as usize] && inset[*bb as usize];
+                    if edge_in[e] || by_ends {
+                        out.push(VertexIx((base_e + e) as u32));
+                        if by_ends && !edge_in[e] && !wc.edge_interior.contains(&ent) {
+                            edge_amb.insert(ent);
+                        }
+                    }
+                }
+                for ent in edge_amb {
+                    notes.push((
+                        "refine.set_ambiguous",
+                        format!(
+                            "set `{}`: model edge {ent} has no interior mesh vertex (one interval), so its midpoint joined because both end nodes are members, \
+                             which two member corners alone would not have given",
+                            set.name
+                        ),
+                    ));
+                }
                 out.extend(qfaces.iter().enumerate().filter(|(_, f)| face_cov[**f as usize]).map(|(r, _)| VertexIx((base_q + r) as u32)));
                 SetMembers::Vertices(out)
             }
@@ -252,9 +311,11 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
             }
             (MeshEntityKind::Vertex, v) => {
                 // Spanned vertices of every new node, in node order.
-                let span = |n: usize| -> SmallVec<[u32; 8]> {
+                let span_of = |n: usize| -> SmallVec<[u32; 8]> {
                     if n < nv {
                         SmallVec::from_slice(&[n as u32])
+                    } else if let Some(sp) = span {
+                        sp[n - nv].clone()
                     } else if n < base_q {
                         SmallVec::from_slice(&pairs[n - base_e])
                     } else if n < base_c {
@@ -264,11 +325,11 @@ pub(crate) fn carry_sets_and_tags<B: MeshBuild>(
                     }
                 };
                 let vals = match v {
-                    TagValues::I64(x) => TagValues::I64((0..nn).map(|n| x[span(n).iter().copied().min().unwrap_or(0) as usize]).collect()),
+                    TagValues::I64(x) => TagValues::I64((0..nn).map(|n| x[span_of(n).iter().copied().min().unwrap_or(0) as usize]).collect()),
                     TagValues::F64(x) => TagValues::F64(
                         (0..nn)
                             .map(|n| {
-                                let s = span(n);
+                                let s = span_of(n);
                                 s.iter().map(|&i| x[i as usize]).sum::<f64>() / s.len() as f64
                             })
                             .collect(),

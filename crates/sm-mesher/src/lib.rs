@@ -37,7 +37,7 @@ pub use auto::{
 };
 pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
-pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
+pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, GeoSizeFieldFn, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
 pub use polyscheme::POLYHEDRON;
 pub use volfit::MeshPreserveVolume;

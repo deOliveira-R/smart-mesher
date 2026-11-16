@@ -133,12 +133,13 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
         }
     };
     let mut selected = selected;
-    if opts.sheets {
+    let repair_sheets = opts.repair && !opts.sheets;
+    if opts.sheets || repair_sheets {
         selected.extend(sheet_entities(file).into_iter().map(|id| (id, SolidKind::Sheet)));
     }
     let mut notes: Vec<Note> = Vec::new();
     let skipped = scan_skipped(file);
-    if !skipped.sheets.is_empty() && !opts.sheets {
+    if !skipped.sheets.is_empty() && !opts.sheets && !repair_sheets {
         let list: Vec<String> = skipped.sheets.iter().map(|(n, c)| format!("{c} {n}")).collect();
         notes.push(Note::info(NoteCode::SheetsSkipped, format!("sheets not imported: {}", list.join(", ")), Vec::new()));
     }
@@ -272,26 +273,38 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
             group_of.push(g);
         }
     }
-    type BaseResult = Result<(Solid, Vec<Note>, (usize, usize)), StepError>;
+    type Base = Result<(Solid, Vec<Note>, (usize, usize)), Note>;
+    type BaseResult = Result<Base, StepError>;
     let decode_base = |i: &usize| -> BaseResult {
         let (id, kind, report, _) = &preps[*i];
         let mut local = Vec::new();
         meter.solid_decoded();
-        let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local, meter)?;
-        Ok((solid, local, stats))
+        match read_solid(ents, *id, *kind, report.clone(), opts, &mut local, meter) {
+            Ok((solid, stats)) => Ok(Ok((solid, local, stats))),
+            // A sheet read only as a repair candidate must not fail the import: drop it with a note.
+            Err(e) if repair_sheets && *kind == SolidKind::Sheet => {
+                Ok(Err(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![*id])))
+            }
+            Err(e) => Err(e),
+        }
     };
     let bases: Vec<BaseResult> = if firsts.len() >= 8 { firsts.par_iter().map(decode_base).collect() } else { firsts.iter().map(decode_base).collect() };
-    let mut bases: Vec<(Solid, Vec<Note>, (usize, usize))> = bases.into_iter().collect::<Result<_, _>>()?;
+    let mut bases: Vec<Base> = bases.into_iter().collect::<Result<_, _>>()?;
     let mut solids = Vec::with_capacity(preps.len());
     let (mut welded_v, mut welded_e) = (0usize, 0usize);
     let mut instances = 0usize;
-    for (_, base_notes, stats) in bases.iter_mut() {
-        notes.append(base_notes);
-        welded_v += stats.0;
-        welded_e += stats.1;
+    for b in bases.iter_mut() {
+        match b {
+            Ok((_, base_notes, stats)) => {
+                notes.append(base_notes);
+                welded_v += stats.0;
+                welded_e += stats.1;
+            }
+            Err(note) => notes.push(note.clone()),
+        }
     }
     for (i, (id, _, _, placements)) in preps.iter().enumerate() {
-        let base = &bases[group_of[i]].0;
+        let Ok((base, _, _)) = &bases[group_of[i]] else { continue };
         let name = file.entities.get(id).and_then(|e| e.rec("MANIFOLD_SOLID_BREP").or_else(|| e.first())).and_then(|r| match r.params.first() {
             Some(part21::Param::Str(s)) => Some(s.clone()),
             _ => None,
@@ -327,6 +340,9 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
     }
     for (msg, ids) in unit_groups {
         unit_notes.push(Note::info(NoteCode::Units, msg, ids));
+    }
+    if repair_sheets {
+        solids.retain(|s| s.kind != SolidKind::Sheet);
     }
     notes.splice(0..0, unit_notes);
     if welded_v + welded_e > 0 {
@@ -638,10 +654,35 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     for (fi, f) in faces.iter().enumerate() {
         shells[f.shell].faces.push(fi);
     }
-    if kind != SolidKind::Sheet {
-        check_closed(id, &shells, &faces, &kept, meter)?;
-    }
+    let open = if kind != SolidKind::Sheet { check_closed(id, &shells, &faces, &kept, meter) } else { Ok(()) };
     let mut solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    match open {
+        Ok(()) => {}
+        Err(e @ StepError::OpenShell { .. }) if opts.repair => {
+            notes.extend(crate::repair::close_shells(&mut solid, opts.weld_tol).map_err(|_| e)?);
+            check_closed(id, &solid.shells, &solid.faces, &solid.edges, meter)?;
+        }
+        Err(e) => return Err(e),
+    }
+    if kind == SolidKind::Sheet && opts.repair && !opts.sheets {
+        // An open sheet is a repair candidate: closed, it becomes a solid; else it is skipped.
+        // Shell roles cannot be guessed, so a multi-shell surface model is not repaired.
+        let multi = (solid.shells.len() > 1).then(|| StepError::Unsupported { id, entity: format!("surface model with {} shells", solid.shells.len()) });
+        match multi.map_or_else(|| crate::repair::close_shells(&mut solid, opts.weld_tol), Err) {
+            Ok(n) => {
+                if n.is_empty() {
+                    // Already closed: nothing was capped, so say that the sheet became a solid.
+                    notes.push(Note::warn(NoteCode::Repaired, format!("closed surface model #{id} imported as a solid"), vec![id]));
+                }
+                notes.extend(n);
+                solid.kind = SolidKind::Manifold;
+                for sh in &mut solid.shells {
+                    sh.kind = ShellKind::Outer;
+                }
+            }
+            Err(e) => notes.push(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![id])),
+        }
+    }
     crate::split::split_closed_nurbs(&mut solid, opts.weld_tol, notes, meter);
     Ok((solid, (welded_vertices, welded_edges)))
 }

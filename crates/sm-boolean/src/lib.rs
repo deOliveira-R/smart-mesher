@@ -21,6 +21,7 @@ mod copy;
 pub mod error;
 mod faceclass;
 mod geo;
+pub mod heal;
 pub mod heal_check;
 pub mod imprint;
 pub mod locate;
@@ -38,6 +39,10 @@ pub mod webcut;
 pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
 pub use bvh::CandidateStats;
 pub use error::BooleanError;
+pub use heal::{
+    ClosedHole, HealApply, HealFixes, HealOutcome, HealSkip, RaisedTolerance, close_open_loops,
+    heal, orient_volumes, weld_gaps,
+};
 pub use heal_check::{HealCode, HealFinding, HealOptions, HealReport, HealThresholds, heal_check};
 pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use locate::{PointLocation, face_interior_point, locate_point, volume_interior_point};
@@ -71,6 +76,7 @@ impl Plugin for BooleanPlugin {
         registry.register::<ops::WebcutSurface>()?;
         registry.register::<ops::WebcutCylinder>()?;
         registry.register::<ops::Regularize>()?;
+        registry.register::<ops::Heal>()?;
         registry.register::<subdivide::SubdividePin>()?;
         registry.register_query::<ops::MergeCheck>()?;
         registry.register_query::<ops::HealCheck>()?;
