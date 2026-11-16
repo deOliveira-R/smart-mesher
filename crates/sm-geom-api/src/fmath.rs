@@ -57,23 +57,30 @@ mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_3, PI, TAU};
 
-    // Angles of the w4_poly circles (multiples of pi/3 and pi/6) and a few others.
-    const ARGS: [f64; 6] = [1.0, FRAC_PI_3, 2.0 * FRAC_PI_3, 5.0 * PI / 6.0, 0.001, TAU - 1e-3];
-    const SIN: [u64; 6] = [
+    // Seam-like angles (multiples of pi/3 and pi/6, near 0 and 2 pi) and 26 and 34 degrees,
+    // where the `libm` crate differs by 1 ulp from Apple's libm (so this fails if `fmath` ever
+    // goes back to `std` on macOS).
+    const ARGS: [f64; 8] =
+        [1.0, FRAC_PI_3, 2.0 * FRAC_PI_3, 5.0 * PI / 6.0, 0.001, TAU - 1e-3, 26.0 * PI / 180.0, 34.0 * PI / 180.0];
+    const SIN: [u64; 8] = [
         0x3feaed548f090cee,
         0x3febb67ae8584cab,
         0x3febb67ae8584caa,
         0x3fdfffffffffffff,
         0x3f50624da5218a62,
         0xbf50624da52194d0,
+        0x3fdc0e45dabe05c8,
+        0x3fe1e4e88411fd13,
     ];
-    const COS: [u64; 6] = [
+    const COS: [u64; 8] = [
         0x3fe14a280fb5068c,
         0x3fdffffffffffffe,
         0xbfe0000000000002,
         0xbfebb67ae8584cab,
         0x3feffffef390876c,
         0x3feffffef390876c,
+        0x3fecc2ebbb5638ca,
+        0x3fea8779cda8eea4,
     ];
 
     #[test]
