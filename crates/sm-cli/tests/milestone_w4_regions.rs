@@ -41,8 +41,8 @@ const R: f64 = 0.4096;
 const ANGLE0: f64 = 1.0;
 const FRAME: &str = "lat20";
 
-const MAC_SMSH: &str = "bcfa82ddf29c71cfd28a2297741286080a15070df4e7f2033dc416bf40983652";
-const MAC_SMRT: &str = "ae4ec9f14030c06254f3320c61ad76fcb6e8caa14996e20db744e042e6f1483c";
+const MAC_SMSH: &str = "e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6";
+const MAC_SMRT: &str = "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repo root")
