@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print sorted `script|key|value` identity-hash lines for the milestone scripts (W2 milestone and
 # fork, W3a hybrid and tet, W3b milestone, the SUBMAP_GRADED fixture, w3c_pin.smesh, and the
-# information-only curved probe, and the W4 polyhedral and regions milestones). Exits 1 if any step left an `error.*` key. Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
+# information-only curved probe, the W4 polyhedral, regions and round-pin (ogrid, enclosed hex) milestones). Exits 1 if any step left an `error.*` key. Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
 #
 #   tools/platform/hashes.sh OUT_FILE [--extras]
 #
@@ -43,6 +43,8 @@ run w3c_pin tools/w3c_pin.smesh
 deck=crates/sm-csgio/tests/fixtures/openmc/pin
 run w4_poly tools/w4_poly.smesh "$deck/geometry.xml" "$deck/materials.xml"
 run w4_regions tools/w4_regions.smesh
+run w4_pin_ogrid tools/w4_pin_ogrid.smesh
+run w4_pin_enclosed_hex tools/w4_pin_enclosed_hex.smesh
 LC_ALL=C sort "$out.tmp" > "$out"
 rm -f "$out.tmp"
 echo "wrote $out ($(wc -l < "$out") lines)"

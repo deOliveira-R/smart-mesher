@@ -26,7 +26,6 @@ pub fn cos(x: f64) -> f64 {
 }
 
 /// `tan x`.
-#[allow(dead_code)]
 pub fn tan(x: f64) -> f64 {
     libm::tan(x)
 }

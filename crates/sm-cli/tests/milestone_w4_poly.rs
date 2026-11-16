@@ -296,9 +296,10 @@ fn export_in_process(s: &mut Server, path: &Path, format: ExportFormat, mesh: Op
     serde_json::from_value(v).map_err(e)
 }
 
-/// The closed forms of the deck: model volume of fuel, void, clad and water.
 /// sha256 of the exported files (every platform).
 const FILE_PINS: [(&str, &str); 2] = [("pin.smrt", "ce02bf55850fcd5c07b2f421a7cc05890f81386c55912479a71d0673428b0c4a"), ("pin.smsh", "1b99be6f3aae029698200664f963ef9ab55e0303338b0f9c200dca990ab753b4")];
+
+/// The closed forms of the deck: model volume of fuel, void, clad and water.
 
 fn model_volumes() -> [f64; 4] {
     let disc = |r: f64| PI * r * r * HEIGHT;

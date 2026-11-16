@@ -5,9 +5,11 @@
 //! hash-like and count prints), measured on macOS arm64; the W2 to W3c rows are equal on Linux
 //! arm64 (glibc 2.36 and 2.39) and Linux x86_64, see `docs/design/w3c/platform-hashes.md`.
 //! W4-INT adds the polyhedral (`tools/w4_poly.smesh`, with the OpenMC `pin` deck copied where the
-//! script stages it) and regions (`tools/w4_regions.smesh`) milestones. Some of their values differ
-//! on Linux x86_64 (GitHub CI): those are `[linux-x86_64] script|key|value` lines, which replace
-//! the untagged value of the same key on that platform only (a C12 divergence, open for a ruling).
+//! script stages it), regions (`tools/w4_regions.smesh`) and round-pin (`tools/w4_pin_ogrid.smesh`,
+//! `tools/w4_pin_enclosed_hex.smesh`) milestones. Every identity hash is one value on every platform
+//! (C12, `docs/design/w4/int/c12.md`, ruling OR-k): the file has no per-platform lines. The parser
+//! still accepts `[os-arch] script|key|value` lines, which replace the untagged value of the same
+//! key on that platform only; per C12 they are for raw-bit hashes only, never identity hashes.
 //! This test recomputes the lines through the `smesh` binary with the same pinning as
 //! `tools/platform/collect.py` and requires equality with this platform's set, so the Linux x86_64
 //! GitHub gate enforces them. It runs twice, with default threads and with
@@ -149,7 +151,7 @@ fn all(threads: Option<&str>, scratch: &Path) -> R<BTreeSet<String>> {
     // the OpenMC `pin` deck that tools/w4_poly.smesh stages from its working directory
     let deck = root().join("crates/sm-csgio/tests/fixtures/openmc/pin");
     let deck = vec![deck.join("geometry.xml"), deck.join("materials.xml")];
-    let scripts: [(&str, PathBuf, &[PathBuf]); 9] = [
+    let scripts: [(&str, PathBuf, &[PathBuf]); 11] = [
         ("w2_milestone", data.join("milestone.smesh"), &[]),
         ("w2_fork", data.join("fork.smesh"), &[]),
         ("w3a_hybrid", emit.join("w3a_hybrid.smesh"), &[]),
@@ -159,6 +161,8 @@ fn all(threads: Option<&str>, scratch: &Path) -> R<BTreeSet<String>> {
         ("w3c_pin", t.join("w3c_pin.smesh"), &[]),
         ("w4_poly", t.join("w4_poly.smesh"), &deck),
         ("w4_regions", t.join("w4_regions.smesh"), &[]),
+        ("w4_pin_ogrid", t.join("w4_pin_ogrid.smesh"), &[]),
+        ("w4_pin_enclosed_hex", t.join("w4_pin_enclosed_hex.smesh"), &[]),
     ];
     let mut rows = BTreeSet::new();
     for (name, path, stage) in &scripts {
