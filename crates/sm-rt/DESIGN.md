@@ -318,7 +318,11 @@ rings is a sub-set of it and the other elements need a (possibly empty-looking) 
      (instances handing the ray back and forth; a vertex legitimately gives two or three). After 8 they
      nudge the ray on the same way (at most 4 times per trace, the hop recorded as a chord of the cell
      the ray was in); a trap that cannot be left ends `Lost` with `RecoveryFailed`, never the million
-     steps of `TraceOptions::default().max_steps`.
+     steps of `TraceOptions::default().max_steps`. One `WorldTracker::graze_check` (like `MeshTracker`'s)
+     serves `trace`, `fire` and the delta flight. A trap with less than `tol` of room left advances by the
+     room and ends at its limit (`Limit`), not at `max_steps`. A hop that changes region ends a
+     `fire`-like walk with `RegionBoundary` carrying no surface and no face (`NONE`; `to_cell` is the
+     cell hopped into); `trace` owes none, the next segment shows the region. Mesh trackers do the same.
   The z-wall rules follow the path, not the leaf: the inward nudge of the direction is applied for a hex
   stack at any level of the path (a fill wrapped in a union; nested lattices and mesh leaves are not probed), mapped to the leaf frame,
   and the flat the ray runs along is found in the leaf frame of the carried instance. A carried candidate

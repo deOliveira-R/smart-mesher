@@ -178,7 +178,14 @@ impl MajorantTracker for MeshTracker {
                         }
                         // The same bound on grazing traps as the other walks.
                         match self.graze_check(&mut guard, s.dist, st, (limit - total).max(0.0), sc) {
-                            Ok(hop) => total += hop.unwrap_or(0.0),
+                            Ok(Some((nd, hop_end))) => {
+                                total += nd;
+                                if let Some(e) = hop_end {
+                                    end = e;
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
                             Err(l) => {
                                 end = StepEnd::Lost(l);
                                 break;
