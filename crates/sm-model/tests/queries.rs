@@ -150,12 +150,12 @@ fn measure_brick_edges_faces_volume_and_boxes() {
     assert_eq!(p.bbox.hi, [2.0, 2.0, 2.0]);
 }
 
-/// The centroid is rounded to a power of two at most the hash quantum, so the quadrature
-/// round-off (platform libm) does not reach scripts that feed it into later ops.
+/// The centroid is rounded to 2^-12 of a power of two at most the hash quantum (2^-42 here), so
+/// the quadrature round-off (platform libm) does not reach scripts that feed it into later ops.
 #[test]
 fn measure_centroid_lies_on_the_quantum_grid_and_is_the_analytic_centre() {
-    let q = f64::from_bits(sm_geom_api::ModelTolerance::DEFAULT.quantum().to_bits() & 0x7FF0_0000_0000_0000);
-    assert!(q > 0.0 && q <= sm_geom_api::ModelTolerance::DEFAULT.quantum());
+    let q = f64::from_bits(sm_geom_api::ModelTolerance::DEFAULT.quantum().to_bits() & 0x7FF0_0000_0000_0000) / 4096.0;
+    assert_eq!(q, 2f64.powi(-42));
     let mut s = session(topo_store);
     run(&mut s, &CreateCylinder { height: 1.0, radius: 0.4096, center: Some([1.26, 2.52, 0.0]) }).expect("cyl");
     let c = measure(&s, id(EntityKind::TopoVolume, 1)).centroid.expect("centroid");

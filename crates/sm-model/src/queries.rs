@@ -427,9 +427,10 @@ impl TypedQuery for ModelMeasure {
         // The centroid comes from quadrature over the faces, whose sums carry a few ulp of libm
         // round-off (`sin`/`cos` of the sample angles) that differs between platforms; a script
         // that feeds it back into an op (a pin's cut centre) would then build different
-        // geometry. Rounding to a power of two at most the hash quantum (so dyadic centres stay
-        // exact) removes that noise; the change is far below the model tolerance.
-        let q = f64::from_bits(topo.tolerance().quantum().to_bits() & 0x7FF0_0000_0000_0000);
+        // geometry. Rounding to a power of two (so dyadic centres stay exact), 2^-12 of the
+        // power of two at most the hash quantum (2^-42 for the default tolerance, 2e-13, which
+        // is 1e3 times the noise (about 1e-16) and far below the model tolerance), removes that noise.
+        let q = f64::from_bits(topo.tolerance().quantum().to_bits() & 0x7FF0_0000_0000_0000) / 4096.0;
         out.centroid = out.centroid.map(|c| c.map(|x| if q.is_normal() { (x / q).round() * q } else { x }));
         Ok(out)
     }
