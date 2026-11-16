@@ -16,13 +16,20 @@
 //! `min(tol, h_max) / 1000`, which only matters at apexes where `k` is unbounded). Planes and lines give
 //! `h_max`.
 //!
+//! `tol` bounds the sagitta of an *edge* (a chord of the boundary curve). It is not a bound on the
+//! surface deviation of a whole element: the centre of a triangle inscribed in a circle sags up
+//! to about `4/3 tol` from the surface (inscribed equilateral triangle).
+//!
 //! **With `grade = "off"`** the size at `p` is exact on the carriers only: the minimum over the
 //! edge curves and face surfaces of the region that pass within the entity tolerance of `p`,
 //! evaluated at the projection of `p`, and `h_max` elsewhere. That is the right field for curve
 //! interval goals (edge points lie on the carrier) but not for unstructured schemes, which query
 //! points slightly off the surface and would see `h_max`. A face counts through the foot point of
 //! `p` clamped to the face's parameter box (so extensions of the carrier beyond the face do not
-//! count; the trim inside the box is not re-checked). **Otherwise `grade = g`** (default 0.5) the size is the minimum of that exact on-carrier value
+//! count; the trim inside the box is not re-checked). **Do not use `"off"` with a tet or tri
+//! scheme**: the tolerance then silently breaks (measured on a cylinder r=1, h=2, tol 0.01,
+//! h_max 0.5: 615 tets with a 2.44% volume deficit at `"off"`, 2135 tets and 0.89% at the default
+//! grade); [`is_ungraded_curvature`] lets the caller warn or refuse. **Otherwise `grade = g`** (default 0.5) the size is the minimum of that exact on-carrier value
 //! (`rule(foot) + g |p - foot|`, the foot being the projection clamped to the face or edge range, wherever it can be below `h_max`; so the rule holds **exactly on the
 //! carriers** whatever the sample spacing) and
 //! `min(h_max, min_q (h_q + g |p - q|))` over a fixed sample set (`4 samples + 1` points per
@@ -60,6 +67,15 @@ pub fn size_field_geo(
         }
         _ => size_field(spec),
     }
+}
+
+/// True if `spec` is a `curvature` function with `grade: "off"` (the `grade` wrapper always
+/// carries a numeric grade, so it never counts). That field is exact on the
+/// carriers only, so a caller meshing with a tet or tri scheme should warn or refuse (see the
+/// [module docs](self)); this crate does not know the scheme.
+pub fn is_ungraded_curvature(spec: &SizingSpec) -> bool {
+    matches!(spec, SizingSpec::Function { name, params }
+        if name == "curvature" && matches!(params.0.get("grade"), Some(Value::String(s)) if s == "off"))
 }
 
 fn build(view: &dyn TopologyView, targets: &[EntityId], name: &str, p: &Value) -> Result<Box<dyn SizeField>, String> {

@@ -213,8 +213,9 @@ pub(crate) fn drive(
 /// corner, joining the corner, its 3 edge midpoints, 3 face centres and the tet centroid).
 ///
 /// Always conformal: every face is subdivided the same way, so a deck pair is split identically
-/// by construction. Each hex has exactly V/4 of its tet (an affine image of the regular case) but
-/// poor angles; the result is a new mesh entry linked to the source by a `LevelMap` with a face
+/// by construction. Each hex has exactly V/4 of its tet (an affine image of the regular case) on straight or
+/// planar boundaries or with `project: false`; with `project: true` (the default) on a curved
+/// boundary the projected boundary hexes are not V/4. Angles are poor; the result is a new mesh entry linked to the source by a `LevelMap` with a face
 /// map. Classification, sets, blocks and cell tags carry over as in `mesh.refine`; new nodes on a
 /// curved model face or edge are projected unless that would invert a cell (`project: false`
 /// keeps straight midpoints). The `thex.report` diagnostic carries counts, volumes and the minimum
@@ -252,7 +253,8 @@ impl TypedOp for Thex {
 /// `mesh.tquad`: convert a triangle mesh into a quad mesh, every triangle into 3 quads (one per
 /// corner, joining the corner, two edge midpoints and the centroid).
 ///
-/// Always conformal; each quad has exactly A/3 of its triangle. The result is a new mesh entry
+/// Always conformal; each quad has exactly A/3 of its triangle on straight boundaries or with
+/// `project: false` (projected nodes on a curved boundary change that). The result is a new mesh entry
 /// linked to the source by a `LevelMap`; classification, sets and tags carry over as in
 /// `mesh.refine`. The `tquad.report` diagnostic carries counts, areas and the minimum scaled
 /// Jacobian of source and result.
