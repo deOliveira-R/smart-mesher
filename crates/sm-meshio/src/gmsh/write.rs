@@ -1,9 +1,10 @@
 //! The msh4 writer.
 
 use super::{GmshError, GmshOptions, GmshReport, PolyPolicy};
+use crate::poly::{FanError, fan_cell};
 use crate::report::{LossItem, LossReport, LossSeverity};
 use sm_core::EntityKind;
-use sm_mesh_api::{CellIx, CellShape, FaceIx, MeshDim, MeshRead, SetMembers, Side};
+use sm_mesh_api::{CellIx, CellShape, FaceIx, MeshDim, MeshRead, SetMembers};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -235,15 +236,6 @@ fn class_dim(k: EntityKind) -> Option<u8> {
     }
 }
 
-fn centroid(ids: &[u32], pts: &[[f64; 3]]) -> [f64; 3] {
-    let mut c = [0.0; 3];
-    for &i in ids {
-        for (k, ck) in c.iter_mut().enumerate() {
-            *ck += pts[i as usize][k] / ids.len() as f64;
-        }
-    }
-    c
-}
 
 /// Write `mesh` as Gmsh MSH 4.1.
 ///
@@ -352,42 +344,25 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
             }
         }
         for &c in &polys {
-            let ci = CellIx::new(c);
             let Some(key) = cell_key[c] else { continue };
-            let mut vs: Vec<u32> = mesh.cell_faces(ci).iter().flat_map(|sf| mesh.face_vertices(sf.face()).iter().map(|v| v.0)).collect();
-            vs.sort_unstable();
-            vs.dedup();
-            if vs.iter().any(|&v| v as usize >= nv) {
-                return unsupported(format!("cell {c} indexes a missing vertex"));
-            }
-            let cc = pts.len() as u32;
-            pts.push(centroid(&vs, &pts));
-            extra_owner.push(key);
-            for sf in mesh.cell_faces(ci) {
-                let f = sf.face();
-                let mut loop_: Vec<u32> = mesh.face_vertices(f).iter().map(|v| v.0).collect();
-                if loop_.len() < 3 || loop_.iter().any(|&v| v as usize >= nv) {
-                    return unsupported(format!("face {} is not a valid polygon", f.0));
-                }
-                if sf.side() == Side::Right {
-                    loop_.reverse();
-                }
-                let n = loop_.len();
-                if n == 3 {
-                    el.push((3, key.0, key.1), T_TET, &[loop_[0], loop_[2], loop_[1], cc]);
-                    continue;
-                }
-                let fc = *face_centre.entry(f.0).or_insert_with(|| {
-                    let id = pts.len() as u32;
-                    let p = centroid(&loop_, &pts);
-                    pts.push(p);
-                    extra_owner.push(key);
-                    id
-                });
-                for k in 0..n {
-                    let (a, b) = (loop_[k], loop_[(k + 1) % n]);
-                    el.push((3, key.0, key.1), T_TET, &[a, fc, b, cc]);
-                }
+            let res = fan_cell(
+                mesh,
+                c,
+                nv,
+                &mut pts,
+                &mut face_centre,
+                || extra_owner.push(key),
+                |_, t| {
+                    el.push((3, key.0, key.1), T_TET, &t);
+                    Ok(())
+                },
+            );
+            match res {
+                Ok(()) => {}
+                Err(FanError::MissingVertex { cell }) => return unsupported(format!("cell {cell} indexes a missing vertex")),
+                Err(FanError::BadPolygon { face }) => return unsupported(format!("face {face} is not a valid polygon")),
+                Err(FanError::Inverted { cell, face }) => return Err(GmshError::InvertedDecomposition { cell: cell as u32, face }),
+                Err(FanError::TooManyIds) => return unsupported("too many elements after decomposition"),
             }
         }
         loss.push(LossItem::new("msh.poly_decomposed", LossSeverity::Degraded, polys.len() as u64, "polyhedra split into tetrahedra"));

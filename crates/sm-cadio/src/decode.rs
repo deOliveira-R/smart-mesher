@@ -283,7 +283,7 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
             Ok((solid, stats)) => Ok(Ok((solid, local, stats))),
             // A sheet read only as a repair candidate must not fail the import: drop it with a note.
             Err(e) if repair_sheets && *kind == SolidKind::Sheet => {
-                Ok(Err(Note::warn(NoteCode::RepairFailed, format!("sheet #{id} was not repaired: {e}"), vec![*id])))
+                Ok(Err(Note::warn(NoteCode::SheetUndecoded, format!("sheet #{id} could not be decoded and was dropped: {e}"), vec![*id])))
             }
             Err(e) => Err(e),
         }
@@ -342,6 +342,7 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> R
         unit_notes.push(Note::info(NoteCode::Units, msg, ids));
     }
     if repair_sheets {
+        crate::repair::note_displaced_faces(&solids, &mut notes);
         solids.retain(|s| s.kind != SolidKind::Sheet);
     }
     notes.splice(0..0, unit_notes);
