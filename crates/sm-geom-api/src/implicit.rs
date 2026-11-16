@@ -241,7 +241,7 @@ impl Quadric {
     /// Double cone with apex at the frame origin, axis `z`, half-angle `half_angle` (negative
     /// inside).
     pub fn cone(frame: &Frame, half_angle: f64) -> Self {
-        let t2 = half_angle.tan().powi(2);
+        let t2 = crate::fmath::tan(half_angle).powi(2);
         Self::from_local(frame, [1.0, 1.0, -t2], [0.0; 3], 0.0)
     }
 

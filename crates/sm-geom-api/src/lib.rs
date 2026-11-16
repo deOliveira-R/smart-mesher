@@ -32,6 +32,7 @@ pub mod surface;
 pub mod tol;
 pub mod transform;
 mod util;
+pub(crate) mod fmath;
 
 pub use analytic::{Circle, Cone, Cylinder, Ellipse, Line, Plane, Sphere, Torus};
 pub use curve::{CurveJet, CurveProjection, ParametricCurve};

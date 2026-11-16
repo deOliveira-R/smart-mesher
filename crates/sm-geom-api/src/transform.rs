@@ -82,8 +82,8 @@ fn frame_zx(fr: &Frame, t: &Transform, s: f64) -> Frame {
 /// The ellipse `o + cos t u + sin t w` written with principal axes: returns the frame, the
 /// semi-axes and the phase `t0` such that the new angle is `t - t0`.
 pub(crate) fn principal_ellipse(o: Point3, u: Vector3, w: Vector3) -> Result<(Frame, f64, f64, f64), GeomError> {
-    let t0 = 0.5 * (2.0 * u.dot(w)).atan2(u.dot(u) - w.dot(w));
-    let (s0, c0) = t0.sin_cos();
+    let t0 = 0.5 * crate::fmath::atan2(2.0 * u.dot(w), u.dot(u) - w.dot(w));
+    let (s0, c0) = crate::fmath::sin_cos(t0);
     let a = u * c0 + w * s0;
     let b = u * (-s0) + w * c0;
     let (na, nb) = (a.norm(), b.norm());
@@ -449,7 +449,7 @@ mod tests {
         let (SurfaceDef::EllipticCone(c), Sense::Forward) = cone.transformed(&sx).unwrap() else { panic!("elliptic cone expected") };
         assert!((c.apex() - Point3::new(0.0, 0.0, -1.0)).norm() < 1e-12);
         assert!(c.frame.z.z > 0.0, "same nappe");
-        let (ta, tb) = (c.half_angle.tan(), c.b * c.half_angle.tan() / c.a);
+        let (ta, tb) = (crate::fmath::tan(c.half_angle), c.b * crate::fmath::tan(c.half_angle) / c.a);
         assert!((ta.max(tb) - 2.0).abs() < 1e-12 && (ta.min(tb) - 1.0).abs() < 1e-12, "{ta} {tb}");
         // Similarities keep the elliptic kinds; the hash visits them.
         let (SurfaceDef::EllipticCone(c2), _) = SurfaceDef::EllipticCone(c).transformed(&scaled(2.0)).unwrap() else { panic!() };
