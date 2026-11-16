@@ -22,8 +22,8 @@
   ```
 
   Defaults: 7 repetitions, 3 warmups, 10000 rays, workloads track, fire, fire-locate, flight, walk (walk only where a
-  tet mesh exists and only on trackers that have it). `report` was run on the same directory; its text is the source of the
-  tables below. **Nothing under `crates/sm-rt-bench/results/` is committed** (it holds no files).
+  tet mesh exists and only on trackers that have it). `report` was run on the same directory (`w4int-bench-smoke-report.md` in the session scratchpad); the tables below are generated from the result JSON
+  files with the same rows, regrouped (facet/analytic/hierarchy and competitor rows; rows on tet meshes; polyhedral rows). **Nothing under `crates/sm-rt-bench/results/` is committed** (it holds no files).
 - Result files: `P1-...-0.json` (36 rows), `H1-...-1.json` (46 rows), `P2-...-2.json` (42 rows); result hashes
   `823011d7c45d`, `831abe336938`, `46742fa28561` (not blessed values, only recorded).
 - Host load: load average 114 / 39.8 / 18.9 (1, 5, 15 min) at the start of the run (four agents were building;
@@ -45,17 +45,17 @@ Drivers (`docker-check`): `dagmc_driver backend=moab-obb dagmc=DagMC version 3.2
 `sha256:937dc1e8ab9ffc5f388f0d2a1ce5d24ba5b15850771571d7442fac1af53f3fad`. Locks: `docker/locks/dagmc-moab.linux-aarch64.txt`,
 `docker/locks/dagmc-dd.linux-aarch64.txt`.
 
-Note on ids. After the smoke run I ran `smrt-bench docker-check` (to record the xdg failure). It rebuilt both DAGMC images
-from the layer cache with the same locks: the tags `smrt-bench-dagmc-moab` and `smrt-bench-dagmc-dd` now resolve to ids
-`0e639a4317226805...` and `c71415aee38ad32f...`, with identical conda lock hashes, versions hashes and driver `--version` lines. The rows
+Note on ids. After the smoke run I ran `smrt-bench docker-check` (to record the xdg failure). The two shared tags `smrt-bench-dagmc-moab` and `smrt-bench-dagmc-dd` now resolve to other ids than during the run
+(`0e639a4317226805...` and `c71415aee38ad32f...`, both with creation date 2026-11-09); `docker-check` rebuilds with `docker build`, so it probably re-tagged them from the layer cache, but I did not
+verify that nor rule out another session re-tagging them. The conda lock hashes, versions hashes and driver `--version` lines that `docker-check` printed for them equal those stored in the result files. The rows
 above ran on the ids in the table, which are the ones stored in the result files. Docker images were not pruned.
 
 ## xdg: Partial (ruling OR-d)
 
 `xdg` is x86-only. On this arm64 host `docker-check` reports `smrt-bench-xdg: Failed(...)` (the `docker build` of
-`docker/xdg/Dockerfile` at pin `a5d67e635b96` exits with code 2 in the XDG `cmake --build` step, which is the known
-`<immintrin.h>` include in `include/xdg/vec3da.h`; I did not capture the compiler lines, the build output only gives
-the exit code through `-q`). `run --trackers ...,xdg` therefore records, per case, `partial: xdg: docker image inspect
+`docker/xdg/Dockerfile` at pin `a5d67e635b96` exits with code 2 in the XDG `clone, cmake, build` step, consistent with the documented
+`<immintrin.h>` include in `include/xdg/vec3da.h` (not confirmed from a compiler line); the `Failed` message of this run carries only the exit code, not the last two compiler lines that `crates/sm-rt-bench/DESIGN.md` says it carries: a deviation of the harness from its
+documentation, not investigated here, and I did not reproduce the compiler error by hand). `run --trackers ...,xdg` therefore records, per case, `partial: xdg: docker image inspect
 smrt-bench-xdg failed: the image is not built`, exit code 2, and writes no xdg row. XDG rows (fire, tet walk) exist only on the x86_64 table.
 `ImageStatus` for xdg is therefore not recorded in the `images` map here.
 
@@ -64,14 +64,16 @@ smrt-bench-xdg failed: the image is not built`, exit code 2, and writes no xdg r
 - Every competitor row: `dagmc-moab` and `dagmc-dd` fire and fire-locate agree with the sm-rt facets fire on 10000 of
   10000 rays in all three cases (0 grazing, 0 failed). Flight tallies (8 slots P1, 12 H1, 6 P2) agree at 4 sigma with 0 failed.
   Region sequences of `dagmc-moab` and `dagmc-dd` are equal on 10000 of 10000 rays in every case.
-- Over all 124 rows: lost 0, agreement failures 0. The harness exited 0 for the smrt/DAGMC part and 2 because of the xdg partial.
+- Over all 124 rows: lost 0, agreement failures 0. The exit code was not captured; per `cli.rs` a `Partial` competitor sets it to 2, so expect 2 here.
 - sm-rt, H1 `jump` vs cell `walk` W-fire: max delta d 3.411e-12 cm over 10000 rays (run tolerance 3.464e-7; face tests per
   fire 59.8 for the cell walk against 10.7 for the region jump, 10000 jumps taken).
+- Tet-mesh rows present: H1 (its own tets): `block`, `delta`, `walk` (fire, fire-locate, flight and the `w-walk` row), `jump` and the polyhedral
+  rows; P1 (the stair-stepped Kuhn twin of the scene): `block`, `delta` and `walk` flight rows only. The conforming P1 tet twin is not
+  produced (`crates/sm-rt-bench/DESIGN.md`, "Conforming P1 tet twin: not produced").
 - Rows not produced, with the harness's own reasons: H1 `analytic` (a box inside a solid needs a union of half-spaces in
-  sm-rt); P2 flight rows of the tet twin (the pins do not fill their box, so P2 has no tet twin); the jump and walk
-  rows exist for H1 only. P1 has no tet twin (W3c/W4 limitation recorded in `crates/sm-rt-bench/DESIGN.md`).
-- The `report` text also prints "Verdict" sections with per-cell signs. They are harness checks under the SMOKE banner
-  (`report` marks them "not a published verdict") and are deliberately not copied here.
+  sm-rt); P2 flight rows on tets (the pins do not fill their box, so P2 has no tet twin).
+- The `report` text also prints "Verdict" sections with per-cell signs (they include an `H1/w-walk/walk` cell, `incomplete` for lack of an xdg baseline row at 1 thread). They are
+  harness checks under the SMOKE banner (`report` marks them "not a published verdict") and are deliberately not copied here.
 
 ## Tables
 
@@ -109,10 +111,6 @@ Under the load given above the second significant digit means nothing.
 | smrt | analytic | w-flight | 4 | 5.723e+06 [5.173e+06, 6.11e+06] | 0 | 0/0 |
 | smrt | analytic | w-track | 1 | 1.468e+06 [1.444e+06, 1.475e+06] | 0 | 0/10000 |
 | smrt | analytic | w-track | 4 | 4.397e+06 [4.258e+06, 4.561e+06] | 0 | 0/10000 |
-| smrt | block | w-flight | 1 | 1.381e+06 [1.376e+06, 1.385e+06] | 0 | 0/4 |
-| smrt | block | w-flight | 4 | 4.693e+06 [4.553e+06, 4.903e+06] | 0 | 0/4 |
-| smrt | delta | w-flight | 1 | 9.19e+05 [9.113e+05, 9.22e+05] | 0 | 0/4 |
-| smrt | delta | w-flight | 4 | 3.27e+06 [3.19e+06, 3.351e+06] | 0 | 0/4 |
 | smrt | facets | w-fire | 1 | 1.294e+06 [1.284e+06, 1.298e+06] | 0 | 0/0 |
 | smrt | facets | w-fire | 4 | 1.307e+06 [1.293e+06, 1.314e+06] | 0 | 0/0 |
 | smrt | facets | w-fire-locate | 1 | 5.51e+05 [5.362e+05, 5.527e+05] | 0 | 0/0 |
@@ -120,10 +118,14 @@ Under the load given above the second significant digit means nothing.
 | smrt | facets | w-track | 1 | 2.703e+05 [2.663e+05, 2.744e+05] | 0 | 0/10000 |
 | smrt | facets | w-track | 4 | 9.736e+05 [9.049e+05, 9.998e+05] | 0 | 0/10000 |
 
-P1 tet-mesh rows `jump` and `walk` (L3: stair-stepped tets, own geometry; no verdict reads them):
+P1 rows on a tet mesh (`block`, `delta`, `walk`, `jump`; stair-stepped tets, not the facet twin the competitors hold, so they render apart):
 
 | tracker | mode | workload | thr | rays/s median [min, max] | lost | agreement failed/checked |
 |---|---|---|---|---|---|---|
+| smrt | block | w-flight | 1 | 1.381e+06 [1.376e+06, 1.385e+06] | 0 | 0/4 |
+| smrt | block | w-flight | 4 | 4.693e+06 [4.553e+06, 4.903e+06] | 0 | 0/4 |
+| smrt | delta | w-flight | 1 | 9.19e+05 [9.113e+05, 9.22e+05] | 0 | 0/4 |
+| smrt | delta | w-flight | 4 | 3.27e+06 [3.19e+06, 3.351e+06] | 0 | 0/4 |
 | smrt | walk | w-flight | 1 | 2.708e+06 [2.685e+06, 2.74e+06] | 0 | 0/0 |
 | smrt | walk | w-flight | 4 | 9.308e+06 [8.847e+06, 9.744e+06] | 0 | 0/0 |
 
@@ -149,10 +151,6 @@ P1 tet-mesh rows `jump` and `walk` (L3: stair-stepped tets, own geometry; no ver
 | dagmc-moab | obb | w-flight | 4 | 8.628e+05 [8.486e+05, 8.737e+05] | 0 | 0/12 |
 | dagmc-moab | obb | w-track | 1 | 6.341e+05 [6.196e+05, 6.419e+05] | 0 | 0/10000 |
 | dagmc-moab | obb | w-track | 4 | 2.263e+06 [2.07e+06, 2.363e+06] | 0 | 0/10000 |
-| smrt | block | w-flight | 1 | 2.383e+05 [2.316e+05, 2.454e+05] | 0 | 0/7 |
-| smrt | block | w-flight | 4 | 9.317e+05 [8.932e+05, 9.501e+05] | 0 | 0/7 |
-| smrt | delta | w-flight | 1 | 2.366e+05 [2.268e+05, 2.407e+05] | 0 | 0/7 |
-| smrt | delta | w-flight | 4 | 9.481e+05 [9.229e+05, 9.623e+05] | 0 | 0/7 |
 | smrt | facets | w-fire | 1 | 8.545e+05 [8.495e+05, 8.831e+05] | 0 | 0/0 |
 | smrt | facets | w-fire | 4 | 8.445e+05 [7.891e+05, 8.577e+05] | 0 | 0/0 |
 | smrt | facets | w-fire-locate | 1 | 3.439e+05 [3.347e+05, 3.473e+05] | 0 | 0/0 |
@@ -160,10 +158,14 @@ P1 tet-mesh rows `jump` and `walk` (L3: stair-stepped tets, own geometry; no ver
 | smrt | facets | w-track | 1 | 2.596e+05 [2.576e+05, 2.676e+05] | 0 | 0/10000 |
 | smrt | facets | w-track | 4 | 9.805e+05 [7.787e+05, 9.852e+05] | 0 | 0/10000 |
 
-H1 tet-mesh rows `jump` and `walk` (L3: stair-stepped tets, own geometry; no verdict reads them):
+H1 rows on a tet mesh (`block`, `delta`, `walk`, `jump`; stair-stepped tets, not the facet twin the competitors hold, so they render apart):
 
 | tracker | mode | workload | thr | rays/s median [min, max] | lost | agreement failed/checked |
 |---|---|---|---|---|---|---|
+| smrt | block | w-flight | 1 | 2.383e+05 [2.316e+05, 2.454e+05] | 0 | 0/7 |
+| smrt | block | w-flight | 4 | 9.317e+05 [8.932e+05, 9.501e+05] | 0 | 0/7 |
+| smrt | delta | w-flight | 1 | 2.366e+05 [2.268e+05, 2.407e+05] | 0 | 0/7 |
+| smrt | delta | w-flight | 4 | 9.481e+05 [9.229e+05, 9.623e+05] | 0 | 0/7 |
 | smrt | jump | w-fire | 1 | 9.562e+05 [8.666e+05, 9.975e+05] | 0 | 0/10000 |
 | smrt | jump | w-fire | 4 | 9.516e+05 [9.282e+05, 9.919e+05] | 0 | 0/10000 |
 | smrt | jump | w-fire-locate | 1 | 6.653e+05 [6.475e+05, 7.202e+05] | 0 | 0/10000 |
@@ -259,6 +261,8 @@ merged in `cb6d6a4`) slow sm-rt down? Method:
   main1 -> 19.50 27.43 18.98; base2 -> 16.12 26.29 18.72; main2 -> 13.64 25.25 18.48; base3 -> 11.35 23.97 18.18;
   main3 -> 12.77 23.62 18.16. That is 10 logical CPUs at a load of 11 to 28, i.e. oversubscribed throughout (other agents were building).
   Four-thread rows suffer most; one-thread rows are the cleaner reading.
+- The two binaries are different files (`cmp`: differ at byte 217; sha1 `9a6dde9addc7...` for base, `222447bb3428...` for main), so the null result below is a comparison of two
+  builds and not of one binary with itself.
 - Same machine, same toolchain (rustc 1.99.1), same data (`reduced`).
 
 **Result.** Over the 56 cells (P2 and H1, every sm-rt mode and workload, 1 and 4 threads) the median change main vs base lies
@@ -330,8 +334,8 @@ claim tighter than a few percent the run needs the quiet x86 machine of ruling D
 ## Notes for the W4-INT report and later tasks
 
 - The smoke covers every row type of plan section 5 item 4: P1 and H1 and P2 at `reduced`; trackers `smrt`, `dagmc-moab`,
-  `dagmc-dd`, `xdg` (Partial, OR-d); `walk` and `jump` (H1); the polyhedral rows (`poly-ref`, `poly-walk`, H1 only, the only case
-  with a tet mesh to dualize, labelled "different mesh, same geometry"); P2 `analytic-hierarchy` and `hierarchy`.
+  `dagmc-dd`, `xdg` (Partial, OR-d); `walk` (H1 fire/flight/`w-walk`, P1 flight) and `jump` (H1); the polyhedral rows (`poly-ref`, `poly-walk`, H1 only, the only case
+  with its own tet mesh to dualize, labelled "different mesh, same geometry"); P2 `analytic-hierarchy` and `hierarchy`.
 - `xdg` image build log was not captured (the harness builds with `docker build -q`). If the INT report wants the compiler
   lines, run `docker build --platform linux/arm64 -f crates/sm-rt-bench/docker/xdg/Dockerfile ...` by hand; the failure is the one already documented in
   `crates/sm-rt-bench/DESIGN.md` ("XDG pin") and was not re-diagnosed here.
