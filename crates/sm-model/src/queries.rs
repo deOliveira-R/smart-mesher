@@ -424,6 +424,13 @@ impl TypedQuery for ModelMeasure {
             return Err(OpError::Failed(format!("{e} has no geometry to bound")));
         }
         out.bbox = BBox { lo: arr(bb.lo), hi: arr(bb.hi) };
+        // The centroid comes from quadrature over the faces, whose sums carry a few ulp of libm
+        // round-off (`sin`/`cos` of the sample angles) that differs between platforms; a script
+        // that feeds it back into an op (a pin's cut centre) would then build different
+        // geometry. Rounding to a power of two at most the hash quantum (so dyadic centres stay
+        // exact) removes that noise; the change is far below the model tolerance.
+        let q = f64::from_bits(topo.tolerance().quantum().to_bits() & 0x7FF0_0000_0000_0000);
+        out.centroid = out.centroid.map(|c| c.map(|x| if q.is_normal() { (x / q).round() * q } else { x }));
         Ok(out)
     }
 }
