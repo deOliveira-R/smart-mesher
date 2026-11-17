@@ -136,21 +136,28 @@ No catalog golden was re-blessed by W4-INT. Combine part A: no golden or stub te
 | `w4_poly` | 12 | new, then moved by OR-j and OR-k |
 | `w4_regions` | 11 | new, then moved by OR-k |
 
-**What is known about Linux.** At `589e994` (W4-INT-C12-LIBM), with no per-platform lines (85 data lines then), `platform_pins` passed on Linux x86_64 (amd64 emulated, ubuntu 24.04, glibc 2.39, release) and on Linux arm64 (debug), equal to macOS arm64 on every row (`int/c12.md`, verification section). Since then the `w4_poly` rows moved (curvature sizing, W4-INT-TESTS) and 23 `w4_pin_*` rows were added, and **those were measured on macOS arm64 only**. "One set for every platform" holds for them only once `platform_pins`, `milestone_w4_poly` and `milestone_w4_pin` pass on Linux in CI. I do not claim that here and cite no CI run of this PR's own tip.
+**What is known about Linux.** At `589e994` (W4-INT-C12-LIBM), with no per-platform lines (85 data lines then), `platform_pins` passed on Linux x86_64 (amd64 emulated, ubuntu 24.04, glibc 2.39, release) and on Linux arm64 (debug), equal to macOS arm64 on every row (`int/c12.md`, verification section). That repro ran `platform_pins` only. Since then the `w4_poly` rows moved (curvature sizing, W4-INT-TESTS) and 23 `w4_pin_*` rows were added, and **those were measured on macOS arm64 only**. The every-platform raw-file digests in `milestone_w4_regions` (`lattice.smsh`/`.smrt`) and `milestone_w4_poly` (`pin.smsh`/`.smrt`) also have no Linux measurement. "One set for every platform" is shown only once `platform_pins`, `milestone_w4_regions`, `milestone_w4_poly` and `milestone_w4_pin` pass on Linux in CI. I do not claim that here and cite no CI run of this PR's own tip.
 
 CI: PR #16 was merged with its run 43804496855 green. PR #17 round 1, run 43827331108, is the run that exposed the divergence (Dev-17). Earlier sub-wave PRs merged with the GitHub gate and the python job green (recorded success on `bc1694a` (#15), `5aae13a` (#14) and `fcf243e` (#13)).
 
 **Combine part A gate.** `tools/ci.sh` returned 101 once: every build and test step passed (default threads and `RAYON_NUM_THREADS=1`; `platform_pins` and `regions_split` ok), and it stopped at workspace clippy on `empty_line_after_doc_comments` (a doc comment move in `milestone_w4_poly.rs`, fixed in `0a4d8b5`). `ci.sh` was then run from the clippy step on (stubs clippy, sm-py clippy, `cargo doc -D warnings`, `graph.py`, refcorpus unittest, ruff, mypy): rc 0. So the green result is that tail plus the passing test steps, not one uninterrupted run. `py.sh` rc 0. `cargo test --release -p sm-csgbrep -- --ignored` rc 0.
 
-**Pins recorded outside `expected.txt`** (raw bits, measured on macOS arm64; where a test asserts them it does so on macOS only):
+**Pins recorded outside `expected.txt`** (raw-bit file digests). Asserted on every platform:
 
 | What | Value |
 |---|---|
-| `w4_regions` `lattice.smsh` (`MAC_SMSH`) | `e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6` |
-| `w4_regions` `lattice.smrt` (`MAC_SMRT`) | `ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d` |
+| `w4_regions` `lattice.smsh` (`PIN_SMSH`) | `e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6` |
+| `w4_regions` `lattice.smrt` (`PIN_SMRT`) | `ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d` |
+| `w4_poly` `pin.smsh`, `pin.smrt` (`FILE_PINS`, W4-INT-TESTS report) | `1b99be6f3aae029698200664f963ef9ab55e0303338b0f9c200dca990ab753b4`, `ce02bf55850fcd5c07b2f421a7cc05890f81386c55912479a71d0673428b0c4a` |
+
+The `w4_regions` constants were named `MAC_SMSH`/`MAC_SMRT` and gated to macOS until W4-INT-TESTS (`401f1e3`) removed the gate ("one set: Linux and macOS agree since C12"). The `w4_poly` pins have no platform gate. None of these four has a Linux measurement yet (see above).
+
+Asserted on macOS arm64 only:
+
+| What | Value |
+|---|---|
 | `regions_split` `pin.smsh` | `6d8de35256f3a754ce25b8ae10c989fde748b417b6a96b0ef128193a14ad7ec5` |
 | `regions_split` `pin.smrt` | `303fbda9d4156b093510167901b76c54dd6a286267bce397c9df9e0102c25189` |
-| `w4_poly` `pin.smsh`, `pin.smrt` (W4-INT-TESTS report) | `1b99be6f3aae029698200664f963ef9ab55e0303338b0f9c200dca990ab753b4`, `ce02bf55850fcd5c07b2f421a7cc05890f81386c55912479a71d0673428b0c4a` |
 
 The identity values (`h_model`, `h_auto`, `h_linear`, `h_mesh`, layers) are in `expected.txt`; copying them here would only create a second copy to keep in step. Test timing: the one-thread debug run of `milestone_w4_poly` took 290 to 292 s (W4-INT-TESTS) against a budget of about 300 s, so slower CI runners have little room.
 
