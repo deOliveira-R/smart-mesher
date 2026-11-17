@@ -14,8 +14,7 @@
 //! | G4 | the OpenMC 3x3 deck through `model.import_openmc` gives the same region names and slot tags as the model path under `split: ["lattice"]` |
 //! | G5 | CLI (`--regions`, project run), in-process and 1-thread runs give identical bytes; two runs equal |
 //!
-//! The hashes of the exports are printed (`w4 regions ... sha256`) for INT to pin per os-arch; this
-//! file asserts the macOS arm64 values.
+//! The hashes of the exports are printed (`w4 regions ... sha256`) and asserted per os-arch (`PINS`).
 #![allow(missing_docs)]
 
 mod w3a_support;
@@ -41,8 +40,21 @@ const R: f64 = 0.4096;
 const ANGLE0: f64 = 1.0;
 const FRAME: &str = "lat20";
 
-const PIN_SMSH: &str = "e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6";
-const PIN_SMRT: &str = "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d";
+/// Raw-byte digests `(lattice.smsh, lattice.smrt)` per os-arch. The identity hashes agree on every
+/// platform (C12, `tools/platform/expected.txt`), but the raw f64 bytes do not: C12 lets raw-bit
+/// hashes stay per platform (OR-k). Other platforms print their digests and assert none.
+const PINS: &[(&str, &str, &str)] = &[
+    (
+        "macos-aarch64",
+        "e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6",
+        "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d",
+    ),
+    (
+        "linux-x86_64",
+        "acaa5d69d95cece58971c04a180a815d2e44532954f55bb46cd5bcfbc105d8a4",
+        "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d",
+    ),
+];
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repo root")
@@ -553,7 +565,11 @@ fn the_exports_are_identical_across_front_ends_runs_and_thread_counts() {
         assert_eq!(&read_bytes(&path).expect("file"), bytes, "CLI {file}");
     }
 
-    // The pinned digests (one set: Linux and macOS agree since C12); a mismatch prints the value.
-    assert_eq!(a.smsh.1, PIN_SMSH, "lattice.smsh digest produced {}", a.smsh.1);
-    assert_eq!(a.smrt.1, PIN_SMRT, "lattice.smrt digest produced {}", a.smrt.1);
+    // The pinned raw digests of this os-arch (see `PINS`); a mismatch prints both produced values.
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    println!("w4 regions {platform} lattice.smsh sha256 {} lattice.smrt sha256 {}", a.smsh.1, a.smrt.1);
+    if let Some(&(_, smsh, smrt)) = PINS.iter().find(|p| p.0 == platform) {
+        let produced = (a.smsh.1.as_str(), a.smrt.1.as_str());
+        assert_eq!(produced, (smsh, smrt), "{platform}: produced smsh {} smrt {}", a.smsh.1, a.smrt.1);
+    }
 }
