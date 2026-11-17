@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Run one script through the smesh CLI and print `script|key|value` lines (sorted).
 
-usage: collect.py SMESH_BIN NAME SCRIPT SCRATCH_DIR
+usage: collect.py SMESH_BIN NAME SCRIPT SCRATCH_DIR [STAGE_FILE...]
+
+STAGE_FILEs are copied where `session.stage` reads them: the project directory of the project run
+and the working directory of the memory run.
 
 Keys: state, layer.<name>, mem.state (memory run, `--print-hash`), print.<name> (hash-like
 prints only), branch.<name> (state hash at each branch tip), node.<NNN>.id / node.<NNN>.state
@@ -28,15 +31,17 @@ def last_line(r):
 
 
 def main():
-    if len(sys.argv) != 5 or sys.argv[1] in ("-h", "--help"):
+    if len(sys.argv) < 5 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
     smesh, name, script, scratch = sys.argv[1:5]
+    stage = [os.path.abspath(f) for f in sys.argv[5:]]
     script = os.path.abspath(script)
     smesh = os.path.abspath(smesh)
     scratch = os.path.abspath(scratch)
     shutil.rmtree(scratch, ignore_errors=True)
     os.makedirs(scratch)
+    os.makedirs(os.path.join(scratch, "mem"))
     proj = os.path.join(scratch, "proj")
     rows = {}
 
@@ -57,6 +62,11 @@ def main():
     r_new = run(["new", proj])
     if r_new.returncode != 0:
         rows["error.new"] = last_line(r_new)
+    # staged files: from the project directory (project run) and the cwd (memory run)
+    for f in stage:
+        for d in (proj, os.path.join(scratch, "mem")):
+            if os.path.isdir(d):
+                shutil.copy(f, d)
     out = js("run", ["run", script, "-p", proj, *PIN, "--json"])
     if out is not None:
         for line in str(out.get("output", "")).splitlines():
@@ -85,7 +95,6 @@ def main():
                 rows[f"node.{i:03}.state"] = hn["state"]
     # memory run, own cwd (the w3b script writes files relative to it)
     mem = os.path.join(scratch, "mem")
-    os.makedirs(mem)
     r = run(["run", script, "--memory", "--print-hash", *PIN], cwd=mem)
     if r.returncode == 0 and r.stdout.strip():
         rows["mem.state"] = r.stdout.strip().splitlines()[-1]

@@ -167,7 +167,7 @@ source = "smart-mesh tools/refcorpus/gen_openmc.py"
 licence = "MIT (smart-mesh)"
 tool = "OpenMC 0.16.0"
 deck = "openmc-hex-y-7ring/geometry.xml"
-expected = "unsupported:hex_lattice"
+expected = "accepted"
 note = "hex lattice orientation y, 7 rings, one pin universe"
 
 [[entry.outputs]]
@@ -186,7 +186,7 @@ source = "smart-mesh tools/refcorpus/gen_openmc.py"
 licence = "MIT (smart-mesh)"
 tool = "OpenMC 0.16.0"
 deck = "openmc-hex-x-7ring/geometry.xml"
-expected = "unsupported:hex_lattice"
+expected = "accepted"
 note = "hex lattice orientation x, 7 rings, one pin universe"
 
 [[entry.outputs]]
@@ -205,7 +205,7 @@ source = "smart-mesh tools/refcorpus/gen_openmc.py"
 licence = "MIT (smart-mesh)"
 tool = "OpenMC 0.16.0"
 deck = "openmc-hex-y-mixed/geometry.xml"
-expected = "unsupported:hex_lattice"
+expected = "accepted"
 note = "hex lattice orientation y, 7 rings, pins and guide tubes (mixed)"
 
 [[entry.outputs]]
@@ -343,8 +343,8 @@ licence = "CC-BY-4.0 (idaholab/virtual_test_bed LICENSE)"
 tool = "none (verbatim copy)"
 deck = "vtb-startr-openmc/microreactors/STARTR/OpenMC/geometry.xml"
 fetch_paths = ["microreactors/STARTR/OpenMC/geometry.xml", "microreactors/STARTR/OpenMC/materials.xml"]
-expected = "unsupported:hex_lattice"
-note = "STARTR microreactor OpenMC deck (hex lattices)"
+expected = "accepted"
+note = "STARTR microreactor OpenMC deck (hex lattices); the tracker import accepts it, the B-rep import gives a typed csg.kernel (OR-h: near-tangent cylinder gaps below kernel clearance)"
 
 [[entry.outputs]]
 path = "vtb-startr-openmc/microreactors/STARTR/OpenMC/geometry.xml"

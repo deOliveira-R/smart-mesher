@@ -59,13 +59,14 @@ def read_rows(path):
 
 
 def cmd_platform(expected, hashes):
-    """The 62 data lines of expected.txt recomputed, plus the sha256 of expected.txt itself."""
+    """The untagged data lines of expected.txt recomputed, plus the sha256 of expected.txt itself."""
     got = read_rows(hashes)
     n = 0
     with open(expected, encoding="utf-8") as f:
         for ln in f:
             ln = ln.rstrip("\n")
-            if not ln or ln.startswith("#"):
+            # `[os-arch] ...` lines are another platform's values for keys already listed untagged
+            if not ln or ln.startswith("#") or ln.startswith("["):
                 continue
             s, k, _ = ln.split("|", 2)
             row(

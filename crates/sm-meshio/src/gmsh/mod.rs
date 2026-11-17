@@ -111,6 +111,15 @@ pub enum GmshError {
         /// Face index.
         face: u32,
     },
+    /// A tetrahedron of a decomposed polyhedron has zero or negative volume (a cell that is not
+    /// star-shaped about its centroid, or a degenerate face).
+    #[error("cell {cell}, face {face}: the polyhedron decomposition gives a tetrahedron of volume <= 0")]
+    InvertedDecomposition {
+        /// Cell index.
+        cell: u32,
+        /// Face index.
+        face: u32,
+    },
     /// A set label is not a positive 32-bit integer or repeats within a dimension.
     #[error("set {set:?}: label {label} is not usable as a physical tag")]
     BadLabel {

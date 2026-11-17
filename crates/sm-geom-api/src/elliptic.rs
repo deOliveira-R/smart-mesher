@@ -33,7 +33,7 @@ pub(crate) fn ellipse_closest_angle(a: f64, b: f64, px: f64, py: f64) -> f64 {
             if g != 0.0 {
                 let r0 = (e0 / e1) * (e0 / e1);
                 let n0 = r0 * z0;
-                let (mut s0, mut s1) = (z1 - 1.0, if g < 0.0 { 0.0 } else { n0.hypot(z1) - 1.0 });
+                let (mut s0, mut s1) = (z1 - 1.0, if g < 0.0 { 0.0 } else { crate::fmath::hypot(n0, z1) - 1.0 });
                 let mut s = 0.0;
                 for _ in 0..160 {
                     s = 0.5 * (s0 + s1);
@@ -71,7 +71,7 @@ pub(crate) fn ellipse_closest_angle(a: f64, b: f64, px: f64, py: f64) -> f64 {
     // Back to the original quadrant and axes.
     let (qx, qy) = if swap { (x1, x0) } else { (x0, x1) };
     let (qx, qy) = (qx.copysign(px), qy.copysign(py));
-    wrap_tau((qy / b).atan2(qx / a))
+    wrap_tau(crate::fmath::atan2(qy / b, qx / a))
 }
 
 /// Infinite elliptic cylinder about `frame.z`: semi-axis `a` along `frame.x`, `b` along `frame.y`.
@@ -100,13 +100,13 @@ impl ParametricSurface for EllipticCylinder {
     }
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let f = &self.frame;
-        let (s, c) = uv.u.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(uv.u);
         let radial = comb2(self.a * c, f.x, self.b * s, f.y);
         let z = Vector3::default();
         SurfaceJet { p: f.origin + radial + f.z * uv.v, du: comb2(-self.a * s, f.x, self.b * c, f.y), dv: f.z, duu: -radial, duv: z, dvv: z }
     }
     fn normal(&self, uv: Uv) -> Result<Vector3, GeomError> {
-        let (s, c) = uv.u.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(uv.u);
         unit(comb2(self.b * c, self.frame.x, self.a * s, self.frame.y)).ok_or(GeomError::Singular("elliptic cylinder normal"))
     }
     /// Exact closest point (the closest point on the cross-section ellipse, by bisection).
@@ -147,14 +147,14 @@ impl EllipticCone {
     }
     /// The `v` value of the apex.
     pub fn apex_v(&self) -> f64 {
-        -self.a / self.half_angle.sin()
+        -self.a / crate::fmath::sin(self.half_angle)
     }
     /// The apex point.
     pub fn apex(&self) -> Point3 {
-        self.frame.origin + self.frame.z * (self.apex_v() * self.half_angle.cos())
+        self.frame.origin + self.frame.z * (self.apex_v() * crate::fmath::cos(self.half_angle))
     }
     fn k(&self, v: f64) -> f64 {
-        1.0 + v * self.half_angle.sin() / self.a
+        1.0 + v * crate::fmath::sin(self.half_angle) / self.a
     }
 }
 
@@ -166,8 +166,8 @@ impl ParametricSurface for EllipticCone {
     }
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let f = &self.frame;
-        let (sh, ch) = self.half_angle.sin_cos();
-        let (s, c) = uv.u.sin_cos();
+        let (sh, ch) = crate::fmath::sin_cos(self.half_angle);
+        let (s, c) = crate::fmath::sin_cos(uv.u);
         let k = self.k(uv.v);
         let kv = sh / self.a;
         let e = comb2(self.a * c, f.x, self.b * s, f.y);
@@ -177,8 +177,8 @@ impl ParametricSurface for EllipticCone {
     /// The normal is constant along a generator, so it is exact at the apex too.
     fn normal(&self, uv: Uv) -> Result<Vector3, GeomError> {
         let f = &self.frame;
-        let (sh, ch) = self.half_angle.sin_cos();
-        let (s, c) = uv.u.sin_cos();
+        let (sh, ch) = crate::fmath::sin_cos(self.half_angle);
+        let (s, c) = crate::fmath::sin_cos(uv.u);
         let e = comb2(self.a * c, f.x, self.b * s, f.y);
         let de = comb2(-self.a * s, f.x, self.b * c, f.y);
         unit(de.cross(e * (sh / self.a) + f.z * ch)).ok_or(GeomError::Singular("elliptic cone normal"))
@@ -189,12 +189,12 @@ impl ParametricSurface for EllipticCone {
     /// golden-section refinement in the best sample's bracket, then the hint is tried too.
     fn project(&self, p: Point3, hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
         let l = self.frame.to_local(p);
-        let (sh, ch) = self.half_angle.sin_cos();
+        let (sh, ch) = crate::fmath::sin_cos(self.half_angle);
         let av = self.apex_v();
         let rel = Vector3::new(l.x, l.y, l.z - av * ch);
         // Squared distance to generator `u`, and the clamped ray parameter (as `v - apex_v`).
         let gen_dist = |u: f64| -> (f64, f64) {
-            let (s, c) = u.sin_cos();
+            let (s, c) = crate::fmath::sin_cos(u);
             let g = Vector3::new(c * sh, self.b * s * sh / self.a, ch);
             let t = (rel.dot(g) / g.dot(g)).max(0.0);
             { let d = rel - g * t; (d.dot(d), t) }
@@ -251,7 +251,7 @@ impl ParametricSurface for EllipticCone {
     /// The double cone `(x/a)^2 + (y/b)^2 - (1 + z tan h / a)^2` (negative inside), like
     /// [`crate::Cone`]'s.
     fn implicit(&self) -> Option<ImplicitDef> {
-        let t = self.half_angle.tan() / self.a;
+        let t = crate::fmath::tan(self.half_angle) / self.a;
         // (x/a)^2 + (y/b)^2 - (1 + t z)^2 = x^2/a^2 + y^2/b^2 - t^2 z^2 - 2 t z - 1.
         Some(ImplicitDef::Quadric(Quadric::from_local(&self.frame, [1.0 / (self.a * self.a), 1.0 / (self.b * self.b), -t * t], [0.0, 0.0, -2.0 * t], -1.0)))
     }
@@ -272,9 +272,9 @@ impl ParametricSurface for EllipticCone {
         for h in &mut out[first..] {
             // u from the local position; v from the height (exact on the surface).
             let l = self.frame.to_local(h.point);
-            let v = l.z / self.half_angle.cos();
+            let v = l.z / crate::fmath::cos(self.half_angle);
             let k = self.k(v);
-            h.uv = (k > 0.0).then(|| Uv::new(wrap_tau((l.y / (self.b * k)).atan2(l.x / (self.a * k))), v));
+            h.uv = (k > 0.0).then(|| Uv::new(wrap_tau(crate::fmath::atan2(l.y / (self.b * k), l.x / (self.a * k))), v));
         }
         Ok(())
     }
@@ -353,7 +353,7 @@ pub(crate) fn cone_from_quadric(q: &Quadric, toward: Vector3, section: Point3) -
     }
     let lz = -vals[*ni];
     let (sa, sb) = ((lz / vals[ix]).sqrt(), (lz / vals[iy]).sqrt());
-    let half_angle = sa.atan();
+    let half_angle = crate::fmath::atan(sa);
     let frame = Frame { origin: apex + z * h0, x, y, z };
     EllipticCone::new(frame, h0 * sa, h0 * sb, half_angle)
 }

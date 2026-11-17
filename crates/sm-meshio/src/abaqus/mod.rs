@@ -137,6 +137,15 @@ pub enum AbaqusError {
         /// Face index.
         face: u32,
     },
+    /// A tetrahedron of a decomposed polyhedron has zero or negative volume (a cell that is not
+    /// star-shaped about its centroid, or a degenerate face); Abaqus rejects such C3D4 elements.
+    #[error("cell {cell}, face {face}: the polyhedron decomposition gives a tetrahedron of volume <= 0")]
+    InvertedDecomposition {
+        /// Cell index.
+        cell: u32,
+        /// Face index.
+        face: u32,
+    },
     /// More nodes or elements than the writer's 32-bit ids allow.
     #[error("the mesh is too large for the Abaqus writer: {0}")]
     TooLarge(&'static str),

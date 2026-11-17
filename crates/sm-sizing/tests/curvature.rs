@@ -8,7 +8,7 @@ use sm_core::Point3;
 use sm_scheme_api::geom::{edge_point, edge_size_goal};
 use sm_scheme_api::stubs::brick_setup;
 use sm_scheme_api::{Params, SchemeError, SizeField, SizingSpec};
-use sm_sizing::{Graded, size_field, size_field_geo};
+use sm_sizing::{Graded, is_ungraded_curvature, size_field, size_field_geo};
 use sm_topo_api::fixtures::{CylinderIds, SphereIds, TorusIds, cylinder, sphere, torus, with_op};
 use sm_topo_api::{CellComplex, OpId};
 
@@ -349,4 +349,19 @@ fn default_grade_meets_the_rule_on_the_carriers_between_samples() {
         }
         assert!(worst <= 1.0 + DELTA, "sphere r={r} t={t}: size/rule {worst}");
     }
+}
+
+#[test]
+fn ungraded_curvature_is_recognised_for_the_caller_to_warn() {
+    let c = |g: Option<serde_json::Value>| {
+        let mut p = serde_json::json!({ "tol": 0.01, "h_max": 0.5 });
+        if let Some(g) = g {
+            p["grade"] = g;
+        }
+        func("curvature", p)
+    };
+    assert!(is_ungraded_curvature(&c(Some(serde_json::json!("off")))));
+    assert!(!is_ungraded_curvature(&c(None)));
+    assert!(!is_ungraded_curvature(&c(Some(serde_json::json!(0.5)))));
+    assert!(!is_ungraded_curvature(&SizingSpec::Constant { size: 0.1 }));
 }

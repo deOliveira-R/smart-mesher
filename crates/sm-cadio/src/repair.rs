@@ -8,6 +8,10 @@
 //! guessed: the shell stays open and the caller gets the same [`StepError::OpenShell`] as
 //! without repair. A cap that lands on an existing face, or a closed shell of about zero volume,
 //! is refused too (a displaced face is not a missing one). The result is all or nothing per solid.
+//!
+//! Sheets are repaired one at a time, so a face of the same part that sits in another sheet is
+//! not seen by the cap check. [`note_displaced_faces`] looks for it afterwards and rewrites the
+//! `step.repaired` note to say that the cap replaces a displaced face (it does not sew it).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,7 +20,7 @@ use sm_geom_api::{CurveDef, Frame, Plane, SurfaceDef};
 use sm_topo_api::Sense;
 
 use crate::error::{OpenEdge, StepError};
-use crate::model::{Coedge, Face, Note, NoteCode, Solid, SurfaceRec};
+use crate::model::{Coedge, Face, Note, NoteCode, Solid, SolidKind, SurfaceRec};
 
 /// Close every open shell of `solid` with planar caps; `tol` is the planarity tolerance.
 ///
@@ -187,4 +191,38 @@ fn polyhedron_volume(solid: &Solid, faces: &[&Face], extra: &[SurfaceRec]) -> Op
     }
     let extent = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
     Some((v6 / 6.0, extent))
+}
+
+/// Rewrite the `step.repaired` note of every cap that has a near-coplanar face on the same
+/// outline in another (not imported) sheet: that face is displaced, not missing. The cap stays,
+/// the note names the face and its offset. Caps are found by their face id (the note's first id).
+pub(crate) fn note_displaced_faces(solids: &[Solid], notes: &mut [Note]) {
+    for n in notes.iter_mut().filter(|n| n.code == NoteCode::Repaired && n.message.starts_with("closed an open boundary")) {
+        let Some(&cap_id) = n.step_ids.first() else { continue };
+        let Some((s, cap)) = solids.iter().filter(|s| s.kind != SolidKind::Sheet).find_map(|s| s.faces.iter().find(|f| f.id == cap_id).map(|f| (s, f))) else { continue };
+        let Some((nh, o, pts)) = plane_outline(s, cap) else { continue };
+        let extent = pts.iter().map(|p| (*p - pts[0]).norm()).fold(0.0f64, f64::max);
+        let near = 1e-3 * extent;
+        let found = solids.iter().filter(|b| b.kind == SolidKind::Sheet).flat_map(|b| b.faces.iter().map(move |f| (b, f))).find_map(|(b, f)| {
+            let (m, p0, q) = plane_outline(b, f)?;
+            let off = (p0 - o).dot(nh);
+            let same = q.len() == pts.len() && m.dot(nh).abs() > 1.0 - 1e-9 && off.abs() <= near;
+            let outline = same && q.iter().all(|p| pts.iter().any(|c| (*p - *c - nh * off).norm() <= near));
+            outline.then_some((f.id, off))
+        });
+        if let Some((id, off)) = found {
+            n.message = n.message.replace("a face was missing", &format!("the file holds a face #{id} on this outline at offset {off:.3e} in another sheet: it is replaced by the cap, not sewn"));
+        }
+    }
+}
+
+/// Normal, a point and the outer-loop vertices of a planar, straight-edged face.
+fn plane_outline(solid: &Solid, f: &Face) -> Option<(Vector3, sm_core::Point3, Vec<sm_core::Point3>)> {
+    let SurfaceDef::Plane(pl) = &solid.surfaces.get(f.surface)?.def else { return None };
+    let lp = f.loops.first()?;
+    if lp.iter().any(|c| !matches!(solid.curves[solid.edges[c.edge].curve].def, CurveDef::Line(_))) {
+        return None;
+    }
+    let pts = lp.iter().map(|c| solid.vertices[coedge_start(solid, c)].point).collect();
+    Some((pl.frame.z, pl.frame.origin, pts))
 }

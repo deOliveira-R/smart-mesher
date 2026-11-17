@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print sorted `script|key|value` identity-hash lines for the milestone scripts (W2 milestone and
 # fork, W3a hybrid and tet, W3b milestone, the SUBMAP_GRADED fixture, w3c_pin.smesh, and the
-# information-only curved probe). Exits 1 if any step left an `error.*` key. Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
+# information-only curved probe, the W4 polyhedral, regions and round-pin (ogrid, enclosed hex) milestones). Exits 1 if any step left an `error.*` key. Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
 #
 #   tools/platform/hashes.sh OUT_FILE [--extras]
 #
@@ -27,8 +27,10 @@ rm -rf "$emit"
 MILESTONE_W3A_EMIT="$emit" cargo test -p sm-cli --locked --test milestone_w3a emit_conformance_scripts >/dev/null
 
 : > "$out.tmp"
-run() { # name script
-  python3 tools/platform/collect.py "$smesh" "$1" "$2" "$scratch/run-$1" >> "$out.tmp"
+run() { # name script [stage files]
+  local name="$1" script="$2"
+  shift 2
+  python3 tools/platform/collect.py "$smesh" "$name" "$script" "$scratch/run-$name" "$@" >> "$out.tmp"
 }
 run w2_milestone crates/sm-cli/tests/data/milestone.smesh
 run w2_fork crates/sm-cli/tests/data/fork.smesh
@@ -38,6 +40,11 @@ run w3b_milestone tools/w3b_milestone.smesh
 run w3b_submap_graded tools/platform/submap_graded.smesh
 run curved_probe tools/platform/curved_probe.smesh   # information only (see platform-hashes.md)
 run w3c_pin tools/w3c_pin.smesh
+deck=crates/sm-csgio/tests/fixtures/openmc/pin
+run w4_poly tools/w4_poly.smesh "$deck/geometry.xml" "$deck/materials.xml"
+run w4_regions tools/w4_regions.smesh
+run w4_pin_ogrid tools/w4_pin_ogrid.smesh
+run w4_pin_enclosed_hex tools/w4_pin_enclosed_hex.smesh
 LC_ALL=C sort "$out.tmp" > "$out"
 rm -f "$out.tmp"
 echo "wrote $out ($(wc -l < "$out") lines)"

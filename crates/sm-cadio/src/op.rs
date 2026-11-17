@@ -99,7 +99,7 @@ pub struct ImportStep {
     /// Repair mode. `tolerant` closes an open shell that lacks planar faces (and treats open
     /// `SHELL_BASED_SURFACE_MODEL` sheets as candidates), one `step.repaired` warning per fix;
     /// what it cannot close is refused as `step.open_shell` (solids) or reported as
-    /// `step.repair_failed` (sheets). Default: detect and refuse.
+    /// `step.repair_failed` (sheets); a sheet that does not decode is `step.sheet_undecoded`. Default: detect and refuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair: Option<RepairMode>,
 }
@@ -136,8 +136,15 @@ impl TypedOp for ImportStep {
         let bytes = load(&self.source, || ctx.service::<StepInputs>())?;
         let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: self.sheets.unwrap_or(false), flatten_assemblies: true, repair: self.repair.is_some() };
         let model = read_step(&bytes, &opts)?;
-        if model.solids.is_empty() && let Some(n) = model.notes.iter().find(|n| n.code == NoteCode::RepairFailed) {
-            return Err(OpError::Invalid(format!("step.open_shell: {}", n.message)));
+        if model.solids.is_empty() {
+            // An open shell that could not be closed is `step.open_shell`; a sheet that did not
+            // decode is its own code (it is not an open shell).
+            if let Some(n) = model.notes.iter().find(|n| n.code == NoteCode::RepairFailed) {
+                return Err(OpError::Invalid(format!("step.open_shell: {}", n.message)));
+            }
+            if let Some(n) = model.notes.iter().find(|n| n.code == NoteCode::SheetUndecoded) {
+                return Err(OpError::Invalid(format!("step.sheet_undecoded: {}", n.message)));
+            }
         }
         if model.solids.is_empty() {
             return Err(OpError::Invalid("step.no_solids: the file contains no solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, FACETED_BREP) to import".to_owned()));

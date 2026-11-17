@@ -2,10 +2,17 @@
 //!
 //! `tools/platform/expected.txt` holds `script|key|value` lines: the identity hashes of the
 //! milestone scripts (state hash, layer hashes, branch tips, the memory-run hash, and the
-//! hash-like and count prints), measured on macOS arm64 and equal on Linux arm64 (glibc 2.36 and
-//! 2.39), see `docs/design/w3c/platform-hashes.md`. This test recomputes them through the `smesh`
-//! binary with the same pinning as `tools/platform/collect.py` and requires equality, so the
-//! Linux x86_64 GitHub gate enforces them. It runs twice, with default threads and with
+//! hash-like and count prints), measured on macOS arm64; the W2 to W3c rows are equal on Linux
+//! arm64 (glibc 2.36 and 2.39) and Linux x86_64, see `docs/design/w3c/platform-hashes.md`.
+//! W4-INT adds the polyhedral (`tools/w4_poly.smesh`, with the OpenMC `pin` deck copied where the
+//! script stages it), regions (`tools/w4_regions.smesh`) and round-pin (`tools/w4_pin_ogrid.smesh`,
+//! `tools/w4_pin_enclosed_hex.smesh`) milestones. Every identity hash is one value on every platform
+//! (C12, `docs/design/w4/int/c12.md`, ruling OR-k): the file has no per-platform lines. The parser
+//! still accepts `[os-arch] script|key|value` lines, which replace the untagged value of the same
+//! key on that platform only; per C12 they are for raw-bit hashes only, never identity hashes.
+//! This test recomputes the lines through the `smesh` binary with the same pinning as
+//! `tools/platform/collect.py` and requires equality with this platform's set, so the Linux x86_64
+//! GitHub gate enforces them. It runs twice, with default threads and with
 //! `RAYON_NUM_THREADS=1`; both must equal the file. A moved value is never re-blessed per
 //! platform (C3, C12): find the first diverging op instead (`tools/platform/compare.py`).
 //!
@@ -14,7 +21,7 @@
 
 mod w3a_support;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -76,6 +83,7 @@ fn s(v: &Value) -> R<String> {
 fn collect(
     name: &str,
     script: &Path,
+    stage: &[PathBuf],
     scratch: &Path,
     threads: Option<&str>,
 ) -> R<BTreeSet<String>> {
@@ -86,6 +94,13 @@ fn collect(
     let (ps, mut rows) = (proj.to_string_lossy().into_owned(), BTreeSet::new());
     let mut add = |k: &str, v: String| rows.insert(format!("{name}|{k}|{v}"));
     smesh(&["new", &ps], &dir, threads)?;
+    // files the script stages: from the project directory (project run) and the cwd (memory run)
+    for f in stage {
+        let base = f.file_name().ok_or("stage file without a name")?;
+        for d in [proj.clone(), dir.join("mem")] {
+            std::fs::copy(f, d.join(base)).map_err(|e| format!("stage {}: {e}", f.display()))?;
+        }
+    }
     let mut a = vec!["run", script.as_str(), "-p", ps.as_str()];
     a.extend(PIN);
     a.push("--json");
@@ -133,30 +148,66 @@ fn all(threads: Option<&str>, scratch: &Path) -> R<BTreeSet<String>> {
     ] {
         std::fs::write(emit.join(f), text).map_err(|e| e.to_string())?;
     }
-    let scripts: [(&str, PathBuf); 7] = [
-        ("w2_milestone", data.join("milestone.smesh")),
-        ("w2_fork", data.join("fork.smesh")),
-        ("w3a_hybrid", emit.join("w3a_hybrid.smesh")),
-        ("w3a_tet", emit.join("w3a_tet.smesh")),
-        ("w3b_milestone", t.join("w3b_milestone.smesh")),
-        ("w3b_submap_graded", t.join("platform/submap_graded.smesh")),
-        ("w3c_pin", t.join("w3c_pin.smesh")),
+    // the OpenMC `pin` deck that tools/w4_poly.smesh stages from its working directory
+    let deck = root().join("crates/sm-csgio/tests/fixtures/openmc/pin");
+    let deck = vec![deck.join("geometry.xml"), deck.join("materials.xml")];
+    let scripts: [(&str, PathBuf, &[PathBuf]); 11] = [
+        ("w2_milestone", data.join("milestone.smesh"), &[]),
+        ("w2_fork", data.join("fork.smesh"), &[]),
+        ("w3a_hybrid", emit.join("w3a_hybrid.smesh"), &[]),
+        ("w3a_tet", emit.join("w3a_tet.smesh"), &[]),
+        ("w3b_milestone", t.join("w3b_milestone.smesh"), &[]),
+        ("w3b_submap_graded", t.join("platform/submap_graded.smesh"), &[]),
+        ("w3c_pin", t.join("w3c_pin.smesh"), &[]),
+        ("w4_poly", t.join("w4_poly.smesh"), &deck),
+        ("w4_regions", t.join("w4_regions.smesh"), &[]),
+        ("w4_pin_ogrid", t.join("w4_pin_ogrid.smesh"), &[]),
+        ("w4_pin_enclosed_hex", t.join("w4_pin_enclosed_hex.smesh"), &[]),
     ];
     let mut rows = BTreeSet::new();
-    for (name, path) in &scripts {
-        rows.extend(collect(name, path, scratch, threads)?);
+    for (name, path, stage) in &scripts {
+        rows.extend(collect(name, path, stage, scratch, threads)?);
     }
     Ok(rows)
 }
 
-fn expected() -> R<BTreeSet<String>> {
+/// This machine's os-arch tag, spelled as in the census (`linux-x86_64`, `macos-aarch64`).
+fn os_arch() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The expected lines for `os_arch`: the untagged `script|key|value` lines, with every
+/// `[os-arch] script|key|value` line of this platform replacing the untagged value of its key.
+fn expected(os_arch: &str) -> R<BTreeSet<String>> {
     let p = root().join("tools/platform/expected.txt");
     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    Ok(text
-        .lines()
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_owned)
-        .collect())
+    let mut base = BTreeMap::new();
+    let mut over = BTreeMap::new();
+    for l in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (tag, line) = match l.strip_prefix('[') {
+            Some(rest) => {
+                let (t, line) = rest
+                    .split_once("] ")
+                    .ok_or_else(|| format!("bad tagged line: {l}"))?;
+                (Some(t), line)
+            }
+            None => (None, l),
+        };
+        let (key, value) = line
+            .rsplit_once('|')
+            .ok_or_else(|| format!("bad line: {l}"))?;
+        match tag {
+            None => base.insert(key.to_owned(), value.to_owned()),
+            Some(t) if t == os_arch => over.insert(key.to_owned(), value.to_owned()),
+            Some(_) => None,
+        };
+    }
+    for (k, v) in &over {
+        if base.insert(k.clone(), v.clone()).is_none() {
+            return Err(format!("[{os_arch}] {k} overrides no untagged line"));
+        }
+    }
+    Ok(base.into_iter().map(|(k, v)| format!("{k}|{v}")).collect())
 }
 
 fn diff(want: &BTreeSet<String>, got: &BTreeSet<String>) -> String {
@@ -187,11 +238,12 @@ fn identity_hashes_match_expected_on_every_platform() {
         std::fs::write(p, text).expect("write emit file");
         return;
     }
-    let want = expected().expect("expected.txt");
+    let want = expected(&os_arch()).expect("expected.txt");
     let d = diff(&want, &default);
     assert!(
         d.is_empty(),
-        "identity hashes moved on this platform (C3/C12: do not re-bless):\n{d}"
+        "identity hashes moved on {} (C3/C12: do not re-bless):\n{d}",
+        os_arch()
     );
     let one = all(Some("1"), &scratch).expect("1-thread run");
     let d = diff(&default, &one);

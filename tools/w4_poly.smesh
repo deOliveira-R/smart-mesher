@@ -1,0 +1,81 @@
+// W4 polyhedral milestone (docs/design/w4/plan.md section 5 item 1).
+//
+// The OpenMC `pin` deck (crates/sm-csgio/tests/fixtures/openmc/pin: fuel r 0.4, void gap to 0.42,
+// clad to 0.46, water in a 1.26 square, z in [-2, 2]) becomes four B-rep volumes in one op, is
+// meshed all-tet with 36 intervals on every circle, and is dualized to a polyhedral mesh: circumcentric
+// when `mesh.poly_info` says the tet mesh qualifies, barycentric otherwise (the script prints
+// which). The `.smsh` (with the geometry cache gc_*) and `.smrt` are exported.
+//
+// The deck is read from `geometry.xml` and `materials.xml` in the working directory (the test
+// copies the fixture bytes there). It prints `key value...` lines that tests/milestone_w4_poly.rs
+// compares between the front ends.
+
+let gs = session.stage("geometry.xml")
+let ms = session.stage("materials.xml")
+print "sha_geometry", gs.sha256
+print "sha_materials", ms.sha256
+let imp = model.import_openmc(geometry: {sha256: gs.sha256}, materials: {sha256: ms.sha256})
+print "deck_volumes", count(all volumes)
+assert count(all volumes) == 4, "pin deck: fuel, void gap, clad, water"
+print "h_model", session.hash()
+
+// 36 intervals on every circle: an edge longer than its bounding-box diagonal is curved.
+for e in all edges {
+  let me = model.measure(entity: e)
+  let dx = me.bbox.hi[0] - me.bbox.lo[0]
+  let dy = me.bbox.hi[1] - me.bbox.lo[1]
+  let dz = me.bbox.hi[2] - me.bbox.lo[2]
+  if me.length > ((dx * dx + dy * dy + dz * dz) ** 0.5) * 1.000001 {
+    // the seam splits each circle into a 1 rad arc and a 2 pi - 1 rad arc (the same seam for
+    // every circle, so the nodes line up radially): 6 + 30 intervals, 0.167 and 0.176 rad.
+    mesh.intervals(targets: e, count: if me.length < 1.0 { 6 } else { 30 })
+  } else if me.length < 2.0 {
+    // the square's 1.26 edges: 0.18 each
+    mesh.intervals(targets: e, count: 7)
+  } else {
+    // the 4.0 vertical edges: 0.29 each (the 12 degree face-angle gate needs about this much)
+    mesh.intervals(targets: e, count: 14)
+  }
+}
+mesh.size(targets: all volumes, size: 2.0)
+// Curvature sizing (W4 SIZE-CURV, opt-in): without it the cylinder sides are meshed by long
+// triangles and the fuel is 1.3% below the circle (the 36-gon prism is 0.5% below). tol 0.0025
+// is 1.6 times the 36-gon sagitta of the fuel circle (0.0015): sides about 0.09 long, fuel
+// shortfall 0.7%, about 1.6 times the run time of the plain size.
+mesh.default_size(function: "curvature", params: {tol: 0.0025, h_max: 2.0})
+print "h_sized", session.hash()
+
+// ---------------------------------------------------------------- all-tet mesh
+let au = mesh.auto(strategy: "tet")
+print "h_auto", session.hash()
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "tet_cells", mi.cells
+print "tet_shapes", mi.cell_shapes
+print "tet_mesh", m.mesh[0]
+print "tet_volume", mi.volume_by_owner
+let tv = mesh.validate(mesh: m.mesh[0])
+assert tv.valid and tv.total == 0, "tet mesh validates"
+print "h_tet", session.hash()
+
+// ---------------------------------------------------------------- dual
+let pi = mesh.poly_info(mesh: m.mesh[0])
+let nd = pi.dual_eligibility.non_delaunay_faces
+let oc = pi.dual_eligibility.outside_circumcentres
+print "non_delaunay_faces", nd
+print "outside_circumcentres", oc
+let dual = if nd + oc == 0 { "circumcentric" } else { "barycentric" }
+print "dual", dual
+let p = mesh.to_poly(mesh: m.mesh[0], dual: dual)
+let pv = mesh.validate(mesh: p.mesh[0])
+assert pv.valid and pv.total == 0, "polyhedral mesh validates"
+print "violations", pv.total
+let pmi = mesh.info(mesh: p.mesh[0])
+print "poly_cells", pmi.cells
+print "poly_mesh", p.mesh[0]
+print "h_mesh", session.hash()
+
+// ---------------------------------------------------------------- exports
+session.export("pin.smsh", mesh: p.mesh[0])
+session.export("pin.smrt", mesh: p.mesh[0])
+print "head", timeline.head().branch

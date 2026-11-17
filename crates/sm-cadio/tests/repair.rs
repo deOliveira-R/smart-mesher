@@ -206,12 +206,71 @@ fn an_undecodable_stray_sheet_does_not_fail_the_import_under_repair() {
     assert_eq!(plain.solids.len(), 1);
     let m = read_step(text.as_bytes(), &repair_opts()).expect("repair read");
     assert_eq!(m.solids.len(), 1);
-    assert_eq!(failed(&m), 1);
-    assert!(m.notes.iter().any(|n| n.code == NoteCode::RepairFailed && n.message.contains("#9002")));
+    assert_eq!(failed(&m), 0);
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::SheetUndecoded && n.message.contains("#9002")));
     check_brick(&m);
 
     // A face on a missing surface behaves the same.
     let missing = text.replace("#9011,.T.", "#99999,.T.");
     let m = read_step(missing.as_bytes(), &repair_opts()).expect("repair read");
-    assert_eq!((m.solids.len(), failed(&m)), (1, 1));
+    assert_eq!(m.solids.len(), 1);
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::SheetUndecoded));
+}
+
+/// A top face of the open box displaced by `dz`, as its own sheet (#901) with its own entities.
+fn displaced_top(dz: f64) -> Vec<u8> {
+    let z = 4.0 + dz;
+    let pts = [(0.0f64, 0.0f64), (2.0, 0.0), (2.0, 3.0), (0.0, 3.0)];
+    let mut e = String::new();
+    for (k, (x, y)) in pts.iter().enumerate() {
+        let b = 300 + 10 * k;
+        e.push_str(&format!("#{b} = CARTESIAN_POINT('',({x:?},{y:?},{z:?}));\n#{} = VERTEX_POINT('',#{b});\n", b + 1));
+    }
+    for k in 0..4 {
+        let (a, b) = (301 + 10 * k, 301 + 10 * ((k + 1) % 4));
+        let c = 400 + 10 * k;
+        let (p, q) = (pts[k], pts[(k + 1) % 4]);
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+        let len = dx.hypot(dy);
+        e.push_str(&format!(
+            "#{c} = CARTESIAN_POINT('',({:?},{:?},{z:?}));\n#{} = DIRECTION('',({:?},{:?},0.));\n#{} = VECTOR('',#{},1.);\n#{} = LINE('',#{c},#{});\n#{} = EDGE_CURVE('',#{a},#{b},#{},.T.);\n#{} = ORIENTED_EDGE('',*,*,#{},.T.);\n",
+            p.0, p.1, c + 1, dx / len, dy / len, c + 2, c + 1, c + 3, c + 2, c + 4, c + 3, c + 5, c + 4
+        ));
+    }
+    e.push_str(&format!(
+        "#500 = EDGE_LOOP('',(#405,#415,#425,#435));\n#501 = FACE_OUTER_BOUND('',#500,.T.);\n#502 = CARTESIAN_POINT('',(0.,0.,{z:?}));\n#503 = DIRECTION('',(0.,0.,1.));\n#504 = DIRECTION('',(1.,0.,0.));\n#505 = AXIS2_PLACEMENT_3D('',#502,#503,#504);\n#506 = PLANE('',#505);\n#507 = ADVANCED_FACE('',(#501),#506,.T.);\n#900 = OPEN_SHELL('',(#507));\n"
+    ));
+    sheet_with("#155 = SHELL_BASED_SURFACE_MODEL('box',(#154));\n#901 = SHELL_BASED_SURFACE_MODEL('top',(#900));", &e)
+}
+
+#[test]
+fn a_displaced_face_in_another_sheet_is_named_in_the_cap_note() {
+    let m = read_step(&displaced_top(5e-5), &repair_opts()).expect("read");
+    assert_eq!(m.solids.len(), 1);
+    assert_eq!((repaired(&m), failed(&m)), (1, 1));
+    let n = m.notes.iter().find(|n| n.code == NoteCode::Repaired).expect("note");
+    assert!(n.message.contains("#507") && n.message.contains("5.000e-5") && !n.message.contains("a face was missing"), "{}", n.message);
+    check_brick(&m);
+    // A face far off (10% of the extent) is not claimed as the displaced one.
+    let far = read_step(&displaced_top(0.5), &repair_opts()).expect("read");
+    let n = far.notes.iter().find(|n| n.code == NoteCode::Repaired).expect("note");
+    assert!(n.message.contains("a face was missing"), "{}", n.message);
+}
+
+#[test]
+fn an_undecodable_sheet_has_its_own_code_not_open_shell() {
+    let text = String::from_utf8(data("brick_2x3x4.stp")).expect("utf8");
+    let stray = "#9011 = OFFSET_SURFACE('',#152,1.,.F.);\n#9000 = ADVANCED_FACE('',(#152),#9011,.T.);\n#9001 = OPEN_SHELL('',(#9000));\n#9002 = SHELL_BASED_SURFACE_MODEL('stray',(#9001));\nENDSEC;";
+    let at = text.rfind("ENDSEC;").expect("endsec");
+    // The brick's own solid entity is renamed away so that no solid comes through.
+    let text = format!("{}{}{}", &text[..at], stray, &text[at + "ENDSEC;".len()..]).replace("MANIFOLD_SOLID_BREP", "MANIFOLD_SOLID_BREX");
+    let m = read_step(text.as_bytes(), &repair_opts()).expect("read");
+    assert!(m.solids.is_empty());
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::SheetUndecoded));
+    assert!(!m.notes.iter().any(|n| n.code == NoteCode::RepairFailed));
+    let store = Arc::new(MemoryInputStore::new());
+    let mut s = session(cell_complex, store);
+    let op = ImportStep { source: Source::inline(text.as_bytes()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None, repair: Some(RepairMode::Tolerant) };
+    let e = format!("{:?}", run(&mut s, &op).expect_err("nothing imports"));
+    assert!(e.contains("step.sheet_undecoded") && !e.contains("step.open_shell"), "{e}");
 }

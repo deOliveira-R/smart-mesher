@@ -67,8 +67,10 @@ fn composite_top_meshes_like_plain_brick_and_is_thread_independent() {
     let (comp4, h4, _) = run(true, 4);
     assert_eq!((n_plain, n_comp), (2, 2));
     // 4 x 4 x 4 hexes, 5^3 vertices (hand count: size 0.25 on a unit cube).
-    let text = comp1.to_string();
-    assert!(text.contains("125") && text.contains("64"), "{text}");
+    for run in [&plain, &comp1] {
+        assert_eq!(run["cells"].as_u64(), Some(64), "{run}");
+        assert_eq!(run["vertices"].as_u64(), Some(125), "{run}");
+    }
     for k in ["cells", "vertices", "faces", "cell_shapes", "volume"] {
         assert_eq!(comp1[k], plain[k], "composite top changes {k}");
     }

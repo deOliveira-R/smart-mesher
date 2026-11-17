@@ -1,0 +1,88 @@
+// W4 regions milestone (plan.md section 5 item 3, ruling D9, drafts/regions.md W4-REGIONS-SPLIT
+// acceptance 3).
+//
+// The 3x3 pin lattice: pin r = 0.4096 in a 1.26 water square, h = 1, copied with `lattice: "lat20"`,
+// the fuel of every pin cut by `model.subdivide_pin` into 3 equal-area rings x 4 sectors (117
+// regions after the split), meshed with `hex_only` (ogrid where it applies, sweep in z), every
+// circle n = 16, then `mesh.preserve_volume` (VOLFIT) on every cylinder face so each fuel region
+// holds pi r^2 h / 12 exactly. The `regions: {split: [...]}` export option is not a script
+// argument: tests/milestone_w4_regions.rs exports this session with it.
+//
+// The fuel cylinder and its tool are rotated by one radian and the sectors start there: the
+// cutting cylinders of `model.subdivide_pin` have their seam at one radian, and a seam vertex
+// inside a sector arc would break the uniform node spacing the closed form needs.
+
+// ---------------------------------------------------------------- model
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4096)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4096)
+model.rotate(entities: fu.body | tl.body, angle_deg: 57.29577951308232, axis: [0.0, 0.0, 1.0])
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+model.lattice_define(name: "lat20", layout: {kind: "cartesian", n: [3, 3], pitch: [1.26, 1.26, 1.0]})
+let fx = model.copy(entities: fu.volume, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]}, lattice: "lat20")
+let mx = model.copy(entities: mo.volumes, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]}, lattice: "lat20")
+let fy = model.copy(entities: fu.volume | fx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]}, lattice: "lat20")
+let my = model.copy(entities: mo.volumes | mx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]}, lattice: "lat20")
+model.imprint(bodies: all bodies)
+model.merge()
+let mods = mo.volumes | mx.volumes | my.volumes
+let fuels = (all volumes) - mods
+assert count(fuels) == 9 and count(mods) == 9, "9 pins and 9 moderator cells"
+for v in fuels {
+  let c = model.measure(entity: v).centroid
+  model.subdivide_pin(volumes: v, axis: [0.0, 0.0, 1.0], center: [c[0], c[1], 0.0], rings: {count: 3, mode: "equal_area"}, sectors: {count: 4, angle0_deg: 57.29577951308232})
+}
+let fp = (all volumes) - mods
+assert count(fp) == 108 and count(mods) == 9, "9 pins x 12 pieces and 9 moderator cells"
+fem.block_add(1, volumes: fp, name: "fuel")
+fem.block_add(2, volumes: mods, name: "water")
+print "volumes", count(all volumes)
+
+// n = 16 on every circle: each of its four arcs (the edges longer than their bounding-box diagonal)
+mesh.size(targets: all volumes, size: 0.3)
+for e in edges in fp {
+  let me = model.measure(entity: e)
+  let dx = me.bbox.hi[0] - me.bbox.lo[0]
+  let dy = me.bbox.hi[1] - me.bbox.lo[1]
+  let dz = me.bbox.hi[2] - me.bbox.lo[2]
+  if me.length > ((dx * dx + dy * dy + dz * dz) ** 0.5) * 1.000001 {
+    mesh.intervals(targets: e, count: 4)
+  }
+}
+let h_model = session.hash()
+print "h_model", h_model
+
+// ---------------------------------------------------------------- hex_only and the volume run
+let au = mesh.auto(strategy: "hex_only")
+print "h_auto", session.hash()
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "mesh", m.mesh[0]
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
+print "violations", val.total
+print "h_linear", session.hash()
+
+// ---------------------------------------------------------------- VOLFIT on every cylinder face
+let cyl = all faces - all faces
+for f in all faces {
+  let ms = model.measure(entity: f)
+  let fdx = ms.bbox.hi[0] - ms.bbox.lo[0]
+  let fdy = ms.bbox.hi[1] - ms.bbox.lo[1]
+  let fdz = ms.bbox.hi[2] - ms.bbox.lo[2]
+  // vertical faces whose area exceeds the chord times the height are the curved ones
+  if fdz > 0.5 and ms.area > ((fdx * fdx + fdy * fdy) ** 0.5) * fdz * 1.000001 {
+    set cyl = cyl | f
+  }
+}
+print "cyl_faces", count(cyl)
+mesh.preserve_volume(mesh: m.mesh[0], surfaces: cyl)
+let mj = mesh.info(mesh: m.mesh[0])
+print "mesh_volume", mj.volume
+let val2 = mesh.validate(mesh: m.mesh[0])
+assert val2.valid and val2.total == 0, "validate is empty after VOLFIT"
+print "h_mesh", session.hash()

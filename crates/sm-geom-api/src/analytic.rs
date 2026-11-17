@@ -23,7 +23,7 @@ fn positive(v: f64, what: &'static str) -> Result<f64, GeomError> {
 }
 
 fn unit_dir(f: &Frame, u: f64) -> (Vector3, Vector3) {
-    let (s, c) = u.sin_cos();
+    let (s, c) = crate::fmath::sin_cos(u);
     (comb2(c, f.x, s, f.y), comb2(-s, f.x, c, f.y))
 }
 
@@ -93,9 +93,9 @@ impl ParametricCurve for Circle {
     /// Closest point; for a query on the axis every point is equally close and `t = 0` is returned.
     fn project(&self, p: Point3, _hint: Option<f64>) -> Result<CurveProjection, GeomError> {
         let l = self.frame.to_local(p);
-        let t = if l.x == 0.0 && l.y == 0.0 { 0.0 } else { wrap_tau(l.y.atan2(l.x)) };
-        let rho = l.x.hypot(l.y);
-        Ok(CurveProjection { t, point: self.eval(t), distance: (rho - self.radius).hypot(l.z) })
+        let t = if l.x == 0.0 && l.y == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(l.y, l.x)) };
+        let rho = crate::fmath::hypot(l.x, l.y);
+        Ok(CurveProjection { t, point: self.eval(t), distance: crate::fmath::hypot(rho - self.radius, l.z) })
     }
     fn length(&self, range: Interval, _tol: f64) -> Result<f64, GeomError> {
         if range.is_valid() && range.is_bounded() { Ok(self.radius * range.len()) } else { Err(GeomError::Invalid("arc length needs a bounded, ordered range")) }
@@ -127,7 +127,7 @@ impl ParametricCurve for Ellipse {
         Domain1::periodic(0.0, TAU)
     }
     fn jet(&self, t: f64) -> CurveJet {
-        let (s, c) = t.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(t);
         let f = &self.frame;
         CurveJet {
             p: f.origin + comb2(self.a * c, f.x, self.b * s, f.y),
@@ -213,8 +213,8 @@ impl ParametricSurface for Cylinder {
     }
     fn project(&self, p: Point3, _hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
         let l = self.frame.to_local(p);
-        let rho = l.x.hypot(l.y);
-        let u = if rho == 0.0 { 0.0 } else { wrap_tau(l.y.atan2(l.x)) };
+        let rho = crate::fmath::hypot(l.x, l.y);
+        let u = if rho == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(l.y, l.x)) };
         let uv = Uv::new(u, l.z);
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (rho - self.radius).abs() })
     }
@@ -249,11 +249,11 @@ impl Cone {
     }
     /// The `v` value of the apex.
     pub fn apex_v(&self) -> f64 {
-        -self.radius / self.half_angle.sin()
+        -self.radius / crate::fmath::sin(self.half_angle)
     }
     /// The apex point.
     pub fn apex(&self) -> Point3 {
-        self.frame.origin + self.frame.z * (self.apex_v() * self.half_angle.cos())
+        self.frame.origin + self.frame.z * (self.apex_v() * crate::fmath::cos(self.half_angle))
     }
 }
 
@@ -265,7 +265,7 @@ impl ParametricSurface for Cone {
     }
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let f = &self.frame;
-        let (s, c) = self.half_angle.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(self.half_angle);
         let (e, n) = unit_dir(f, uv.u);
         let rho = self.radius + uv.v * s;
         SurfaceJet {
@@ -279,14 +279,14 @@ impl ParametricSurface for Cone {
     }
     /// Exact limit normal `cos a e_r - sin a z`, valid at the apex too.
     fn normal(&self, uv: Uv) -> Result<Vector3, GeomError> {
-        let (s, c) = self.half_angle.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(self.half_angle);
         Ok(comb2(c, unit_dir(&self.frame, uv.u).0, -s, self.frame.z))
     }
     fn project(&self, p: Point3, _hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
-        let (s, c) = self.half_angle.sin_cos();
+        let (s, c) = crate::fmath::sin_cos(self.half_angle);
         let l = self.frame.to_local(p);
-        let rho = l.x.hypot(l.y);
-        let u = if rho == 0.0 { 0.0 } else { wrap_tau(l.y.atan2(l.x)) };
+        let rho = crate::fmath::hypot(l.x, l.y);
+        let u = if rho == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(l.y, l.x)) };
         let va = self.apex_v();
         let h = l.z - va * c;
         let along = rho * s + h * c;
@@ -353,7 +353,7 @@ impl ParametricSurface for Sphere {
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let f = &self.frame;
         let (e, n) = unit_dir(f, uv.u);
-        let (sv, cv) = uv.v.sin_cos();
+        let (sv, cv) = crate::fmath::sin_cos(uv.v);
         let r = self.radius;
         let radial = comb2(cv, e, sv, f.z);
         SurfaceJet {
@@ -367,7 +367,7 @@ impl ParametricSurface for Sphere {
     }
     /// Exact radial normal, valid at the poles.
     fn normal(&self, uv: Uv) -> Result<Vector3, GeomError> {
-        let (sv, cv) = uv.v.sin_cos();
+        let (sv, cv) = crate::fmath::sin_cos(uv.v);
         Ok(comb2(cv, unit_dir(&self.frame, uv.u).0, sv, self.frame.z))
     }
     /// Closest point; a query at the centre is equidistant from all points ([`GeomError::Singular`]).
@@ -377,9 +377,9 @@ impl ParametricSurface for Sphere {
         if d == 0.0 {
             return Err(GeomError::Singular("projection from sphere centre"));
         }
-        let rho = l.x.hypot(l.y);
-        let u = if rho == 0.0 { 0.0 } else { wrap_tau(l.y.atan2(l.x)) };
-        let uv = Uv::new(u, (l.z / d).clamp(-1.0, 1.0).asin());
+        let rho = crate::fmath::hypot(l.x, l.y);
+        let u = if rho == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(l.y, l.x)) };
+        let uv = Uv::new(u, crate::fmath::asin((l.z / d).clamp(-1.0, 1.0)));
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (d - self.radius).abs() })
     }
     fn implicit(&self) -> Option<ImplicitDef> {
@@ -418,7 +418,7 @@ impl ParametricSurface for Torus {
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let f = &self.frame;
         let (e, n) = unit_dir(f, uv.u);
-        let (sv, cv) = uv.v.sin_cos();
+        let (sv, cv) = crate::fmath::sin_cos(uv.v);
         let (rr, r) = (self.major + self.minor * cv, self.minor);
         SurfaceJet {
             p: f.origin + e * rr + f.z * (r * sv),
@@ -431,17 +431,17 @@ impl ParametricSurface for Torus {
     }
     /// Exact outward normal `cos v e_r + sin v z`.
     fn normal(&self, uv: Uv) -> Result<Vector3, GeomError> {
-        let (sv, cv) = uv.v.sin_cos();
+        let (sv, cv) = crate::fmath::sin_cos(uv.v);
         Ok(comb2(cv, unit_dir(&self.frame, uv.u).0, sv, self.frame.z))
     }
     fn project(&self, p: Point3, _hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
         let l = self.frame.to_local(p);
-        let rho = l.x.hypot(l.y);
-        let u = if rho == 0.0 { 0.0 } else { wrap_tau(l.y.atan2(l.x)) };
+        let rho = crate::fmath::hypot(l.x, l.y);
+        let u = if rho == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(l.y, l.x)) };
         let (wr, wz) = (rho - self.major, l.z);
-        let v = if wr == 0.0 && wz == 0.0 { 0.0 } else { wrap_tau(wz.atan2(wr)) };
+        let v = if wr == 0.0 && wz == 0.0 { 0.0 } else { wrap_tau(crate::fmath::atan2(wz, wr)) };
         let uv = Uv::new(u, v);
-        Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (wr.hypot(wz) - self.minor).abs() })
+        Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (crate::fmath::hypot(wr, wz) - self.minor).abs() })
     }
     fn implicit(&self) -> Option<ImplicitDef> {
         Some(ImplicitDef::Torus(ImplicitTorus { frame: self.frame, major: self.major, minor: self.minor }))

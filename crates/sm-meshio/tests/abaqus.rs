@@ -531,6 +531,19 @@ fn polyhedra_policies() {
 }
 
 #[test]
+fn a_decomposition_with_an_inverted_tet_is_refused_typed() {
+    // The split-face cube with one corner pushed through the opposite side: the faces at that
+    // corner fold over, so some fan tets of the face have volume <= 0.
+    let mut p: Vec<[f64; 3]> = vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
+    p[6] = [-0.5, -0.5, -0.5];
+    let poly = vec![vec![0, 2, 1], vec![0, 3, 2], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]];
+    let m = build_mesh(&p, &[CellSpec::Poly(poly)], &mut SerialAlloc::new()).unwrap();
+    let o = AbaqusOptions::default().with_polyhedra(PolyPolicy::Decompose);
+    let mut out = Vec::new();
+    assert!(matches!(write_abaqus(&m, &o, &mut out), Err(AbaqusError::InvertedDecomposition { cell: 0, .. })));
+}
+
+#[test]
 fn decomposed_boundary_surface_area_equals_the_analytic_boundary() {
     let f = dual_patch().unwrap();
     let bf: Vec<FaceIx> = (0..f.mesh.face_count()).map(FaceIx::new).filter(|&x| f.mesh.face_right(x).is_none()).collect();
@@ -610,6 +623,10 @@ fn meshio_python() -> Option<String> {
 #[test]
 fn meshio_reads_the_decks_with_equal_counts_volumes_and_sets() {
     let Some(py) = meshio_python() else {
+        // Under SM_CONFORMANCE=1 a missing oracle is a failure, unless the skip is explicit.
+        if std::env::var("SM_CONFORMANCE").as_deref() == Ok("1") {
+            assert_eq!(std::env::var("SM_CONFORMANCE_ALLOW_SKIP").as_deref(), Ok("1"), "meshio is not importable (set SM_PYTHON)");
+        }
         eprintln!("meshio not importable (set SM_PYTHON): skipping the meshio oracle");
         return;
     };
