@@ -1,6 +1,6 @@
 # W5 backlog: open items at the end of W4
 
-One line per item, grouped by crate. Every item was found by a review (W4c review list, W4-INT worker or reviewer results) and is **not fixed** on the W4-INT tree (`c5f42c0` plus this documentation commit). Items that the INT fix tasks closed (FIX-IO `226c754`/`b9da2f1`, FIX-KERNEL `7145aa5`, FIX-MESH `5755054`) are not listed. "Source" names the review item. Nothing here blocks the W4 milestones.
+One line per item, grouped by crate. Every item was found by a review (W4c review list, W4-INT worker or reviewer results) and is **not fixed** after the W4-INT fix round (combine part A, `44ccab4`). Items that the INT fix tasks closed (FIX-IO `226c754`/`b9da2f1`, FIX-KERNEL `7145aa5`, FIX-MESH `5755054`, C12 and C12-LIBM, the `w4_pin` platform pins, the Linux digest asserts, the `C h^2` bound, the band check and the dead code in `milestone_w4_poly.rs`) are not listed. "Source" names the review item. Nothing here blocks the W4 milestones.
 
 Contents: crates in alphabetical order, then root and tooling, then decisions that wait for a person, then the trigger-based and scheduled W5 work that comes from `plan.md` section 8.
 
@@ -22,9 +22,10 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 - The CLI usage text (`lib.rs:652`) lists only `.exo`, but `.e`, `.g` and `.exodus` are also inferred. Source: W4-EXPORT-WIRE.
 - `milestone_w4_regions.rs`: `build()` runs six times across four tests (about 76 s at default threads, 167 s at `RAYON_NUM_THREADS=1`). Share one build in a `OnceLock` for G1, G3 and G4. Source: W4-INT-REGIONS review.
 - `milestone_w4_regions.rs`: G2 sums volumes from the in-memory mesh; compute them from the decoded `.smsh` so the exported file is what is checked. Source: W4-INT-REGIONS review.
-- `milestone_w4_poly.rs` Q4: for each of the 6 "further out" oracle points assert that the point's radius is below the circle of its OpenMC region and within the band depth, so the pinned count 6 has a measured reason. Source: W4-INT-POLY review.
-- `milestone_w4_poly.rs` Q2: the fuel shortfall is 2.58e-2 against a cap of `0.55 h^2 H = 1.09e-2` (2.5x the 36-gon prism's own 1.02e-2), likely from `mesh.size 2.0` leaving coarse triangles on the cylinder. Shrink the size on the cylinder faces, or assert and pin a measured two-sided bound with a comment. Source: W4-INT-POLY review.
-- `milestone_w4_poly.rs:536-537`: dead code `let r_in = ...; let _ = r_in;`. Source: W4-INT-POLY review.
+- `milestone_w4_poly.rs` Q4 (band check): the lower bound `r*cos(pi/36)` is tighter than the script's 6+30 interval polygon, whose half-angle is `(2*pi-1)/60 = 0.0881` rad. The margin today is 4.76e-4 but nothing guarantees it, and OR-j's "36-gon band" wording has the same approximation. Use the real half-angle. Source: W4-INT-TESTS review.
+- `milestone_w4_poly.rs` Q2 (floor): `h = 2*pi*r/36` underestimates the longest chord, so the floor of the two-sided bound is slightly off. Source: W4-INT-TESTS review.
+- `milestone_w4_pin.rs` `hashes()` has an `unwrap_or(0)` fallback that can hide a missing value. Source: W4-INT-TESTS review.
+- `milestone_w4_poly.rs` takes 290 to 292 s at one thread in debug, close to the budget of about 300 s; slower CI runners have little headroom. Cut the work or raise the budget. Source: W4-INT-TESTS.
 - A `.smesh` script cannot request the region split (`session.export` takes no `options`); the test exports in-process and with `smesh export --regions`. Needs an `sm-lang` change. Source: W4-INT-REGIONS.
 - The regions milestone has no Python or MCP leg (the draft does not require one). Source: W4-INT-REGIONS.
 
@@ -35,7 +36,7 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 - The B-rep import of the `openmc-hex-*` decks needs `options.bounds` (`bounds_of` cannot see oblique container planes); without it the typed error is `csg.unbounded`. Source: W4-CSG-HEX.
 - A dedicated `csg.unsupported` code "concentric surfaces closer than kernel clearance" for decks like `vtb-startr-openmc` (0.005 cm gaps), which fail the B-rep import with `csg.kernel` today (ruling OR-h(1)). Source: W4c final.
 - `build_hex` makes each element a brick cut by its six walls (`partition::hex_prism`), not `model.create_prism` as the plan delta worded it. The result is a true hexagonal prism; recorded as a deviation. Source: W4-CSG-HEX.
-- sm-cli has no `sm-boolean` dev-dependency, so exact 600-of-600 OpenMC membership is checked on the B-rep in sm-csgbrep and only one-sided through the `.smrt` (see the report, Dev-11). Source: W4-INT-POLY.
+- sm-cli has no `sm-boolean` dev-dependency, so exact 600-of-600 OpenMC membership is checked on the B-rep in sm-csgbrep and only one-sided through the `.smrt` (see the report, Dev-18, OR-j). Source: W4-INT-POLY.
 
 ## sm-diag, sm-quality
 
@@ -119,7 +120,7 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 
 ## sm-py
 
-- `crates/sm-py/tests/test_export.py` Fluent test ran in the combine's Python job (`py.sh`, rc 0); no open item. The catalog stub entries for FIX-MESH's `thex` and `tquad` docstrings change at the next re-bless (see the report, goldens).
+- `crates/sm-py/tests/test_export.py` Fluent test ran in the combine's Python job (`py.sh`, rc 0); no open item. The stub drift check passed unchanged at combine part A (no golden was re-blessed).
 
 ## Root, CI and tooling
 
@@ -128,7 +129,9 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 - Docker: `smesh-dagmc-conformance:latest` predates ACR-EXPFMT and has no `cgnscheck`; rebuild or retag `:latest` from `tools/conformance/dagmc` and delete the combine's `:w4c` tag. Source: W4c final.
 - `tools/conformance/requirements.txt` pins `vtk==9.7.1`, which has no wheel for python3.15; relax the pin or note it. Source: W4c final.
 - `crates/sm-meshio/tests/abaqus.rs`: the meshio oracle now hard-fails when meshio is not importable under `SM_CONFORMANCE=1` (FIX-IO confirmed the refusal, but its host has no meshio). The combine's oracle run (14 passed) predates that change; re-run `SM_CONFORMANCE=1` once where meshio exists. Source: W4-INT-FIX-IO review.
-- Combine: pin the INT hashes (milestone pins below) in `tools/platform/expected.txt` for macOS arm64 and Linux (C12), and re-run `tools/census/census.sh --compare`. Source: W4-INT-POLY, W4-INT-REGIONS.
+- Linux evidence for the new rows: the 12 `w4_poly` rows (after curvature sizing) and the 23 `w4_pin_*` rows were measured on macOS arm64 only. Confirm in GitHub CI that `platform_pins`, `milestone_w4_poly` and `milestone_w4_pin` pass on Linux. Source: fix round combine part A.
+- C12 follow-up: `sm-geom`, `sm-model`, `sm-sizing`, `sm-rt`, `sm-lang` and the schemes still call std trig. Add a clippy `disallowed-methods` rule and route them through the portable path where a hash can depend on them. Source: `int/c12.md`.
+- `tools/census/census.sh` has a stale comment ("62 recomputed lines" of `expected.txt`; there are 108). Cosmetic. Source: fix round combine part A.
 - Rustfmt: CI has no fmt step; the new code of sm-sizing, sm-mesher and sm-boolean drifts. Decide whether to add `cargo fmt --check` to `tools/ci.sh` and format once. Source: W4c review items.
 
 ## Scheduled for W5 by rulings (not review items)

@@ -2,7 +2,7 @@
 
 W4 took the project from "a kernel, meshers and a ray tracer" to the two goals of `plan.md`: polyhedral meshes for the user's transport code (read from `.smsh`), and a ray tracer (`sm-rt`, `.smrt`) with an honest benchmark against DAGMC and XDG. It ran as W4-0 (contracts), W4a (the two goals), W4b (front door, hierarchy, intervals), W4c (parity), and W4-INT (milestones, measurements, fixes). Plain language below; the plan is `plan.md`, the rulings `rulings.md`, open work `backlog-w5.md`, parity `../../PARITY.md`.
 
-State when this report was written: tree `c5f42c0` (main `b51806f`, PR #16, plus the W4-INT merges) plus the documentation commit. **This report was written without running the full CI, the census or the milestone tests again**: the W4-INT combine runs `tools/ci.sh`, the census and the catalog re-bless once (ruling OR-e). Where a number below comes from a worker or reviewer run, the run is named.
+State when this report was written: the W4-INT fix round, starting from combine part A (`44ccab4`; main `b51806f`, PR #16). **This report was written without running the full CI, the census or the milestone tests again.** Numbers come from the worker and combine reports, and each one names its source. Combine part A ran `tools/ci.sh` (in two parts, see section 4) and the census; the final combine runs both once more (ruling OR-e). Linux was not run for the tip of this branch (section 4).
 
 ## 1. What was delivered
 
@@ -17,7 +17,7 @@ State when this report was written: tree `c5f42c0` (main `b51806f`, PR #16, plus
 | D11 | #14 | `ogrid` for disks of 8 to 14 circle nodes (refinement keeps pin quality) |
 | W4-0c | #15 | ACR-V2a, ACR-EXPFMT, ACR-CSG-HEXIR |
 | c | #16 | Curvature sizing, composite meshing, Fluent / CGNS / Abaqus writers, hex lattices in the B-rep, many-to-many sweep, pyramid transition, THex/QTri/HTet/TQuad, local refine, `model.heal`, STEP repair, tidy tasks |
-| INT | (this PR) | Three milestones, benchmark smoke, MEASURE table, fixes, PARITY, this report |
+| INT | #17 | Three milestones, benchmark smoke, MEASURE table, fixes, the fix round (C12 portable trig, w4_poly curvature sizing, new platform pins), PARITY, this report |
 
 All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled task was dropped except W4-CSG-LIBFN (not needed, `csgbrief.md` section 6) and RT-LATZ (ruling OR-a).
 
@@ -25,14 +25,18 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 
 | Task | Result | Branch tip |
 |---|---|---|
-| W4-INT-POLY | Polyhedral milestone passes; two plan checks not met as written (Dev-10, Dev-11) | `2eee90d` |
+| W4-INT-POLY | Polyhedral milestone passes; two plan checks were not met as written (Dev-10, Dev-11), later replaced by ruling OR-j (Dev-18) | `2eee90d` |
 | W4-INT-REGIONS | Regions milestone passes: 117 regions, fuel regions `pi r^2 h / 12` to 1e-12, C ABI tags read back | `04b704b` |
 | W4-INT-BENCH | Benchmark smoke, MEASURE table, refcorpus STEP rows | `fe57b8b` |
 | W4-INT-FIX-IO | STEP repair notes and codes, Abaqus shared fan with inverted-tet refusal, refcorpus manifest rows, pycache removed | `226c754`, `b9da2f1` |
 | W4-INT-FIX-KERNEL | Heal `close` parent walk bounded, `VirtualTopology` maps to `Unsupported`, guard tests for heal close and `subdivide_pin` | `7145aa5` |
 | W4-INT-FIX-MESH | `refine_local` refuses `cell_set` with `threshold`, `thex`/`tquad` docs qualified, `is_ungraded_curvature` helper and 4/3 `tol` docs, composite tests tightened | `5755054` |
+| W4-INT-C12 | Measured centroids rounded to 2^-42, which fixed the Linux x86_64 divergence of `w4_regions` (rung 1 of `int/c12.md`; OR-k) | (see `int/c12.md`) |
+| W4-INT-C12-LIBM | `sm-geom-api` trig goes through the portable `libm` crate, pinned `=0.2.16`, which fixed the divergence of `w4_poly` (rung 2; OR-k). Linux arm64 and x86_64 repro runs equal macOS | `589e994` |
+| W4-INT-TESTS | Milestone checks of the tet chain replaced per OR-j; curvature sizing added to `tools/w4_poly.smesh`; the macOS gate removed from `milestone_w4_poly`; the two new pin scripts written | `401f1e3` |
+| Fix round, combine part A | `w4_pin_ogrid` and `w4_pin_enclosed_hex` added to `tools/platform/hashes.sh`, `platform_pins.rs` and `expected.txt`; census base refreshed; review items folded in (section 4) | `44ccab4` |
 
-## 2. Deviations (Dev-1 to Dev-16)
+## 2. Deviations (Dev-1 to Dev-18)
 
 "Dev" and not "D" because D1 to D11 are the user's rulings. Each deviation names who accepted it, or says that it needs a decision.
 
@@ -47,13 +51,15 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 | Dev-7 | W4-STEP-REPAIR has its own planar-cap closer in `sm-cadio` instead of running HEAL-TOL's fixes (`sm-cadio` may not depend on `sm-boolean` without an ACR). Tolerance sewing of displaced faces at import is not done (`step-dirty-tol-edge` is capped, with a note naming the displaced face) | Contract boundary | Accepted; W5 |
 | Dev-8 | Abaqus has a separate `pyramids` option (`error` default, `c3d5`, `degenerate_hex`) instead of "pyramids follow the polyhedron policy" | C3D5 support unconfirmed; degenerate C3D8 is the conforming choice next to hexes | **Default needs a user decision** (section 6) |
 | Dev-9 | W4-VT-TIDY does not restore the saved overlay when `plan.build` fails after a transform; it documents that the engine discards the scratch state. Tolerance-refusal tests show the state hash unchanged | Equivalent outcome | Accepted |
-| Dev-10 | W4-INT-POLY: "per-block volumes equal the inscribed-polygon closed form to 1e-9" is not met on the tet chain. The tet mesher adds Steiner nodes on the cylinders, so the tet surface is not the 36-gon prism: fuel mesh 1.984852, 36-gon prism 2.000415, circle 2.010619. `mesh.preserve_volume` refuses the mesh ("not a sweep of the circle"). Checked instead: model volumes equal `pi r^2 h` to 1e-9, the blocks sum to the box volume to 1e-9, tet, polyhedral, `.smsh` set and `.smrt` region volumes agree to 1e-12, and each disc is bounded above by its circle | The plan check contradicts `drafts/csgbrep.md` D7, which gives the closed form only for swept meshes | Substitute checks recommended for acceptance; needs the orchestrator's ruling (add the two-sided `C h^2` bound of the INT-POLY reviewer, or take the tets from a swept hex mesh) |
-| Dev-11 | W4-INT-POLY: membership at the 600 oracle points through the `.smrt` is 594 equal, 6 further out (void, clad and water band between the inscribed mesh and the true circle), 0 further in, 0 outside. Test asserts "never further in" and pins 6 for macOS arm64. Exact 600 of 600 is covered on the B-rep by sm-csgbrep `membership_at_the_600_oracle_points_equals_openmc`. No inscribed mesh at 36 intervals can reach 600 of 600 (the reviewer counted 6 oracle points within the worst-case 36-gon band) | `gen.py` samples uniformly with no exclusion near surfaces | Reading recommended for acceptance: item 1's membership check = B-rep oracle test plus the one-sided `.smrt` check |
-| Dev-12 | W4-INT-POLY: "replay without the strategy" is read as replay under an unregistered strategy name (the record holds 4 explicit assignments). The dual is barycentric: the circumcentric gate refuses the mesh (5891 of 58264 faces not Delaunay, 5602 circumcentres outside) and the test asserts that choice and that the refusal leaves the state unchanged | Plan text ambiguous; gate result is data | Accepted |
+| Dev-10 | W4-INT-POLY: "per-block volumes equal the inscribed-polygon closed form to 1e-9" is not met on the tet chain. The tet mesher adds Steiner nodes on the cylinders, so the tet surface is not the 36-gon prism: fuel mesh 1.984852, 36-gon prism 2.000415, circle 2.010619. `mesh.preserve_volume` refuses the mesh ("not a sweep of the circle"). Checked instead: model volumes equal `pi r^2 h` to 1e-9, the blocks sum to the box volume to 1e-9, tet, polyhedral, `.smsh` set and `.smrt` region volumes agree to 1e-12, and each disc is bounded above by its circle | The plan check contradicts `drafts/csgbrep.md` D7, which gives the closed form only for swept meshes | **Resolved by OR-j (Dev-18).** The numbers in this row were measured before the curvature sizing was added to the script; the mesh and these volumes have since changed |
+| Dev-11 | W4-INT-POLY: membership at the 600 oracle points through the `.smrt` is 594 equal, 6 further out (void, clad and water band between the inscribed mesh and the true circle), 0 further in, 0 outside. Test asserts "never further in" and pins 6 for macOS arm64. Exact 600 of 600 is covered on the B-rep by sm-csgbrep `membership_at_the_600_oracle_points_equals_openmc`. No inscribed mesh at 36 intervals can reach 600 of 600 (the reviewer counted 6 oracle points within the worst-case 36-gon band) | `gen.py` samples uniformly with no exclusion near surfaces | **Resolved by OR-j (Dev-18)**: the membership check is the B-rep oracle test plus the one-sided `.smrt` check plus a band check. The count 6 was measured before the curvature sizing; the final run's dual/oracle line shows "mismatch count 3 (was 6)" (W4-INT-TESTS) |
+| Dev-12 | W4-INT-POLY: "replay without the strategy" is read as replay under an unregistered strategy name (the record holds 4 explicit assignments). The dual is barycentric: the circumcentric gate refuses the mesh (5891 of 58264 faces not Delaunay, 5602 circumcentres outside, measured on the mesh before the curvature sizing) and the test asserts that choice and that the refusal leaves the state unchanged | Plan text ambiguous; gate result is data | Accepted |
 | Dev-13 | W4-INT-REGIONS: sectors start at `angle0 = 1 rad` (the fuel cylinder and its subtract tool are rotated by the same angle) instead of the default 0, because `SEAM_TURN = 1.0` in `sm-boolean` puts the seam of the cutting cylinders at 1 rad. Frame named `lat20` to match the deck's lattice id. `session.export` in a script takes no `options`, so the split is exported in-process and with `smesh export --regions`. The O-grid applies to no face of a sector-cut disk, so the mesh is mediocre: scaled Jacobian min 0.383 (162 cells), mean 0.82, edge ratio max 4.38. This is not O-grid quality | `SEAM_TURN` moves pinned hashes (C3) | Accepted; backlog (sm-boolean, sm-lang) |
-| Dev-14 | The fuel shortfall of the polyhedral milestone is 1.3% below the circle (2.58e-2), 2.5x the 36-gon prism's own, probably from `mesh.size 2.0` leaving coarse triangles on the cylinder sides. It exceeds the `C h^2` cap of the sm-csgbrep `oracle_mesh` test | A showcase mesh that is coarser than it needs to be | Backlog (sm-cli) |
+| Dev-14 | The fuel shortfall of the polyhedral milestone was 1.3% below the circle (2.58e-2), 2.5x the 36-gon prism's own, probably from `mesh.size 2.0` leaving coarse triangles on the cylinder sides. It exceeded the `C h^2` cap of the sm-csgbrep `oracle_mesh` test | A showcase mesh that was coarser than it needs to be | Addressed by the curvature sizing of OR-j (Dev-18); the new two-sided bound is in the milestone test. The remaining weak points of that bound are in the backlog (sm-cli) |
 | Dev-15 | The x86_64 benchmark table is pending (D6). The smoke run on arm64 states no ratio | Ruling D6 | Pending the user's run |
 | Dev-16 | `grade: "off"` curvature sizing with a tet or tri scheme silently breaks the tolerance (2.44% volume deficit against 0.89%). FIX-MESH added the docs and the `is_ungraded_curvature` helper; nothing yet warns or refuses in `mesh.auto` | Scope of FIX-MESH | Backlog (sm-mesher) |
+| Dev-17 | **Platform divergence (C12).** W4-INT round 1 (CI run 43827331108 on PR #17) showed that two new milestone scripts did not give the same hashes on Linux x86_64 as on macOS arm64. `w4_regions` differed through measured centroids, and `w4_poly` through 1-ulp differences of the platform libm in sines and cosines of circle points (glibc differs from a correctly rounded result in 0.1% of arguments, Apple libm in 4%, the `libm` crate in 3%). The first attempt was 15 `[linux-x86_64]` lines in `expected.txt`. | Platform libms are not required to agree to the last bit; C12 forbids hiding that | **Fixed per C12, ruling OR-k.** Centroids rounded to 2^-42 (a mitigation, not a proof, said so in `queries.rs`); trig routed through `libm` (cost 1.1x to 1.7x per evaluation). The per-platform lines were removed. Linux repro: `platform_pins` with no per-platform lines passes on Linux x86_64 (emulated, glibc 2.39) and Linux arm64, equal to macOS (`int/c12.md`). Open for W5: the other crates still use std trig (backlog) |
+| Dev-18 | **Two plan checks of the polyhedral milestone replaced (OR-j).** Dev-10 and Dev-11 are resolved this way: model volumes equal the closed form; block, tet, polyhedral, `.smsh` and `.smrt` volumes agree to 1e-12; each cumulative disc is bounded two-sided (mesh at most the circle, mesh at least the 36-gon prism minus `0.55 h^2 H`); membership is one-sided with a band check, and exact 600 of 600 stays on the B-rep. Curvature sizing was added to `tools/w4_poly.smesh` for this, so 12 `w4_poly` identity rows moved (census note) | The plan checks contradict `drafts/csgbrep.md` D7 and cannot be met by an inscribed mesh | **Reversible by the user (swept-hex leg):** if the user wants the original closed-form check, the tets must come from a swept hex mesh, where D7's form holds; then OR-j is dropped and the script changes again |
 
 ## 3. Rulings as applied
 
@@ -73,7 +79,7 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 | D10 defaults | Circumcentric stays opt-in (recommendation to keep, section 6); `hex_only` suggests cuts (`mesh.decompose_plan`); OpenMC import is one history node; many-to-one sweep is W5; no GPU, high order and boundary layers in W5; optional Delaunay output in `sm-scheme-tet` not built (section 6); OpenFOAM is the oracle for Fluent (no licence) | sm-cli milestone_w4_pin.rs `decompose_plan_gives_equal_replies_and_hashes_through_cli_and_mcp`; sm-meshio tests/fluent.rs `openfoam_reads_the_file_and_checkmesh_agrees` |
 | D11 corner cells | Disks of 8 to 14 circle nodes use `ogrid`; 6-node disks keep pave. Default pin 48 to 72 cells | section 4 |
 
-### Orchestrator rulings OR-a to OR-i
+### Orchestrator rulings OR-a to OR-k
 
 | Ruling | Applied how |
 |---|---|
@@ -86,12 +92,14 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 | OR-g (catalog descriptions) | Docstring changes of existing ops (for example `mesh.to_poly` "all-tet" to "tet", `session_export` format text) were re-blessed with the list of lines |
 | OR-h (CSG-HEX limits) | Accepted for W4 (Dev-6); `csg.unsupported` code and multi-body imprint are W5 |
 | OR-i (contract edits) | Acknowledged (Dev-3) |
+| OR-j (milestone checks, reversible by the user) | Two checks of the polyhedral milestone replaced; curvature sizing added to the script (Dev-18) |
+| OR-k (C12 applied to the first W4 divergence) | Centroid rounding and portable trig; no per-platform identity lines (Dev-17) |
 
 ## 4. Census, goldens and platform
 
 ### Census
 
-`tools/census/census.sh --compare docs/design/w4/census-base.txt` (plan section 5 item 6; C3). Last run, at the W4c combine (`3345c39`, main `b51806f`): **0 differing of 487 keys** (`--no-linux`). Every refreshed row of `census-base.txt`, with its ruling:
+`tools/census/census.sh --compare docs/design/w4/census-base.txt` (plan section 5 item 6; C3). Runs: at the W4c combine (`3345c39`, main `b51806f`) 0 differing of 487 keys (`--no-linux`). At combine part A of the fix round (`44ccab4`): the first compare against the old base found 42 of 533 keys different, all allowed (list below); after the base was refreshed the re-run gave **0 differing of 533 keys**, rc 0 (logs `census-w4intfix.txt` and `w4int-fixA-census2.log` in the scratchpad). I did not run the census for this report. The Linux rows of a full census come from a recorded GitHub CI run (`# ci-run:` header); the Linux evidence for the tip of this branch is the `platform_pins` test in CI (see Platform table). Every refreshed row of `census-base.txt`, with its ruling:
 
 | Combine | Rows refreshed | Ruling |
 |---|---|---|
@@ -105,17 +113,18 @@ All 16 W4c tasks merged; every combine reported "Left out: none". No scheduled t
 | D11 (266e4c9) | `platform` `expected.txt.sha256` e6bebc85... to be988e42...; `w3c_pin.branch.main`, `.mem.state`, `.print.h_mesh`, `.state` 6953b909... to b493073c...; `layer.intent` 931ece31... to caa6b4cd...; `layer.meshes` 46943517... to 6b3e12f5...; `print.cells` 432 to 648; `print.h_auto` 1f4b0912... to 619e5665...; `leftout.print.h_mesh` and `leftout.state` 87055d62... to 7c352811...; `pin.hexes` 432 to 648. Unchanged: `w3c_pin.h_model`, `layer.model`, W2, W3a, W3b, the enclosed pin, the 6- and 7-node meshes | D11, OR-f |
 | W4-0c | sm-mcp session transcripts `session.out.jsonl`, `session.out.respell.jsonl` (`session_export` format enum and text: fluent, cgns, abaqus) | ACR-EXPFMT, OR-e |
 | W4c (6481ccf, 3345c39) | `tools.standard.txt` (+`mesh__htet`, +`mesh__qtri`, +`mesh__thex`, +`mesh__tquad`, +`mesh__refine_local`, +`model__heal`); the two session transcripts (format description); sm-py `ops.pyi` (same ops, `import_step` gains `repair`); sm-protocol catalog goldens unchanged | OR-e, OR-g |
+| W4-INT pins (census-base note 16, then note 17) | 23 new `platform` rows for `w4_poly` (12) and `w4_regions` (11); `expected.txt.sha256` moved. Note 17 added 15 `[linux-x86_64]` lines from CI run 43827331108; the fix round removed them again (next row) | C12, plan section 5 item 2 |
+| Fix round, combine part A (44ccab4) | 42 rows. `platform` `expected.txt.sha256` 7634a0f5... to 1865c8ce.... 23 new rows: `w4_pin_ogrid` 11 and `w4_pin_enclosed_hex` 12. 9 `w4_poly` rows: `branch.main`, `mem.state`, `state`, `print.h_mesh` 9c49ff7e... to 2d851769...; `layer.intent` 663daa9a... to bb8a9d0f...; `layer.meshes` 2d700e40... to 43b98520...; `print.h_auto` 7a83b512... to e392a96e...; `print.h_sized` c52e9ec1... to 359a5bc6...; `print.h_tet` 108cd1a9... to 7a49f60f... (curvature sizing of W4-INT-TESTS, OR-j; libm trig, OR-k). 9 `w4_regions` rows (`branch.main`, `mem.state`, `state`, `print.h_mesh` 9af0db70... to 5533edd6...; `layer.meshes`, `layer.model`, `print.h_auto`, `print.h_linear`, `print.h_model`): the base was stale from before C12, and the new values equal `expected.txt` and the C12 report (centroid rounding, OR-k). `w4_poly` `layer.fem`, `layer.model` and `print.h_model` did not move. No W2 to W3c row, catalog row or other row moved. The note is census-base line 18 with every old and new value | OR-j, OR-k, C12 |
 
-W4-INT census expectation, for the combine to confirm by running `census.sh --compare`: **no difference**. The INT merges add documents, tools scripts and test files, and three fix tasks change library code (sm-cadio repair notes and codes, sm-meshio shared decomposition fan, sm-boolean heal and error mapping, sm-modify and sm-sizing docs and one refusal) that no pinned hash passes through. FIX-IO checked that the Gmsh and Abaqus byte pins and the sm-server export identity test still pass. Any difference there stops the integration (C3).
+Open census items: the `w4_poly` and `w4_pin_*` values are measured on macOS arm64 only (below). `tools/census/census.sh` has a stale comment ("62 recomputed lines"; there are 108). Cosmetic.
 
-### Catalog goldens the INT combine should expect
+### Catalog goldens
 
-- **Expected to change:** sm-py `ops.pyi` docstrings of `MeshOps.thex` and `MeshOps.tquad` (FIX-MESH qualified the V/4 and A/3 claims; OR-g). The sm-mcp `tools.standard.txt` checks names only, so no entry changes. No op is added, removed or given a new parameter by W4-INT. FIX-KERNEL changes an error mapping, not a catalog entry.
-- **Everything else:** no change expected. If the re-bless shows another line, check it against these three fix commits first.
+No catalog golden was re-blessed by W4-INT. Combine part A: no golden or stub test failed in `tools/ci.sh` (sm-mcp, sm-protocol, sm-py), and no op or parameter changed. The earlier expectation that sm-py `ops.pyi` docstrings of `MeshOps.thex` and `MeshOps.tquad` would change did not happen, so it is dropped. The final combine re-runs the goldens; any new difference is checked against the fix commits first.
 
 ### Platform table
 
-`tools/platform/expected.txt` (63 lines: 62 data lines plus 1 comment, enforced on Linux CI by `crates/sm-cli/tests/platform_pins.rs`; method in `docs/design/w3c/platform-hashes.md`; macOS arm64 equals Linux arm64 and Linux x86_64 CI for every row).
+`tools/platform/expected.txt`: 109 lines, of which 108 are data lines and 1 is a comment. All 108 are untagged (one value per key on every platform; no `[os-arch]` lines). The test `crates/sm-cli/tests/platform_pins.rs` enforces them on Linux CI; method in `docs/design/w3c/platform-hashes.md`. The `[os-arch]` override mechanism stays in the test for raw-bit hashes only (OR-k).
 
 | Group | Data lines | Moved in W4 |
 |---|---|---|
@@ -123,30 +132,31 @@ W4-INT census expectation, for the combine to confirm by running `census.sh --co
 | `w3a_tet`, `w3a_hybrid` | 7, 7 | no |
 | `w3b_milestone`, `w3b_submap_graded` | 13, 9 | no |
 | `w3c_pin` | 10 | yes, by D11 (rows listed above) |
+| `w4_pin_ogrid`, `w4_pin_enclosed_hex` | 11, 12 | new |
+| `w4_poly` | 12 | new, then moved by OR-j and OR-k |
+| `w4_regions` | 11 | new, then moved by OR-k |
 
-CI: each sub-wave PR merged with the GitHub gate and the python job green (recorded success on `bc1694a` (#15), `5aae13a` (#14) and `fcf243e` (#13)). The run for `b51806f` (PR #16) had not finished when this report was written; its result is to be read from GitHub, not from here.
+**What is known about Linux.** At `589e994` (W4-INT-C12-LIBM), with no per-platform lines (85 data lines then), `platform_pins` passed on Linux x86_64 (amd64 emulated, ubuntu 24.04, glibc 2.39, release) and on Linux arm64 (debug), equal to macOS arm64 on every row (`int/c12.md`, verification section). Since then the `w4_poly` rows moved (curvature sizing, W4-INT-TESTS) and 23 `w4_pin_*` rows were added, and **those were measured on macOS arm64 only**. "One set for every platform" holds for them only once `platform_pins`, `milestone_w4_poly` and `milestone_w4_pin` pass on Linux in CI. I do not claim that here and cite no CI run of this PR's own tip.
 
-**Pins waiting for the combine** (macOS arm64; the Linux values come from CI at the INT PR; C12). The tests assert only the digests marked "asserted".
+CI: PR #16 was merged with its run 43804496855 green. PR #17 round 1, run 43827331108, is the run that exposed the divergence (Dev-17). Earlier sub-wave PRs merged with the GitHub gate and the python job green (recorded success on `bc1694a` (#15), `5aae13a` (#14) and `fcf243e` (#13)).
 
-| Milestone | Value |
+**Combine part A gate.** `tools/ci.sh` returned 101 once: every build and test step passed (default threads and `RAYON_NUM_THREADS=1`; `platform_pins` and `regions_split` ok), and it stopped at workspace clippy on `empty_line_after_doc_comments` (a doc comment move in `milestone_w4_poly.rs`, fixed in `0a4d8b5`). `ci.sh` was then run from the clippy step on (stubs clippy, sm-py clippy, `cargo doc -D warnings`, `graph.py`, refcorpus unittest, ruff, mypy): rc 0. So the green result is that tail plus the passing test steps, not one uninterrupted run. `py.sh` rc 0. `cargo test --release -p sm-csgbrep -- --ignored` rc 0.
+
+**Pins recorded outside `expected.txt`** (raw bits, measured on macOS arm64; where a test asserts them it does so on macOS only):
+
+| What | Value |
 |---|---|
-| `w4_poly` `h_model` | `b0cddbd5ad1b0a00e5f255b86de5eadee394f36bb813b4b84be97250249629f8` |
-| `w4_poly` `h_sized` | `c52e9ec1f1ad9086a9290c96283cf272f50e94fa664e31b3ddfeb4db5294d8ac` |
-| `w4_poly` `h_auto` | `7a83b512399b460476937ad63010ddb30ff0b7b0c7ad30613b3a2876d510cc17` |
-| `w4_poly` `h_tet` | `108cd1a970d8ea3279859e36b535ed38700a189926738d4e31a00502801102a7` |
-| `w4_poly` `h_mesh` | `9c49ff7eca7ce84f9fb5c5ece25ae3c420e64cb767fe14f3b76852fdcb484fe5` |
-| `w4_poly` `pin.smsh` | `b51553e31d202ec83c1c46d27d11ec6e6c5fd59078c26461474a2c16043e9dd0` |
-| `w4_poly` `pin.smrt` | `74e12fea712d397d72ee7ada4bdb2f27ffdf0193e22a750e8d536cb6ba5e0ee8` |
-| `w4_poly` dual / oracle mismatches | barycentric / 6 (asserted) |
-| `w4_regions` `h_mesh` (printed) | `9af0db70f61b3da57b720470863b2046df492aebf36f9652c717eea14b42661b` |
-| `w4_regions` `.smsh` with split (asserted) | `9353bb26406f74b184894f10aa57c2103a8bbf6ecdbae81111d2eb51cbbc2839` |
-| `w4_regions` `.smrt` with split (asserted) | `efef863b96a3e9099fcd6beca3ca19b4a61a79e8c4ee0aa8c969c361cb4192ad` |
-| `w4_pin_ogrid` `h_model` / `h_auto` / `h_linear` / `h_mesh` | `fe9830c918b2a8417054afc89f49d402444f0b40b404889a493e1387a807bdaa`, `f07ceda8f5a2b0eee8aa93e604b30e8cdb86bf6856aaba032ef1a5122f252e67`, `48d329888ef0a19b0990f3265dd091d258343c32ed6698dd751fc6f150be1f28`, `f7f9e06a8f3cab9a2c4362649ecdbdc634b3ccb51f7730cc4eb32a743c9fcf6c` |
-| `w4_pin_enclosed_hex` `h_model` / `h_auto` / `h_linear` / `h_mesh` | `257f44e510e7913e323ff204a757ecf511b6d555e0b8d23e9bf9e7cf29f53bab`, `0f3d59fac046ba39eaf2193826fa17c5723cd27bc9ec02fd0a0671a12fff51ef`, `cbec6fcc43b9def3af8e15dd4b3df388028ff5c8cb889aae56c3d8fbcaf15852`, `dca55a530f8a7c48c7ae09b89eb0abf9b022378c0043a4355203b1d8b2d4775a` |
+| `w4_regions` `lattice.smsh` (`MAC_SMSH`) | `e46968ca3f4fa4aae1fc3e7bee221f3ae3f05d3c916fdfac1adf05ab55cca6f6` |
+| `w4_regions` `lattice.smrt` (`MAC_SMRT`) | `ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d` |
+| `regions_split` `pin.smsh` | `6d8de35256f3a754ce25b8ae10c989fde748b417b6a96b0ef128193a14ad7ec5` |
+| `regions_split` `pin.smrt` | `303fbda9d4156b093510167901b76c54dd6a286267bce397c9df9e0102c25189` |
+| `w4_poly` `pin.smsh`, `pin.smrt` (W4-INT-TESTS report) | `1b99be6f3aae029698200664f963ef9ab55e0303338b0f9c200dca990ab753b4`, `ce02bf55850fcd5c07b2f421a7cc05890f81386c55912479a71d0673428b0c4a` |
+
+The identity values (`h_model`, `h_auto`, `h_linear`, `h_mesh`, layers) are in `expected.txt`; copying them here would only create a second copy to keep in step. Test timing: the one-thread debug run of `milestone_w4_poly` took 290 to 292 s (W4-INT-TESTS) against a budget of about 300 s, so slower CI runners have little room.
 
 ## 5. Milestones
 
-1. **Polyhedral (`tools/w4_poly.smesh`, `crates/sm-cli/tests/milestone_w4_poly.rs`).** The OpenMC `pin` deck (fixture bytes pinned by sha256) goes through `model.import_openmc` (4 volumes, blocks fuel, void, clad, water), `mesh.intervals` (36 per circle), `mesh.auto {strategy: "tet"}`, `mesh.run` (29657 tets), `mesh.poly_info`, `mesh.to_poly` (barycentric, chosen from the eligibility report), then `.smsh` and `.smrt`. Met: 0 validation violations on the tet and polyhedral meshes; `.smsh` `gc_cell_volume` equals the recomputed volume to 1e-12 and sums to the box volume to 1e-9; `.smsh` cell sets, `.smrt` regions and block names are the same four names; no export warning; CLI (twice and 1 thread), MCP, in-process, CLI project run and Python (a wheel built and run) agree on every print and on both digests; replay reaches `h_mesh` under an unregistered strategy name. Test time about 156 s (default threads) and 176 s (1 thread). Partly met: per-block volumes and the 600-point membership (Dev-10, Dev-11).
+1. **Polyhedral (`tools/w4_poly.smesh`, `crates/sm-cli/tests/milestone_w4_poly.rs`).** The OpenMC `pin` deck (fixture bytes pinned by sha256) goes through `model.import_openmc` (4 volumes, blocks fuel, void, clad, water), `mesh.intervals` (36 per circle), `mesh.auto {strategy: "tet"}`, `mesh.run` (29657 tets), `mesh.poly_info`, `mesh.to_poly` (barycentric, chosen from the eligibility report), then `.smsh` and `.smrt`. Met: 0 validation violations on the tet and polyhedral meshes; `.smsh` `gc_cell_volume` equals the recomputed volume to 1e-12 and sums to the box volume to 1e-9; `.smsh` cell sets, `.smrt` regions and block names are the same four names; no export warning; CLI (twice and 1 thread), MCP, in-process, CLI project run and Python (a wheel built and run) agree on every print and on both digests; replay reaches `h_mesh` under an unregistered strategy name. Test time was about 156 s (default threads) and 176 s (1 thread) before the curvature sizing, and 290 to 292 s at one thread after it. The per-block volume and 600-point membership checks were replaced by OR-j (Dev-18); the counts in this paragraph (29657 tets and so on) are from the run before the curvature sizing and the mesh has since changed.
 2. **Pin milestone (`milestone_w4_pin`).** Passes unchanged under the D11 72-cell default pin: fuel `pi r^2 h` after VOLFIT for the ogrid and the enclosed-hex scripts. Hashes in section 4.
 3. **Regions milestone (`milestone_w4_regions`).** The 3x3 pin lattice, each fuel cut into 3 equal-area rings by 4 sectors, `hex_only` at n = 16, VOLFIT on the 108 curved faces: 1998 hexes, 0 violations, total volume 14.2884, 117 regions in `.smsh` and `.smrt`. Every fuel region holds `pi r^2 h / 12` and every water region `(1.26^2 - pi r^2) h`, to 1e-12 relative. The C driver reads all 117 names and the tags (`lat.lat20.i`, `lat.lat20.j`, `ring`, `ring_count`, `sector`, `sector_count`) through `smrt_region_n_tags` and `smrt_region_tag`, and 36 `smrt_locate` calls land in the computed region. The OpenMC 3x3 deck gives 18 regions with the same names and slot tags as the model path under `split: ["lattice"]`. Two runs, 1 thread and the default thread count, and the CLI project run give identical bytes. Quality: see Dev-13.
 4. **Benchmark smoke** (below).
@@ -179,11 +189,20 @@ What the corpus told us: hex lattices are in every public source (so CSG-HEX was
 
 ## 6. Carried tasks and decisions
 
-These are decisions for the orchestrator or the user. The data is from `int/measure.md` (13 real tet meshes: 7 earlier meshes and 6 refcorpus STEP meshes). **Nothing is decided here**; each has a recommendation.
+**User decisions.** These six wait for the user; nothing is decided here, and each has a recommendation:
+
+1. Circumcentric dual as the default (D10). Recommendation: keep it opt-in.
+2. CONFORM before VORO-CLIP. Recommendation: do CONFORM first.
+3. `CONVEX_CHECK_MAX`. Recommendation: leave it unchanged.
+4. Abaqus pyramids default (Dev-8). Recommendation: decide when a transition mesh must go to Abaqus.
+5. OR-j reversal (Dev-18). OR-j was the orchestrator's ruling and the user may reverse it: the alternative is to take the tets from a swept hex mesh and restore the closed-form check.
+6. The x86_64 benchmark run (D6, Dev-15): the user runs `tools/bench/x86_64.sh`.
+
+The data is from `int/measure.md` (13 real tet meshes: 7 earlier meshes and 6 refcorpus STEP meshes).
 
 | Item | Trigger | Data | Recommendation |
 |---|---|---|---|
-| **CONFORM** (Delaunay-friendly tet output in `sm-scheme-tet`; ruling D1, D10) | Non-Delaunay interior faces dominate the circumcentric refusals | Met on 13 of 13: non-Delaunay faces are 4.4% to 7.6% of interior faces; against outside-circumcentre tets the ratio is 4.4x to 306x (1.7x on the 733-tet enclosed pin). Pin milestone mesh: 5891 of 58264 faces, 5602 outside | Do CONFORM first, as the optional Delaunay output D10 already allows (boundary-protected Delaunay plus a restoration after smoothing), then re-run the MEASURE table on its output. If orthogonality stays a goal and not a requirement (D1), defer it to W5 with these numbers as the baseline; the barycentric dual is already valid, volume-conserving and `sm-rt`-correct |
+| **CONFORM** (Delaunay-friendly tet output in `sm-scheme-tet`; ruling D1, D10) | Non-Delaunay interior faces dominate the circumcentric refusals | Met on 13 of 13: non-Delaunay faces are 4.4% to 7.6% of interior faces; against outside-circumcentre tets the ratio is 4.4x to 306x (1.7x on the 733-tet enclosed pin). The polyhedral milestone mesh (`w4_poly`): 5891 of 58264 faces not Delaunay, 5602 circumcentres outside (measured before the curvature sizing of OR-j, so re-measure) | Do CONFORM first, as the optional Delaunay output D10 already allows (boundary-protected Delaunay plus a restoration after smoothing), then re-run the MEASURE table on its output. If orthogonality stays a goal and not a requirement (D1), defer it to W5 with these numbers as the baseline; the barycentric dual is already valid, volume-conserving and `sm-rt`-correct |
 | **VORO-CLIP** | Refusals dominated by outside circumcentres | Met only in the weak sense: every mesh also has outside circumcentres (0.03% to 8.1% of tets, growing with the boundary-to-volume ratio) but they never dominate | Wait for the CONFORM result; do not start VORO-CLIP (size L/XL) before it |
 | **`CONVEX_CHECK_MAX`** | Many convex cells over 64 faces | Not met: convex over 64 faces is 0 on all 13 duals; cells over 64 faces (0.07% to 26.4%) are all non-convex hub-split cells; a larger cap recovers no cell | Do not raise it |
 | **Circumcentric default** (D10) | W4-INT decides | The strict gate passes 0 of 13 real tet meshes; it passes only analytic fixtures. The barycentric dual's fast-path share is 0.3% to 10% of cells | Keep circumcentric opt-in and barycentric the default. A default of "circumcentric only when the eligibility report says the mesh qualifies, else barycentric" needs a new argument value, not a hash move. For the transport code today, `hex_only` and `ogrid` meshes are the route that is 100% convex |
@@ -191,12 +210,11 @@ These are decisions for the orchestrator or the user. The data is from `int/meas
 | **Many-to-one sweep** (D10) | W5 | Many-to-many multisweep is done; many-to-one needs a union-copy contract | W5, on request |
 | **V2b periodic composites** | Dirty STEP or VTB models show periodic composites dominate (plan section 8) | Refused today with a typed message; the refcorpus dirty STEP files did not show it as dominant | Hold; `drafts/vtopo.md` T2b, T4, T6, T11 stay trigger-based |
 | **x86_64 benchmark table** (D6) | The user's three sessions | Pending (Dev-15) | The user runs `tools/bench/x86_64.sh`; then attach the table with the verdict from `VERDICT.md`, and consider the `xl` tier |
-| **Ruling needed: Dev-10 and Dev-11** | INT-POLY | See the table in section 2 | Accept the substitute checks, and add the two-sided `C h^2` bound and the band check (backlog, sm-cli) |
-| **User decision: Abaqus pyramids default** (Dev-8) | HEX-PYR transition meshes | Default is `error` (typed refusal); `degenerate_hex` is the conforming alternative | Decide when a transition mesh must go to Abaqus |
-| **Unmerged INT work** | Combine | `expected.txt` pins, census run, catalog re-bless, GitHub CI on the INT PR | Section 4 |
+| **OR-j reversal** (Dev-10, Dev-11, Dev-18) | The user may reverse it | The replacement checks are in the milestone test; the reversal means the swept-hex leg | Keep OR-j; tighten the band and floor checks (backlog, sm-cli) |
+| **Abaqus pyramids default** (Dev-8) | HEX-PYR transition meshes | Default is `error` (typed refusal); `degenerate_hex` is the conforming alternative | Decide when a transition mesh must go to Abaqus |
 
 Open work not tied to a decision is in `backlog-w5.md`, grouped by crate, one line per item with its source.
 
 ## 7. Checks run for this documentation change
 
-Only the two documents and `docs/PARITY.md` changed. I checked that every test name ticked in PARITY exists as `fn <name>` in the tree (script `w4int-docs-check.sh`, no missing name apart from a Python test that is a `def`). I did not run cargo, the census, the platform script or CI (ruling OR-e: the combine does). I did not edit any catalog golden, `expected.txt` or `census-base.txt`.
+Only this report, `backlog-w5.md` and `docs/PARITY.md` changed. I did not run cargo, the census, the platform script or CI (ruling OR-e). I did not edit any catalog golden, `expected.txt` or `census-base.txt`. I counted the lines of `tools/platform/expected.txt` (109 lines, 108 data, 0 tagged) and checked that the test names cited in PARITY that I touched exist in the tree.
