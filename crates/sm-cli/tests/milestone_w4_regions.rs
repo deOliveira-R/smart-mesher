@@ -52,7 +52,7 @@ const PINS: &[(&str, &str, &str)] = &[
     (
         "linux-x86_64",
         "acaa5d69d95cece58971c04a180a815d2e44532954f55bb46cd5bcfbc105d8a4",
-        "ef6ae53d758e76540a517d663b29c427e1a71f57f7fa91c73c98ddb02f458f9d",
+        "b9fc35ebd4901712d724e2fd89be32a607a9e1e4c44f260d44c6742585b1edba",
     ),
 ];
 
