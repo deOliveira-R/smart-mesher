@@ -429,8 +429,8 @@ impl TypedQuery for ModelMeasure {
         // libm) that differs between platforms. A script that feeds it back into an op (a pin's
         // cut centre) would then build different geometry. So the centroid is rounded to a
         // multiple of `q`, a power of two (dyadic centres stay exact): the power of two at most
-        // the hash quantum, divided by 4096. That is 2^-42 (2.3e-13) by default, 1e3 times the
-        // noise (about 1e-16) and far below the model tolerance. This is a mitigation, not a
+        // the hash quantum, divided by 4096. That is 2^-42 (2.3e-13) by default, about 50 times the
+        // largest noise measured (4.7e-15) and far below the model tolerance. This is a mitigation, not a
         // proof: a coordinate within noise of a half-step boundary can still round differently.
         let q = f64::from_bits(topo.tolerance().quantum().to_bits() & 0x7FF0_0000_0000_0000) / 4096.0;
         out.centroid = out.centroid.map(|c| c.map(|x| if q.is_normal() { (x / q).round() * q } else { x }));

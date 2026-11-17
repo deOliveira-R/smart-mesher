@@ -1,6 +1,6 @@
 # W5 backlog: open items at the end of W4
 
-One line per item, grouped by crate. Every item was found by a review (W4c review list, W4-INT worker or reviewer results) and is **not fixed** after the W4-INT fix round (combine part A, `44ccab4`). Items that the INT fix tasks closed (FIX-IO `226c754`/`b9da2f1`, FIX-KERNEL `7145aa5`, FIX-MESH `5755054`, C12 and C12-LIBM, the `w4_pin` platform pins, the Linux digest asserts, the `C h^2` bound, the band check and the dead code in `milestone_w4_poly.rs`) are not listed. "Source" names the review item. Nothing here blocks the W4 milestones.
+One line per item, grouped by crate. Every item was found by a review (W4c review list, W4-INT worker or reviewer results) and is **not fixed** after the W4-INT fix round (combine part A, `44ccab4`). Items that the INT fix tasks closed (FIX-IO `226c754`/`b9da2f1`, FIX-KERNEL `7145aa5`, FIX-MESH `5755054`, C12 and C12-LIBM, the `w4_pin` platform pins, the Linux asserts of the `w4_poly` file digests, the `C h^2` bound, the band check and the dead code in `milestone_w4_poly.rs`) are not listed. "Source" names the review item. Nothing here blocks the W4 milestones.
 
 Contents: crates in alphabetical order, then root and tooling, then decisions that wait for a person, then the trigger-based and scheduled W5 work that comes from `plan.md` section 8.
 
@@ -85,7 +85,7 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 ## sm-poly
 
 - `mesh.to_poly` on the closure result of a partial `mesh.htet` fails its own validation (`class.dim_order`, 2 per cut diagonal): a W4-POLY-MIXED defect, to be fixed here and the `known_limit_` test in sm-modify turned into a positive test. Source: W4-MOD-HTET.
-- The circumcentric gate refused every real tet mesh measured (13 of 13, `docs/design/w4/int/measure.md`; the milestone pin mesh: 5891 of 58264 faces not Delaunay, 5602 circumcentres outside). Optional Delaunay output in `sm-scheme-tet` (CONFORM) is the trigger-based follow-up. Source: W4-INT-BENCH, W4-INT-POLY.
+- The circumcentric gate refused every real tet mesh measured (13 of 13, `docs/design/w4/int/measure.md`; the polyhedral milestone mesh: 5891 of 58264 faces not Delaunay, 5602 circumcentres outside). Optional Delaunay output in `sm-scheme-tet` (CONFORM) is the trigger-based follow-up. Source: W4-INT-BENCH, W4-INT-POLY.
 
 ## sm-rt
 
@@ -129,7 +129,7 @@ Contents: crates in alphabetical order, then root and tooling, then decisions th
 - Docker: `smesh-dagmc-conformance:latest` predates ACR-EXPFMT and has no `cgnscheck`; rebuild or retag `:latest` from `tools/conformance/dagmc` and delete the combine's `:w4c` tag. Source: W4c final.
 - `tools/conformance/requirements.txt` pins `vtk==9.7.1`, which has no wheel for python3.15; relax the pin or note it. Source: W4c final.
 - `crates/sm-meshio/tests/abaqus.rs`: the meshio oracle now hard-fails when meshio is not importable under `SM_CONFORMANCE=1` (FIX-IO confirmed the refusal, but its host has no meshio). The combine's oracle run (14 passed) predates that change; re-run `SM_CONFORMANCE=1` once where meshio exists. Source: W4-INT-FIX-IO review.
-- Linux evidence for the new rows: the 9 moved `w4_poly` rows (after curvature sizing) and the 23 `w4_pin_*` rows were measured on macOS arm64 only, and the C12-LIBM Linux repro ran `platform_pins` only, so the every-platform raw digests (`milestone_w4_regions` lattice, `milestone_w4_poly` FILE_PINS) have no Linux measurement. Confirm in GitHub CI that `platform_pins`, `milestone_w4_regions`, `milestone_w4_poly` and `milestone_w4_pin` pass on Linux. Source: fix round combine part A.
+- Raw export bytes differ across platforms: the `w4_regions` `lattice.smsh`/`.smrt` digests differ between Apple libm and glibc although every identity hash agrees, so `milestone_w4_regions.rs` pins them per os-arch (macOS arm64 and Linux x86_64 only; other platforms print and do not check). Remove the per-platform digests once the C12 std-trig follow-up below makes the bytes equal. Source: fix round combine part B (CI runs 44005750263, 44016209978).
 - C12 follow-up: `sm-geom`, `sm-model`, `sm-sizing`, `sm-rt`, `sm-lang` and the schemes still call std trig. Add a clippy `disallowed-methods` rule and route them through the portable path where a hash can depend on them. Source: `int/c12.md`.
 - `tools/census/census.sh` has a stale comment ("62 recomputed lines" of `expected.txt`; there are 108). Cosmetic. Source: fix round combine part A.
 - Rustfmt: CI has no fmt step; the new code of sm-sizing, sm-mesher and sm-boolean drifts. Decide whether to add `cargo fmt --check` to `tools/ci.sh` and format once. Source: W4c review items.
